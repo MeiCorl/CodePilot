@@ -1,0 +1,61 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(*)",
+      "Glob(*)",
+      "Grep(*)",
+
+      "Bash(git log *)",
+      "Bash(git diff *)",
+      "Bash(git remote *)",
+      "Bash(git rev-parse *)",
+      "Bash(git show *)",
+      "Bash(git status *)",
+      "Bash(git stash *)",
+
+      "Bash(ls *)",
+      "Bash(cat *)",
+      "Bash(find *)",
+      "Bash(grep *)",
+      "Bash(curl *)",
+      "Bash(cd *)",
+      "Bash(head *)",
+      "Bash(tail *)",
+      "Bash(mkdir *)",
+      "Bash(echo *)",
+      "Bash(wc *)",
+      "Bash(sort *)",
+      "Bash(which *)",
+      "Bash(pwd)",
+      "Bash(tree *)",
+      "Bash(cp *)",
+      "Bash(mv *)",
+      "Bash(dirname *)",
+      "Bash(basename *)",
+      "Bash(printf *)",
+      "Bash(date *)",
+      "Bash(xargs *)",
+      "Bash(tr *)",
+      "Bash(sed *)",
+      "Bash(awk *)",
+      "Bash(cut *)",
+      "Bash(test *)",
+      "Bash([ *)",
+
+      "Bash(go build *)",
+      "Bash(go test *)",
+      "Bash(go run *)",
+      "Bash(go mod *)",
+      "Bash(go vet *)",
+      "Bash(go fmt *)",
+      "Bash(go list *)",
+      "Bash(go doc *)",
+      "Bash(go clean *)",
+      "Bash(go generate *)",
+
+      "Agent(*)",
+      "WebSearch(*)",
+      "mcp__*"
+    ]
+  }
+}
