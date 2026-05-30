@@ -4,7 +4,6 @@
       "Read(*)",
       "Glob(*)",
       "Grep(*)",
-
       "Bash(git log *)",
       "Bash(git diff *)",
       "Bash(git remote *)",
@@ -12,7 +11,6 @@
       "Bash(git show *)",
       "Bash(git status *)",
       "Bash(git stash *)",
-
       "Bash(ls *)",
       "Bash(cat *)",
       "Bash(find *)",
@@ -41,7 +39,6 @@
       "Bash(cut *)",
       "Bash(test *)",
       "Bash([ *)",
-
       "Bash(go build *)",
       "Bash(go test *)",
       "Bash(go run *)",
@@ -52,10 +49,14 @@
       "Bash(go doc *)",
       "Bash(go clean *)",
       "Bash(go generate *)",
-
       "Agent(*)",
       "WebSearch(*)",
-      "mcp__*"
+      "mcp__*",
+      "mcp__context7__*",
+      "mcp__zread__search_doc",
+      "mcp__zread__read_file",
+      "Bash(go get *)",
+      "Bash(go env *)"
     ]
   }
 }

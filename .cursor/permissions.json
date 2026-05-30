@@ -1,0 +1,49 @@
+{
+  // 由 .cursor/cli.json 转换，供 Cursor IDE Agent 使用
+  // 需在 Settings → Run Mode 启用 Allowlist / Auto-review 等模式后生效
+  // Read/Glob/Grep/Write/WebSearch 不受此文件控制，由 Run Mode 决定
+
+  "terminalAllowlist": [
+    "git",
+    "ls",
+    "cat",
+    "find",
+    "grep",
+    "curl",
+    "cd",
+    "head",
+    "tail",
+    "mkdir",
+    "echo",
+    "wc",
+    "sort",
+    "which",
+    "pwd",
+    "tree",
+    "cp",
+    "mv",
+    "dirname",
+    "basename",
+    "printf",
+    "date",
+    "xargs",
+    "tr",
+    "sed",
+    "awk",
+    "cut",
+    "test",
+    "[",
+    "go"
+  ],
+
+  "mcpAllowlist": [
+    "*:*",
+    "context7:*",
+    "zread:search_doc",
+    "zread:read_file",
+    "service_proxy:*",
+    "kafka_producer:*",
+    "case_executor:*",
+    "chrome-devtools:*"
+  ]
+}

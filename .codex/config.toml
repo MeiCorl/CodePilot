@@ -1,0 +1,20 @@
+# Codex 项目级配置
+# 参照 .claude/settings.json 的授权策略映射
+
+# 请求审批时询问用户（与 Claude Code 的权限确认机制对齐）
+approval_policy = "on-request"
+
+# 允许在工作区内读写（对应 Claude Code 中允许的文件操作工具）
+sandbox_mode = "workspace-write"
+
+# 网络访问：允许（对应 Claude Code 中允许的 curl、WebSearch、MCP 等网络工具）
+[sandbox_workspace_write]
+writable_roots = []
+network_access = true
+
+# Windows 沙箱模式
+[windows]
+sandbox = "unelevated"
+
+# 文件打开方式
+file_opener = "cursor"
