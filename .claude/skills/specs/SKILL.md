@@ -20,7 +20,7 @@ description: Spec 工作流技能 —— 需求澄清、任务拆解、功能验
 **执行流程：**
 1. 理解用户描述的功能想法
 2. 进入「需求澄清」阶段 —— 通过提问帮助用户澄清需求、挖掘边缘场景
-3. 澄清完成后，生成 3 份文档到 `docs/{step_n-idea_name}/` 目录
+3. 澄清完成后，生成 3 份文档到 `docs/{step_n-idea_name}/` 目录（idea_name 优先使用 CLAUDE.md 中预定义的步骤计划名）
 
 ### 方式 2：断点续做
 用户提到了**之前已经做过的功能工作**，比如：
@@ -56,7 +56,27 @@ description: Spec 工作流技能 —— 需求澄清、任务拆解、功能验
 
 ### 1.2 文档生成阶段
 
-需求澄清完毕后，确定 step 编号（扫描 `docs/` 目录下已有的 `step*` 文件夹，取最大编号 + 1），确定 idea_name（功能的简要中文名称），然后依次生成 3 份文档。
+需求澄清完毕后，确定 step 编号和 idea_name，然后依次生成 3 份文档。
+
+**step 编号与 idea_name 确定规则：**
+1. 首先扫描 `docs/` 目录下已有的 `step*` 文件夹，确认哪些步骤已有对应目录
+2. idea_name **必须**从项目 `CLAUDE.md` 中的系统实现步骤计划名中匹配，预定义列表如下：
+   | 编号 | 计划名（idea_name） | 目录示例 |
+   |------|---------------------|----------|
+   | 1 | LLM打通 | `docs/step1-LLM打通/` |
+   | 2 | 工具系统集成 | `docs/step2-工具系统集成/` |
+   | 3 | ReAct与Agent Loop实现 | `docs/step3-ReAct与Agent Loop实现/` |
+   | 4 | System Prompt设计 | `docs/step4-System Prompt设计/` |
+   | 5 | 权限系统设计 | `docs/step5-权限系统设计/` |
+   | 6 | MCP协议实现 | `docs/step6-MCP协议实现/` |
+   | 7 | 上下文管理 | `docs/step7-上下文管理/` |
+   | 8 | 记忆系统 | `docs/step8-记忆系统/` |
+   | 9 | 快捷命令系统 | `docs/step9-快捷命令系统/` |
+   | 10 | Skill系统 | `docs/step10-Skill系统/` |
+   | 11 | Hook系统 | `docs/step11-Hook系统/` |
+   | 12 | SubAgent | `docs/step12-SubAgent/` |
+3. 根据用户需求匹配对应的步骤编号和计划名。如果该步骤目录已存在，直接复用；如果不存在，按编号创建
+4. 如果用户需求不在预定义列表中（超出原计划的新功能），则由技能根据功能内容拟定 idea_name，编号取已有最大编号 + 1
 
 ---
 
@@ -183,5 +203,5 @@ description: Spec 工作流技能 —— 需求澄清、任务拆解、功能验
 1. **语言**：所有输出、提问、文档均使用中文
 2. **SDK 查询**：使用 SDK 时务必通过 context7 MCP 等文档工具查最新 API（函数签名、参数顺序、类型名），不要凭记忆写
 3. **步骤编号**：自动从 `docs/` 目录推断下一个步骤号
-4. **文件路径**：文档放在 `docs/{step_n-idea_name}/` 下，如 `docs/step2-工具调用/spec.md`
+4. **文件路径**：文档放在 `docs/{step_n-idea_name}/` 下，idea_name 优先使用 `CLAUDE.md` 中预定义的步骤计划名，如 `docs/step2-工具系统集成/spec.md`
 5. **实现过程中**：每完成一个 task，更新 tasks.md 状态，然后根据 checklist.md 逐项验证
