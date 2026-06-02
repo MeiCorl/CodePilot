@@ -2,6 +2,7 @@ package session
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -318,6 +319,70 @@ func TestListSessionsEmpty(t *testing.T) {
 	}
 	if len(summaries) != 0 {
 		t.Fatalf("空目录应返回空切片，实际长度 %d", len(summaries))
+	}
+}
+
+// TestListRecentSessionsOrderByCreated 验证 ListRecentSessions 按 CreatedAt 降序，
+// 且只返回最近 limit 个会话。
+func TestListRecentSessionsOrderByCreated(t *testing.T) {
+	dir := t.TempDir()
+	sm := &SessionManager{sessionsDir: dir}
+
+	// 创建 3 个会话，按时间顺序逐个保存，让 CreatedAt 形成稳定差值
+	createTestSession(t, sm, "sess-001", []llm.Message{})
+	time.Sleep(20 * time.Millisecond)
+	createTestSession(t, sm, "sess-002", []llm.Message{})
+	time.Sleep(20 * time.Millisecond)
+	createTestSession(t, sm, "sess-003", []llm.Message{})
+
+	// 全部：按 CreatedAt 降序：003 → 002 → 001
+	all, err := sm.ListRecentSessions(0)
+	if err != nil {
+		t.Fatalf("ListRecentSessions 失败: %v", err)
+	}
+	if len(all) != 3 {
+		t.Fatalf("limit=0 应返回全部 3 条，实际 %d", len(all))
+	}
+	if all[0].ID != "sess-003" || all[1].ID != "sess-002" || all[2].ID != "sess-001" {
+		t.Fatalf("排序错误: %s / %s / %s", all[0].ID, all[1].ID, all[2].ID)
+	}
+
+	// limit=2：只返回最近创建的 2 个
+	top, err := sm.ListRecentSessions(2)
+	if err != nil {
+		t.Fatalf("ListRecentSessions(2) 失败: %v", err)
+	}
+	if len(top) != 2 {
+		t.Fatalf("limit=2 应返回 2 条，实际 %d", len(top))
+	}
+	if top[0].ID != "sess-003" || top[1].ID != "sess-002" {
+		t.Fatalf("limit=2 排序错误: %s / %s", top[0].ID, top[1].ID)
+	}
+}
+
+// TestListRecentSessionsDefaultLimit 验证 limit<=0 时使用默认 10。
+func TestListRecentSessionsDefaultLimit(t *testing.T) {
+	dir := t.TempDir()
+	sm := &SessionManager{sessionsDir: dir}
+
+	// 创建 12 个会话
+	for i := 0; i < 12; i++ {
+		id := fmt.Sprintf("sess-%03d", i)
+		createTestSession(t, sm, id, []llm.Message{})
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	// limit=0 应回退到默认 10
+	summaries, err := sm.ListRecentSessions(0)
+	if err != nil {
+		t.Fatalf("ListRecentSessions 失败: %v", err)
+	}
+	if len(summaries) != 10 {
+		t.Fatalf("默认 limit 应为 10，实际 %d", len(summaries))
+	}
+	// 第 1 条应该是最近创建的 sess-011
+	if summaries[0].ID != "sess-011" {
+		t.Fatalf("第 1 条应为 sess-011，实际 %s", summaries[0].ID)
 	}
 }
 

@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CodePilot</title>
+
+    <!-- 避免浏览器请求 /favicon.ico 触发 404 -->
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23C8A96A'/%3E%3Ctext x='16' y='22' font-family='monospace' font-size='18' font-weight='700' text-anchor='middle' fill='%230A0A0B'%3ECP%3C/text%3E%3C/svg%3E">
+
+    <!-- Google Fonts: JetBrains Mono (display/code) + Geist (body) -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Geist:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <!-- 加载占位：未连上 WebSocket 时显示，Task 6 JS 接入后会隐藏 -->
+    <div id="loading" class="loading-overlay" role="status" aria-live="polite">
+        <div class="loading-inner">
+            <div class="loading-spinner" aria-hidden="true"></div>
+            <div class="loading-text">CONNECTING TO CODEPILOT</div>
+        </div>
+    </div>
+
+    <div id="app">
+
+        <!-- 顶部信息栏 -->
+        <header class="topbar" role="banner">
+            <div class="topbar-brand">
+                <span class="topbar-logo" aria-hidden="true">CP</span>
+                <span>CodePilot</span>
+                <span class="topbar-version" id="version-badge" title="当前版本">v1.0.1</span>
+            </div>
+
+            <span class="topbar-divider" aria-hidden="true"></span>
+
+            <div class="topbar-meta">
+                <span class="topbar-meta-label">开源地址:</span>
+                <a href="https://github.com/MeiCorl/CodePilot" target="_blank" rel="noopener">github.com/MeiCorl/CodePilot</a>
+                <span class="topbar-divider" aria-hidden="true"></span>
+                <span class="topbar-meta-label">当前工作路径:</span>
+                <span id="workspace-path" title="CodePilot 启动时所在的工作目录">--</span>
+            </div>
+
+            <div class="topbar-spacer"></div>
+
+            <div class="topbar-status" aria-live="polite">
+                <span id="agent-status-text">就绪</span>
+                <span id="agent-status-dot" class="status-dot" data-status="idle" aria-hidden="true"></span>
+            </div>
+        </header>
+
+        <!-- 左侧会话历史 -->
+        <aside class="sidebar" role="complementary" aria-label="会话历史">
+            <div class="sidebar-header">
+                <span class="sidebar-title">Sessions</span>
+                <button id="new-session-btn" class="sidebar-new" type="button" title="新建会话">+ NEW</button>
+            </div>
+            <div id="session-list" class="sidebar-list" role="list">
+                <div class="sidebar-empty">
+                    尚无历史会话<br>
+                    <span style="color: var(--fg-faint)">新建一次对话后会自动出现在这里</span>
+                </div>
+            </div>
+        </aside>
+
+        <!-- 中部主区 -->
+        <main class="main" role="main">
+            <div class="main-header">
+                <span class="main-header-title" id="current-session-title">CURRENT SESSION</span>
+                <span class="main-header-meta" id="current-session-meta">--</span>
+            </div>
+
+            <div id="messages" class="messages" role="log" aria-live="polite" aria-label="对话消息流">
+                <div class="messages-empty">
+                    <span class="messages-empty-logo" aria-hidden="true">CP</span>
+                    <span class="messages-empty-title">准备好开始一次新对话</span>
+                    <span class="messages-empty-hint">
+                        直接输入消息后按 <kbd>Enter</kbd> 发送<br>
+                        <kbd>Shift</kbd> + <kbd>Enter</kbd> 换行<br>
+                        输入 <kbd>/</kbd> 唤出快捷命令（/new · /sessions · /resume · /clear）
+                    </span>
+                </div>
+            </div>
+
+            <div class="inputbar" role="form" aria-label="消息输入">
+                <div class="inputbar-wrap">
+                    <textarea
+                        id="input"
+                        rows="3"
+                        placeholder="向 CodePilot 提问，或输入 / 唤出命令…"
+                        aria-label="消息输入框"
+                    ></textarea>
+                    <div class="inputbar-hint">
+                        <span>
+                            <kbd>Enter</kbd> 发送 ·
+                            <kbd>Shift</kbd>+<kbd>Enter</kbd> 换行 ·
+                            <kbd>/</kbd> 命令
+                        </span>
+                        <span id="char-count">0</span>
+                    </div>
+                </div>
+
+                <div class="inputbar-side">
+                    <div class="inputbar-stat" data-status="idle">
+                        <span class="inputbar-stat-label">model</span>
+                        <span class="inputbar-stat-value" id="model-name">--</span>
+                    </div>
+                    <div class="inputbar-stat">
+                        <span class="inputbar-stat-label">ctx left</span>
+                        <span class="inputbar-stat-value" id="ctx-percent">100%</span>
+                    </div>
+                    <button id="send-btn" class="send-btn" type="button" title="发送 (Enter)">
+                        <span>Send</span>
+                    </button>
+                </div>
+            </div>
+        </main>
+
+    </div>
+
+    <!-- Task 6 接入 marked.js 与 app.js -->
+    <script src="/vendor/marked.min.js" defer></script>
+    <script src="/app.js" defer></script>
+</body>
+</html>

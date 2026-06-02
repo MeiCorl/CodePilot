@@ -71,6 +71,15 @@ func NewSessionManager() (*SessionManager, error) {
 	return &SessionManager{sessionsDir: sessionsDir}, nil
 }
 
+// NewSessionManagerWithDir 使用指定目录创建会话管理器，供测试与自定义部署使用。
+// 目录不存在时会自动创建。
+func NewSessionManagerWithDir(dir string) (*SessionManager, error) {
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return nil, fmt.Errorf("创建会话目录失败: %w", err)
+	}
+	return &SessionManager{sessionsDir: dir}, nil
+}
+
 // CreateNew 创建一个新的空会话，生成 UUID 作为标识。
 func (sm *SessionManager) CreateNew() *Session {
 	now := time.Now()
@@ -160,6 +169,23 @@ func (sm *SessionManager) LoadLatest() (*Session, error) {
 // 对每个会话文件做轻量解析，仅读取元信息和首条用户消息预览，
 // 避免反序列化完整消息列表。损坏的文件跳过并记录日志。
 func (sm *SessionManager) ListSessions() ([]SessionSummary, error) {
+	return sm.listSessionsSorted(0, false)
+}
+
+// ListRecentSessions 返回最近创建的 limit 个会话摘要，按 CreatedAt 降序。
+// limit <= 0 时使用默认值 10。
+// 适用于「最近会话」表格等只需展示少量最新会话的场景。
+func (sm *SessionManager) ListRecentSessions(limit int) ([]SessionSummary, error) {
+	if limit <= 0 {
+		limit = 10
+	}
+	return sm.listSessionsSorted(limit, true)
+}
+
+// listSessionsSorted 是 ListSessions / ListRecentSessions 的内部实现。
+// byCreatedAt=true 时按 CreatedAt 降序，否则按 UpdatedAt 降序；
+// limit<=0 表示不限制数量。
+func (sm *SessionManager) listSessionsSorted(limit int, byCreatedAt bool) ([]SessionSummary, error) {
 	entries, err := os.ReadDir(sm.sessionsDir)
 	if err != nil {
 		return nil, fmt.Errorf("读取会话目录失败: %w", err)
@@ -181,10 +207,21 @@ func (sm *SessionManager) ListSessions() ([]SessionSummary, error) {
 		summaries = append(summaries, *summary)
 	}
 
-	// 按 UpdatedAt 降序排列
-	sort.Slice(summaries, func(i, j int) bool {
-		return summaries[i].UpdatedAt.After(summaries[j].UpdatedAt)
-	})
+	// 按指定字段降序排列
+	if byCreatedAt {
+		sort.Slice(summaries, func(i, j int) bool {
+			return summaries[i].CreatedAt.After(summaries[j].CreatedAt)
+		})
+	} else {
+		sort.Slice(summaries, func(i, j int) bool {
+			return summaries[i].UpdatedAt.After(summaries[j].UpdatedAt)
+		})
+	}
+
+	// 截取前 limit 条
+	if limit > 0 && len(summaries) > limit {
+		summaries = summaries[:limit]
+	}
 
 	return summaries, nil
 }

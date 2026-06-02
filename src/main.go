@@ -1,73 +1,200 @@
 // Package main 是 CodePilot 终端 AI Coding Agent 的程序入口。
-// 负责启动流程的编排：日志初始化 → 配置加载 → Provider 初始化 →
-// 会话恢复 → TUI 界面启动，以及退出时的资源清理。
+//
+// 启动链路：
+//  1. 初始化文件日志（失败不阻塞主流程）
+//  2. 加载 ~/.codepilot/config.json 配置
+//  3. 按配置构造 LLM Provider
+//  4. 创建会话管理器（自动恢复最近一个会话）
+//  5. 启动 HTTP + WebSocket 服务，监听本机回环地址；端口由操作系统
+//     自动分配（127.0.0.1:0），支持同时启动多个 CodePilot 进程
+//  6. 通过 server.Ready() 等待 listen 完成后，再以真实端口调用系统
+//     默认浏览器打开交互页面（失败仅警告）
+//  7. 浏览器成功打开后，自动隐藏 Windows 终端窗口（其他平台 no-op），
+//     让 CodePilot 在后台静默运行
+//  8. 阻塞等待以下任一触发以进入退出流程：
+//     - SIGINT / SIGTERM 信号（终端 Ctrl+C）
+//     - Web 服务运行异常
+//     - 浏览器窗口关闭后等待 browserExitGracePeriod 无新连接恢复
+//
+// 退出流程：取消 runCtx → Server.Start 内部完成 Shutdown →
+// 关闭 WebSocket 连接、关闭文件日志、返回进程退出码 0。
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"go.uber.org/zap"
 
 	"github.com/MeiCorl/CodePilot/src/internal/config"
-	"github.com/MeiCorl/CodePilot/src/internal/engine/conversation"
-	"github.com/MeiCorl/CodePilot/src/internal/interaction/tui"
+	"github.com/MeiCorl/CodePilot/src/internal/interaction/web"
 	"github.com/MeiCorl/CodePilot/src/internal/logger"
 	"github.com/MeiCorl/CodePilot/src/internal/memory/session"
+	"github.com/MeiCorl/CodePilot/src/internal/runtime/console"
 	"github.com/MeiCorl/CodePilot/src/llm"
 )
 
-func main() {
-	// 1. 初始化日志系统（失败不阻塞启动，降级为无日志模式）
-	if err := logger.Init(); err != nil {
-		fmt.Fprintf(os.Stderr, "警告: 日志初始化失败 (%v)，继续运行...\n", err)
-	}
-	defer logger.Sync()
+const (
+	// defaultMaxRounds 滑动窗口默认保留的最大对话轮数。
+	// 50 轮 ≈ 100 条消息，足以覆盖大多数会话；Step 7 上下文管理将替换为完整策略。
+	defaultMaxRounds = 50
 
-	// 2. 加载配置文件
-	cfg, err := config.Load()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "错误: %s\n", err)
+	// browserExitGracePeriod 浏览器关闭后等待新连接恢复的宽限期。
+	// 浏览器刷新或暂时断网时 WebSocket 都会断开，但很快会重连；
+	// 超过该宽限期仍无新连接则认定用户已关闭浏览器窗口，触发进程退出。
+	browserExitGracePeriod = 5 * time.Second
+)
+
+func main() {
+	if err := run(); err != nil {
+		fmt.Fprintln(os.Stderr, "[error]", err)
 		os.Exit(1)
 	}
-	logger.Info("配置加载成功",
+}
+
+// run 是主流程入口；返回 error 表示启动或运行过程中发生不可恢复错误。
+// 拆出独立函数便于在测试中调用（虽然 step1.1 暂未引入 main 测试）。
+func run() error {
+	// 1. 初始化文件日志
+	if err := logger.Init(); err != nil {
+		fmt.Fprintf(os.Stderr, "[warning] 日志初始化失败，将不写文件日志: %v\n", err)
+	}
+	defer logger.Sync()
+	defer logger.Close()
+
+	// 2. 加载配置
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	logger.Info("配置加载完成",
 		zap.String("provider", cfg.Provider),
 		zap.String("model", cfg.Model),
 	)
 
-	// 3. 根据配置创建 LLM Provider 实例
+	// 3. 初始化 LLM Provider
 	provider, err := llm.NewProvider(cfg)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "错误: Provider 初始化失败: %s\n", err)
-		os.Exit(1)
+		return fmt.Errorf("初始化 LLM Provider 失败: %w", err)
 	}
-	logger.Info("Provider 初始化成功", zap.String("provider", cfg.Provider))
 
-	// 4. 创建对话管理器（50 轮对话窗口）
-	convMgr := conversation.NewConversationManager(50)
-
-	// 5. 创建会话管理器，尝试恢复上次会话
+	// 4. 创建会话管理器（内部自动加载最近会话）
 	sessMgr, err := session.NewSessionManager()
 	if err != nil {
-		logger.Warn("创建会话管理器失败", zap.Error(err))
+		return fmt.Errorf("创建会话管理器失败: %w", err)
 	}
 
-	var sess *session.Session
-	if sessMgr != nil {
-		sess, _ = sessMgr.LoadLatest()
-		if sess != nil {
-			logger.Info("恢复上次会话", zap.String("session_id", sess.ID))
+	// 5. 获取启动时所在工作目录，顶栏展示用
+	workdir, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("获取当前工作目录失败: %w", err)
+	}
+	logger.Info("工作目录", zap.String("workdir", workdir))
+
+	// 6. 构造 Handler / Server
+	// 使用 DefaultAddr（127.0.0.1:0）让 OS 自动分配端口，
+	// 这样多个项目下可同时启动多个 CodePilot 进程互不冲突。
+	handler := web.NewHandler(provider, sessMgr, cfg, defaultMaxRounds, "", 0, workdir)
+	server := web.NewServer(web.DefaultAddr)
+	handler.Register(server.Router())
+
+	// 7. 异步启动 Web 服务
+	runCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	serverErrCh := make(chan error, 1)
+	go func() {
+		if err := server.Start(runCtx); err != nil {
+			serverErrCh <- err
 		}
+		close(serverErrCh)
+	}()
+
+	// 8. 等待 server 真正完成 listen 后，再用真实端口打开浏览器。
+	// Ready 与 serverErrCh 同时监听：listen 失败时不会一直阻塞。
+	select {
+	case <-server.Ready():
+		openURL := "http://" + server.Addr()
+		if err := web.OpenURL(openURL); err != nil {
+			fmt.Fprintf(os.Stderr, "[warning] 无法自动打开浏览器，请手动访问 %s: %v\n", openURL, err)
+			logger.Warn("自动打开浏览器失败", zap.String("url", openURL), zap.Error(err))
+		} else {
+			fmt.Fprintf(os.Stdout, "[info] CodePilot 已启动，访问地址：%s\n", openURL)
+			logger.Info("已请求打开浏览器", zap.String("url", openURL))
+		}
+	case err := <-serverErrCh:
+		// listen 还没成功 server 就已退出（典型场景：端口被占用等）。
+		if err != nil {
+			return fmt.Errorf("Web 服务启动失败: %w", err)
+		}
+		return nil
 	}
 
-	// 6. 创建 TUI 主模型，注入所有依赖
-	model := tui.NewAppModel(provider, convMgr, sessMgr, cfg, sess)
-
-	// 7. 启动 Bubble Tea 程序（启用鼠标事件捕获，支持滚轮滚动、文本选择和右键粘贴）
-	p := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())
-	if _, err := p.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "程序运行出错: %s\n", err)
-		os.Exit(1)
+	// 9. 浏览器已弹出，隐藏 Windows 终端窗口，让 CodePilot 在后台静默运行。
+	// 非 Windows 平台 / 进程无控制台时该调用为 no-op，不会报错。
+	// 若有需要查看日志，用户可在启动后通过任务管理器打开控制台或查看文件日志。
+	if console.Visible() {
+		console.Hide()
+		logger.Info("已隐藏终端窗口，CodePilot 在后台运行")
 	}
+
+	// 10. 启动后台 goroutine 监听"浏览器关闭"事件：所有 WebSocket
+	// 断开后等一个宽限期，期间若有新连接恢复则重置 timer；
+	// 宽限期到仍无新连接则向主 select 发送 trigger 触发退出。
+	// 这样既能容忍浏览器刷新/暂时断网，也能在用户真正关闭窗口时自动退出。
+	allClosedTrigger := make(chan struct{}, 1)
+	go func() {
+		ch := server.ConnectionManager().AllClosed()
+		for {
+			// 等待一次"活跃连接数 1→0"事件
+			<-ch
+			timer := time.NewTimer(browserExitGracePeriod)
+			// 宽限期内若再次收到断开事件（重连后又断开），重置 timer
+			select {
+			case <-ch:
+				timer.Stop()
+				continue
+			case <-timer.C:
+				select {
+				case allClosedTrigger <- struct{}{}:
+				default:
+				}
+				return
+			}
+		}
+	}()
+
+	// 11. 等待信号或服务异常
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
+
+	select {
+	case sig := <-sigCh:
+		logger.Info("收到退出信号，开始优雅退出", zap.String("signal", sig.String()))
+	case err := <-serverErrCh:
+		if err != nil {
+			return fmt.Errorf("Web 服务运行出错: %w", err)
+		}
+		// server 自然结束（一般由 ctx 取消触发），正常退出
+		return nil
+	case <-allClosedTrigger:
+		logger.Info("浏览器窗口已关闭，宽限期内无新连接，自动退出",
+			zap.Duration("grace", browserExitGracePeriod),
+		)
+	}
+
+	// 12. 触发 server 关闭并等待 goroutine 退出
+	cancel()
+	if err := <-serverErrCh; err != nil {
+		logger.Warn("Web 服务退出时返回错误", zap.Error(err))
+	}
+	logger.Info("CodePilot 已退出",
+		zap.String("current_session", handler.CurrentSessionID()),
+	)
+	return nil
 }

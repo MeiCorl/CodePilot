@@ -48,6 +48,15 @@ func (m *ConversationManager) AddAssistantMessage(content string) {
 	})
 }
 
+// Reset 用给定消息替换完整对话历史。
+// 用于恢复历史会话时把磁盘加载的消息注入到管理器；调用后
+// 后续 AddXxx / GetContext / AllMessages 均以新历史为基础。
+// 传入 nil 等价于清空历史。
+func (m *ConversationManager) Reset(messages []llm.Message) {
+	m.history = make([]llm.Message, len(messages))
+	copy(m.history, messages)
+}
+
 // GetContext 返回发送给 LLM 的上下文窗口视图。
 // systemPrompt 作为第一条 System 消息固定在最前，其余为滑动窗口派生的最近 N 轮对话。
 // 注意：返回结果是经过窗口裁剪的视图，不一定是完整历史；持久化请使用 AllMessages。
