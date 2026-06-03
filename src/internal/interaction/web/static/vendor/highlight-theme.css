@@ -1,0 +1,46 @@
+/* ============================================================================
+ * CodePilot · Highlight.js 暗色主题
+ * 基于 atom-one-dark 改写：背景透明、token 颜色对齐 design token
+ * (琥珀金 #C8A96A 强调 keyword、思考蓝 #61AFEF 函数名、绿色 #98C379 字符串)
+ * 严禁使用 atom-one-dark 默认的紫色 #c678dd
+ * ========================================================================== */
+
+pre code.hljs{display:block;overflow-x:auto;padding:1em}code.hljs{padding:3px 5px}
+
+/* 容器背景透明，由 .code-block 提供；默认前景沿用 design token */
+.hljs{color:var(--fg);background:transparent}
+
+/* 注释：低饱和度灰 + 斜体 */
+.hljs-comment,.hljs-quote{color:var(--fg-faint);font-style:italic}
+
+/* keyword / 内置函数 / 标签：琥珀金强调（替代 #c678dd 紫） */
+.hljs-doctag,.hljs-formula,.hljs-keyword,.hljs-built_in,.hljs-tag{color:var(--accent)}
+
+/* 名称 / 段落标题 / 选择器 / section：暖红强调（沿用 error 调，体现"数据/类名"） */
+.hljs-deletion,.hljs-name,.hljs-section,.hljs-selector-tag,.hljs-subst{color:var(--error)}
+
+/* 字面量：思考蓝（int / bool / null） */
+.hljs-literal,.hljs-symbol{color:var(--thinking)}
+
+/* 字符串 / 属性 / 正则：绿色 */
+.hljs-addition,.hljs-attribute,.hljs-meta .hljs-string,.hljs-regexp,.hljs-string{color:var(--success)}
+
+/* 属性名 / 数字 / 选择器属性 / 类型 / 变量：琥珀亮色 */
+.hljs-attr,.hljs-number,.hljs-selector-attr,.hljs-selector-class,.hljs-selector-pseudo,.hljs-template-variable,.hljs-type,.hljs-variable{color:var(--accent-bright)}
+
+/* 链接 / meta / 标题 / 列表符 / 选择器 id：思考蓝 */
+.hljs-bullet,.hljs-link,.hljs-meta,.hljs-selector-id,.hljs-title{color:var(--thinking)}
+
+/* 类名 / 标题中的 class 部分：暖黄（与 .hljs-literal 错开） */
+.hljs-class .hljs-title,.hljs-title.class_{color:#E5C07B}
+
+/* 函数调用标题：思考蓝（让 func() 一眼可辨） */
+.hljs-title.function_{color:var(--thinking)}
+
+/* 强调 */
+.hljs-emphasis{font-style:italic}
+.hljs-strong{font-weight:700}
+.hljs-link{text-decoration:underline}
+
+/* JSON 专属：键名走琥珀亮色，标点符号走 fg-muted 降噪 */
+.hljs-meta{color:var(--fg-muted)}

@@ -655,6 +655,83 @@ body {
     line-height: 1.6;
 }
 
+/* ===== Step 1.2: 代码块增强（语言标签 / 复制按钮 / JSON 校验） ===== */
+/* 容器改为 relative，header 绝对定位；padding-top 36px 给 header 留位 */
+.message-assistant .message-bubble pre.code-block {
+    position: relative;
+    padding-top: 36px;
+}
+
+/* header：28px 高的灰底条，左侧语言标签、右侧 Copy 按钮 */
+.code-block-header {
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    padding: 0 var(--sp-3);
+    background: rgba(0, 0, 0, 0.30);
+    border-bottom: 1px solid var(--border);
+    border-radius: var(--r-md) var(--r-md) 0 0;
+    font-family: var(--font-mono);
+    font-size: var(--fs-xs);
+    z-index: 1;
+}
+
+.code-lang {
+    color: var(--fg-muted);
+    text-transform: lowercase;
+    letter-spacing: 0.05em;
+    user-select: none;
+}
+
+.copy-btn {
+    margin-left: auto;
+    background: transparent;
+    border: 0;
+    color: var(--fg-muted);
+    cursor: pointer;
+    padding: 2px 8px;
+    border-radius: var(--r-sm);
+    font: inherit;
+    line-height: 1;
+    transition: color var(--dur-fast) var(--ease-out),
+                background var(--dur-fast) var(--ease-out);
+}
+.copy-btn:hover {
+    color: var(--accent);
+    background: var(--bg-hover);
+}
+.copy-btn:focus-visible {
+    outline: 1px solid var(--accent);
+    outline-offset: 1px;
+}
+.copy-btn.is-copied {
+    color: var(--success);
+}
+
+/* JSON 校验：成功角标（绿） */
+.json-valid {
+    margin-left: var(--sp-2);
+    color: var(--success);
+    font-size: var(--fs-xs);
+    font-family: var(--font-mono);
+    user-select: none;
+}
+
+/* JSON 校验：失败错误条（紧贴 pre 下方） */
+.json-error {
+    border-left: 3px solid var(--error);
+    background: var(--error-dim);
+    color: var(--error);
+    padding: 6px 12px;
+    font-family: var(--font-mono);
+    font-size: var(--fs-xs);
+    margin: -8px 0 var(--sp-3) 0;
+    border-radius: 0 0 var(--r-md) var(--r-md);
+    line-height: 1.5;
+}
+
 .message-assistant .message-bubble ul,
 .message-assistant .message-bubble ol {
     margin: 0 0 var(--sp-3) 0;

@@ -570,6 +570,7 @@
                 bubble.textContent = content;
             } else {
                 bubble.innerHTML = renderMarkdown(content);
+                enhanceCodeBlocks(bubble);
             }
         }
         wrap.appendChild(bubble);
@@ -639,6 +640,7 @@
         const bubble = state._streamingWrap.querySelector('.message-bubble');
         const text = state._streamingBuffer || '';
         bubble.innerHTML = renderMarkdown(text);
+        enhanceCodeBlocks(bubble);
         // 把流式消息固化为普通消息
         state.messages.push({ role: 'assistant', content: text });
         state._streamingWrap = null;
@@ -647,15 +649,158 @@
     }
 
     // ---- Markdown 渲染 ----
-
+    // 顺序：marked.parse → DOMPurify.sanitize；hljs 不在字符串阶段处理，
+    // 避免 DOMPurify 误伤 hljs 的 token span。XSS 防护 + 语法高亮职责分离。
     function renderMarkdown(text) {
         if (!text) return '';
         try {
-            // marked v15 同步返回 string
-            return window.marked.parse(text);
+            const raw = window.marked.parse(text);
+            return window.DOMPurify.sanitize(raw, {
+                // 保留 class：hljs 依赖 class="hljs-keyword" 等做样式
+                ADD_ATTR: ['class'],
+                // 显式禁止高危标签，<img onerror> 等通过 on* 过滤默认就拦了
+                FORBID_TAGS: ['style', 'iframe', 'script'],
+            });
         } catch (err) {
             console.error('Markdown 渲染失败', err);
             return escapeHTML(text);
+        }
+    }
+
+    // ---- 代码块增强（高亮 + 语言标签 + 复制 + JSON 校验） ----
+    // 仅在 bubble.innerHTML 赋值后调用一次。流式响应过程中不调用（避免半截代码闪烁）。
+
+    // 解析 ``` 围栏代码块的语言；无则返回 'plain'。
+    function extractCodeLang(codeEl) {
+        const m = (codeEl.className || '').match(/language-([\w+-]+)/);
+        return m ? m[1].toLowerCase() : 'plain';
+    }
+
+    // 给单个 <pre> 节点注入顶部 header（语言标签 + 复制按钮）。
+    // 全程 createElement，零字符串拼接，避免二次 XSS。
+    function buildCodeHeader(lang, codeEl) {
+        const header = document.createElement('div');
+        header.className = 'code-block-header';
+
+        const langLabel = document.createElement('span');
+        langLabel.className = 'code-lang';
+        langLabel.textContent = lang;
+        header.appendChild(langLabel);
+
+        const copyBtn = document.createElement('button');
+        copyBtn.type = 'button';
+        copyBtn.className = 'copy-btn';
+        copyBtn.textContent = 'Copy';
+        copyBtn.title = '复制代码';
+        copyBtn.addEventListener('click', () => copyCode(codeEl, copyBtn));
+        header.appendChild(copyBtn);
+
+        return header;
+    }
+
+    // 异步复制代码块原文到剪贴板。优先用 navigator.clipboard，
+    // http/老浏览器不可用时回退到 execCommand('copy') + 临时 textarea。
+    async function copyCode(codeEl, btnEl) {
+        // dataset.raw 保留的是 hljs 高亮之前的原文
+        const text = codeEl.dataset.raw || codeEl.textContent || '';
+        let ok = false;
+        try {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                await navigator.clipboard.writeText(text);
+                ok = true;
+            }
+        } catch (err) {
+            console.warn('clipboard API 失败，回退 execCommand', err);
+        }
+        if (!ok) {
+            const ta = document.createElement('textarea');
+            ta.value = text;
+            ta.setAttribute('readonly', '');
+            ta.style.position = 'fixed';
+            ta.style.top = '0';
+            ta.style.left = '0';
+            ta.style.opacity = '0';
+            document.body.appendChild(ta);
+            ta.select();
+            try { document.execCommand('copy'); } catch (err) {
+                console.error('execCommand copy 失败', err);
+            } finally { ta.remove(); }
+        }
+        btnEl.textContent = 'Copied';
+        btnEl.classList.add('is-copied');
+        setTimeout(() => {
+            btnEl.textContent = 'Copy';
+            btnEl.classList.remove('is-copied');
+        }, 1500);
+    }
+
+    // 对 ```json 块做格式校验。
+    // 成功：在 header 末尾追加 .json-valid 角标。
+    // 失败：在 pre 后追加 .json-error 条，文字含行/列信息，不替换高亮。
+    function validateJsonBlock(codeEl, preEl) {
+        const raw = codeEl.dataset.raw || '';
+        if (!raw.trim()) return;
+        try {
+            JSON.parse(raw);
+            const badge = document.createElement('span');
+            badge.className = 'json-valid';
+            badge.textContent = '✓ valid';
+            const header = preEl.querySelector('.code-block-header');
+            if (header) header.appendChild(badge);
+        } catch (err) {
+            // V8 / SpiderMonkey 的 JSON.parse 错误信息形如：
+            //   "Unexpected token } in JSON at position 22"
+            // 从中抽 position 算 row/col。位置不可得时回退到 "未知位置"。
+            const posMatch = (err && err.message || '').match(/position\s+(\d+)/i);
+            let row = 1, col = 1;
+            if (posMatch) {
+                const pos = Number(posMatch[1]);
+                const before = raw.slice(0, pos);
+                row = before.split('\n').length;
+                col = pos - (before.lastIndexOf('\n'));
+            } else {
+                row = 0; col = 0;
+            }
+            const bar = document.createElement('div');
+            bar.className = 'json-error';
+            bar.dataset.row = String(row);
+            bar.dataset.col = String(col);
+            const posText = row > 0 ? `第 ${row} 行 第 ${col} 列` : '';
+            bar.textContent = posText
+                ? `JSON 错误 · ${posText} · ${err && err.message ? err.message : String(err)}`
+                : `JSON 错误 · ${err && err.message ? err.message : String(err)}`;
+            preEl.parentNode.insertBefore(bar, preEl.nextSibling);
+        }
+    }
+
+    // enhanceCodeBlocks 是代码块增强的总入口。
+    // 关键时序：先 dataset.raw 存原文（hljs 会改 textContent），再高亮，再 JSON 校验。
+    function enhanceCodeBlocks(bubbleEl) {
+        if (!bubbleEl) return;
+        const blocks = bubbleEl.querySelectorAll('pre > code');
+        if (!blocks.length) return;
+        for (const codeEl of blocks) {
+            const preEl = codeEl.parentElement;
+            if (!preEl) continue;
+            const lang = extractCodeLang(codeEl);
+
+            // 关键：在 hljs.highlightElement 之前保存原文
+            codeEl.dataset.raw = codeEl.textContent;
+
+            preEl.classList.add('code-block');
+            preEl.appendChild(buildCodeHeader(lang, codeEl));
+
+            // hljs.highlightElement 找不到 language 时不强行加 hljs 类（fallback plain）
+            if (lang !== 'plain' && window.hljs) {
+                try {
+                    window.hljs.highlightElement(codeEl);
+                } catch (err) {
+                    console.warn('hljs.highlightElement 失败', err);
+                }
+            }
+            if (lang === 'json') {
+                validateJsonBlock(codeEl, preEl);
+            }
         }
     }
 

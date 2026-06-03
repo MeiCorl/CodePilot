@@ -14,6 +14,7 @@
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Geist:wght@400;500;600;700&display=swap" rel="stylesheet">
 
     <link rel="stylesheet" href="/style.css">
+    <link rel="stylesheet" href="/vendor/highlight-theme.css">
 </head>
 <body>
     <!-- 加载占位：未连上 WebSocket 时显示，Task 6 JS 接入后会隐藏 -->
@@ -31,7 +32,7 @@
             <div class="topbar-brand">
                 <span class="topbar-logo" aria-hidden="true">CP</span>
                 <span>CodePilot</span>
-                <span class="topbar-version" id="version-badge" title="当前版本">v1.0.1</span>
+                <span class="topbar-version" id="version-badge" title="当前版本">v1.0.2</span>
             </div>
 
             <span class="topbar-divider" aria-hidden="true"></span>
@@ -121,8 +122,10 @@
 
     </div>
 
-    <!-- Task 6 接入 marked.js 与 app.js -->
+    <!-- Step 1.2 接入 DOMPurify / marked / highlight.js / app.js，加载顺序固定 -->
+    <script src="/vendor/purify.min.js" defer></script>
     <script src="/vendor/marked.min.js" defer></script>
+    <script src="/vendor/highlight.min.js" defer></script>
     <script src="/app.js" defer></script>
 </body>
 </html>
