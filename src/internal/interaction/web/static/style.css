@@ -29,7 +29,11 @@
     --error:           #E06C75;        /* 错误红 */
     --error-dim:       rgba(224, 108, 117, 0.10);
     --success:         #98C379;        /* 成功绿 */
+    --success-dim:     rgba(152, 195, 121, 0.10);
     --thinking:        #61AFEF;        /* 思考蓝（脉冲点） */
+    --thinking-dim:    rgba(97, 175, 239, 0.10);
+    --warning:         #E5C07B;        /* 警告琥珀（用于 aborted/timeout 态） */
+    --warning-dim:     rgba(229, 192, 123, 0.10);
 
     /* —— 字体（避免 Inter / Roboto / Arial 等通用 AI 字体） —— */
     --font-display:    'JetBrains Mono', 'Berkeley Mono', 'SF Mono', 'Cascadia Code', Consolas, monospace;
@@ -782,6 +786,210 @@ body {
     animation: blink 1s steps(2) infinite;
 }
 @keyframes blink { 50% { opacity: 0; } }
+
+/* ============================================================================
+ * Tool Message — 工具调用展示块（Step 2）
+ * 左侧 2px 状态色竖条 + 头部（工具名 + 状态徽章 + 耗时）+ 折叠区（参数/输出）
+ * ========================================================================== */
+
+.message-tool {
+    align-self: stretch;
+    max-width: 90%;
+    margin: 0;
+    display: flex;
+    align-items: stretch;
+    gap: 0;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    overflow: hidden;
+    font-family: var(--font-mono);
+    font-size: var(--fs-sm);
+    line-height: 1.55;
+}
+
+/* 左侧状态色竖条——根据 data-status 切换颜色 */
+.message-tool::before {
+    content: "";
+    flex-shrink: 0;
+    width: 2px;
+    background: var(--fg-faint);
+}
+.message-tool[data-status="running"]::before    { background: var(--thinking); }
+.message-tool[data-status="completed"]::before  { background: var(--success); }
+.message-tool[data-status="error"]::before      { background: var(--error); }
+.message-tool[data-status="aborted"]::before    { background: var(--warning); }
+.message-tool[data-status="timeout"]::before    { background: var(--warning); }
+
+/* 头部行：点击整行可折叠/展开 */
+.message-tool-header {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: var(--sp-3);
+    padding: var(--sp-3) var(--sp-4);
+    cursor: pointer;
+    user-select: none;
+    transition: background var(--dur-fast) var(--ease-out);
+}
+.message-tool-header:hover { background: var(--bg-hover); }
+
+/* 工具图标方块：与 .message-avatar 直径对齐，但用纯字符表示 */
+.message-tool-icon {
+    width: 22px;
+    height: 22px;
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--r-sm);
+    color: var(--fg-muted);
+    font-size: 11px;
+    font-weight: 700;
+    line-height: 1;
+    letter-spacing: 0;
+}
+.message-tool[data-status="running"] .message-tool-icon   { color: var(--thinking); border-color: var(--thinking); }
+.message-tool[data-status="completed"] .message-tool-icon { color: var(--success); border-color: var(--success); }
+.message-tool[data-status="error"] .message-tool-icon     { color: var(--error); border-color: var(--error); }
+.message-tool[data-status="aborted"] .message-tool-icon   { color: var(--warning); border-color: var(--warning); }
+.message-tool[data-status="timeout"] .message-tool-icon   { color: var(--warning); border-color: var(--warning); }
+
+.message-tool-name {
+    color: var(--fg);
+    font-weight: 600;
+    font-size: var(--fs-sm);
+    letter-spacing: 0.02em;
+    flex-shrink: 0;
+}
+
+/* 状态徽章：紧凑的圆角标签 */
+.message-tool-status {
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: var(--fs-xs);
+    letter-spacing: 0.04em;
+    background: var(--bg);
+    color: var(--fg-muted);
+    border: 1px solid var(--border-strong);
+    text-transform: lowercase;
+    font-family: var(--font-mono);
+    line-height: 1.4;
+    flex-shrink: 0;
+}
+.message-tool[data-status="running"] .message-tool-status {
+    color: var(--thinking);
+    background: var(--thinking-dim);
+    border-color: var(--thinking);
+}
+.message-tool[data-status="running"] .message-tool-status::before {
+    content: "";
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--thinking);
+    margin-right: 5px;
+    vertical-align: middle;
+    animation: thinkingBounce 1.2s var(--ease-out) infinite;
+}
+.message-tool[data-status="completed"] .message-tool-status {
+    color: var(--success);
+    background: var(--success-dim);
+    border-color: var(--success);
+}
+.message-tool[data-status="error"] .message-tool-status {
+    color: var(--error);
+    background: var(--error-dim);
+    border-color: var(--error);
+}
+.message-tool[data-status="aborted"] .message-tool-status,
+.message-tool[data-status="timeout"] .message-tool-status {
+    color: var(--warning);
+    background: var(--warning-dim);
+    border-color: var(--warning);
+}
+
+.message-tool-duration {
+    margin-left: auto;
+    color: var(--fg-dim);
+    font-size: var(--fs-xs);
+    letter-spacing: 0.04em;
+    flex-shrink: 0;
+}
+
+/* 展开/折叠箭头 */
+.message-tool-toggle {
+    width: 18px;
+    height: 18px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--fg-dim);
+    transition: transform var(--dur-fast) var(--ease-out);
+    flex-shrink: 0;
+}
+.message-tool[data-expanded="true"] .message-tool-toggle {
+    transform: rotate(90deg);
+}
+.message-tool-toggle::before {
+    content: "▶";
+    font-size: 9px;
+    line-height: 1;
+}
+
+/* 折叠区：参数 + 输出 */
+.message-tool-details {
+    display: none;
+    padding: 0 var(--sp-4) var(--sp-3) var(--sp-4);
+    border-top: 1px dashed var(--border);
+    background: var(--bg);
+    font-size: var(--fs-xs);
+    color: var(--fg-muted);
+}
+.message-tool[data-expanded="true"] .message-tool-details {
+    display: block;
+}
+
+.message-tool-section {
+    margin-top: var(--sp-3);
+}
+.message-tool-section:first-child {
+    margin-top: var(--sp-3);
+}
+
+.message-tool-section-label {
+    display: block;
+    color: var(--fg-dim);
+    font-size: var(--fs-xs);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin-bottom: var(--sp-2);
+}
+
+.message-tool-section pre {
+    margin: 0;
+    padding: var(--sp-3);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--r-sm);
+    color: var(--fg);
+    font-family: var(--font-mono);
+    font-size: var(--fs-xs);
+    line-height: 1.6;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 360px;
+    overflow: auto;
+}
+.message-tool-section pre.message-tool-output-error {
+    border-color: var(--error);
+    background: var(--error-dim);
+    color: var(--error);
+}
+
 
 /* 错误卡片 */
 .error-card {

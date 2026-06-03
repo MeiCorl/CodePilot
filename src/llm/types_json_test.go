@@ -122,3 +122,202 @@ func TestMessageMarshalEmptyContent(t *testing.T) {
 		t.Fatalf("空 Content 反序列化后应为空数组")
 	}
 }
+
+// ---- ToolUseBlock / ToolResultBlock 相关测试 ----
+
+// TestToolUseBlockType 验证 ToolUseBlock 的类型标识与文本表示。
+func TestToolUseBlockType(t *testing.T) {
+	input := json.RawMessage(`{"file_path":"main.go"}`)
+	block := NewToolUseBlock("call_001", "read_file", input)
+	if block.Type() != ContentBlockTypeToolUse {
+		t.Errorf("Type 错误: %s", block.Type())
+	}
+	got := block.ToText()
+	if got != "tool_use(read_file, id=call_001)" {
+		t.Errorf("ToText 错误: %s", got)
+	}
+}
+
+// TestToolResultBlockType 验证 ToolResultBlock 的类型标识与文本表示。
+func TestToolResultBlockType(t *testing.T) {
+	ok := NewToolResultBlock("call_001", "file content", false)
+	if ok.Type() != ContentBlockTypeToolResult {
+		t.Errorf("Type 错误: %s", ok.Type())
+	}
+	if ok.ToText() != "file content" {
+		t.Errorf("成功结果 ToText 错误: %s", ok.ToText())
+	}
+
+	fail := NewToolResultBlock("call_002", "file not found", true)
+	if fail.ToText() != "error: file not found" {
+		t.Errorf("失败结果 ToText 错误: %s", fail.ToText())
+	}
+}
+
+// TestMessageRoundTripToolUse 验证 ToolUseBlock 序列化往返保留 id/name/input。
+func TestMessageRoundTripToolUse(t *testing.T) {
+	input := json.RawMessage(`{"file_path":"src/main.go","offset":10}`)
+	orig := Message{
+		Role: RoleAssistant,
+		Content: []ContentBlock{
+			NewTextBlock("我需要读取文件"),
+			NewToolUseBlock("call_abc", "read_file", input),
+		},
+	}
+	data, err := json.Marshal(orig)
+	if err != nil {
+		t.Fatalf("Marshal 失败: %v", err)
+	}
+
+	// 校验序列化结果包含 type 字段与必要子字段
+	s := string(data)
+	for _, want := range []string{
+		`"type":"text"`,
+		`"type":"tool_use"`,
+		`"id":"call_abc"`,
+		`"name":"read_file"`,
+		`"file_path":"src/main.go"`,
+	} {
+		if !contains(s, want) {
+			t.Errorf("序列化结果缺少字段 %s: %s", want, s)
+		}
+	}
+
+	var got Message
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal 失败: %v", err)
+	}
+	if len(got.Content) != 2 {
+		t.Fatalf("Content 长度错误: %d", len(got.Content))
+	}
+	tub, ok := got.Content[1].(*ToolUseBlock)
+	if !ok {
+		t.Fatalf("Content[1] 应为 *ToolUseBlock, 实际 %T", got.Content[1])
+	}
+	if tub.ID != "call_abc" {
+		t.Errorf("ID 错误: %s", tub.ID)
+	}
+	if tub.Name != "read_file" {
+		t.Errorf("Name 错误: %s", tub.Name)
+	}
+	if string(tub.Input) != string(input) {
+		t.Errorf("Input 错误: %s", tub.Input)
+	}
+}
+
+// TestMessageRoundTripToolResult 验证 ToolResultBlock 序列化往返保留 tool_use_id/content/is_error。
+func TestMessageRoundTripToolResult(t *testing.T) {
+	orig := Message{
+		Role: RoleUser,
+		Content: []ContentBlock{
+			NewToolResultBlock("call_abc", "main.go 第一行内容", false),
+		},
+	}
+	data, err := json.Marshal(orig)
+	if err != nil {
+		t.Fatalf("Marshal 失败: %v", err)
+	}
+
+	s := string(data)
+	for _, want := range []string{
+		`"type":"tool_result"`,
+		`"tool_use_id":"call_abc"`,
+		`"content":"main.go 第一行内容"`,
+		`"is_error":false`,
+	} {
+		if !contains(s, want) {
+			t.Errorf("序列化结果缺少字段 %s: %s", want, s)
+		}
+	}
+
+	var got Message
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal 失败: %v", err)
+	}
+	trb, ok := got.Content[0].(*ToolResultBlock)
+	if !ok {
+		t.Fatalf("Content[0] 应为 *ToolResultBlock, 实际 %T", got.Content[0])
+	}
+	if trb.ToolUseID != "call_abc" {
+		t.Errorf("ToolUseID 错误: %s", trb.ToolUseID)
+	}
+	if trb.Content != "main.go 第一行内容" {
+		t.Errorf("Content 错误: %s", trb.Content)
+	}
+	if trb.IsError {
+		t.Error("IsError 应为 false")
+	}
+}
+
+// TestMessageRoundTripMixedAssistant 验证 assistant 消息同时含 text + tool_use，常见一次 LLM 响应。
+func TestMessageRoundTripMixedAssistant(t *testing.T) {
+	orig := Message{
+		Role: RoleAssistant,
+		Content: []ContentBlock{
+			NewTextBlock("我来读取文件。"),
+			NewToolUseBlock("call_001", "read_file", json.RawMessage(`{"file_path":"a.go"}`)),
+			NewToolUseBlock("call_002", "read_file", json.RawMessage(`{"file_path":"b.go"}`)),
+		},
+	}
+	data, err := json.Marshal(orig)
+	if err != nil {
+		t.Fatalf("Marshal 失败: %v", err)
+	}
+	var got Message
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal 失败: %v", err)
+	}
+	if len(got.Content) != 3 {
+		t.Fatalf("Content 长度错误: %d", len(got.Content))
+	}
+	if got.Content[0].ToText() != "我来读取文件。" {
+		t.Errorf("Content[0] 文本错误: %s", got.Content[0].ToText())
+	}
+	for i, expectedID := range []string{"call_001", "call_002"} {
+		tub, ok := got.Content[i+1].(*ToolUseBlock)
+		if !ok {
+			t.Fatalf("Content[%d] 应为 *ToolUseBlock", i+1)
+		}
+		if tub.ID != expectedID {
+			t.Errorf("Content[%d] ID 错误: %s", i+1, tub.ID)
+		}
+	}
+}
+
+// TestMessageUnmarshalToolResultError 验证 IsError=true 的 tool_result 正确往返。
+func TestMessageUnmarshalToolResultError(t *testing.T) {
+	orig := Message{
+		Role: RoleUser,
+		Content: []ContentBlock{
+			NewToolResultBlock("call_xyz", "permission denied", true),
+		},
+	}
+	data, err := json.Marshal(orig)
+	if err != nil {
+		t.Fatalf("Marshal 失败: %v", err)
+	}
+	var got Message
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal 失败: %v", err)
+	}
+	trb := got.Content[0].(*ToolResultBlock)
+	if !trb.IsError {
+		t.Error("IsError 应为 true")
+	}
+	if trb.Content != "permission denied" {
+		t.Errorf("Content 错误: %s", trb.Content)
+	}
+}
+
+// contains 字符串包含判断，测试代码保持极简不引 strings 包。
+func contains(s, sub string) bool {
+	if len(sub) == 0 {
+		return true
+	}
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
+}

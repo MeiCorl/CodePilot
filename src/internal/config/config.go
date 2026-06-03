@@ -26,6 +26,21 @@ type Config struct {
 	Timeout int `json:"timeout,omitempty"`
 	// MaxRetries 为最大重试次数，默认 2
 	MaxRetries int `json:"max_retries,omitempty"`
+	// Tools 控制工具系统的启用与开关
+	Tools ToolsConfig `json:"tools"`
+	// ToolExecutionTimeoutSeconds 为单次工具执行的超时秒数，默认 30
+	ToolExecutionTimeoutSeconds int `json:"tool_execution_timeout_seconds,omitempty"`
+	// ToolWorkingDirectory 为工具系统的沙箱根目录；留空则取进程启动时的工作目录
+	ToolWorkingDirectory string `json:"tool_working_directory,omitempty"`
+}
+
+// ToolsConfig 是工具系统的配置项。
+//
+// Enabled 列表为空时视为"启用全部已注册工具"；否则按 Name 白名单过滤。
+// 未在白名单中、但已注册的工具既不会发给 LLM，也不会被 ToolHandler 执行。
+type ToolsConfig struct {
+	// Enabled 为启用的工具名白名单，Name 必须与 Tool.Name() 一致
+	Enabled []string `json:"enabled,omitempty"`
 }
 
 // 合法的供应商列表
@@ -35,8 +50,9 @@ var supportedProviders = map[string]bool{
 }
 
 const (
-	defaultTimeout    = 60
-	defaultMaxRetries = 2
+	defaultTimeout                 = 60
+	defaultMaxRetries              = 2
+	defaultToolExecutionTimeoutSec = 30
 )
 
 // Load 从 ~/.codepilot/config.json 加载配置文件。
@@ -85,6 +101,9 @@ func (c *Config) setDefaults() {
 	}
 	if c.MaxRetries == 0 {
 		c.MaxRetries = defaultMaxRetries
+	}
+	if c.ToolExecutionTimeoutSeconds == 0 {
+		c.ToolExecutionTimeoutSeconds = defaultToolExecutionTimeoutSec
 	}
 }
 

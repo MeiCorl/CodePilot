@@ -28,6 +28,8 @@ const (
 	MsgTypeSessionDeleted = "session_deleted"
 	MsgTypeStatusUpdate   = "status_update"
 	MsgTypeContextUsage   = "context_usage"
+	MsgTypeToolCallStart  = "tool_call_start"
+	MsgTypeToolCallEnd    = "tool_call_end"
 )
 
 // 流式结束原因与 Agent 状态的取值常量。
@@ -36,9 +38,20 @@ const (
 	StreamReasonAborted   = "aborted"
 	StreamReasonError     = "error"
 
-	StatusIdle     = "idle"
-	StatusThinking = "thinking"
-	StatusError    = "error"
+	StatusIdle       = "idle"
+	StatusThinking   = "thinking"
+	StatusToolRunning = "tool_running"
+	StatusError      = "error"
+)
+
+// 工具执行结束事件的 status 取值。
+// 与 conversation.ToolEventStatus* 一一对应，前端据此区分完成 / 失败 / 取消 / 超时。
+const (
+	ToolCallStatusRunning   = "running"
+	ToolCallStatusCompleted = "completed"
+	ToolCallStatusError     = "error"
+	ToolCallStatusAborted   = "aborted"
+	ToolCallStatusTimeout   = "timeout"
 )
 
 // Message 通用消息信封。所有 WebSocket 业务消息均使用此格式。
@@ -111,9 +124,14 @@ type SessionListPayload struct {
 }
 
 // ChatMessage 前端可渲染的会话消息条目。
+//
+// 普通消息 Role + Content 即可；工具消息则把"参数/输出/状态"打包到 ToolCall 字段，
+// Role 仍记为 assistant（tool_use 来自 assistant，tool_result 来自 user；这里
+// 仅展示 LLM 视角的工具调用与结果，因此全部作为 assistant 的附属事件）。
 type ChatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role     string           `json:"role"`
+	Content  string           `json:"content"`
+	ToolCall *ToolCallDisplay `json:"tool_call,omitempty"`
 }
 
 // SessionLoadedPayload 加载会话成功响应。
@@ -130,6 +148,40 @@ type SessionLoadedPayload struct {
 // StatusUpdatePayload Agent 状态更新。
 type StatusUpdatePayload struct {
 	Status string `json:"status"`
+}
+
+// ToolCallStartPayload 工具调用开始事件。
+// 由 ToolHandler.OnStart 回调透传；Input 为 LLM 传入的原始 JSON 参数。
+type ToolCallStartPayload struct {
+	ToolUseID string          `json:"tool_use_id"`
+	Name      string          `json:"name"`
+	Input     json.RawMessage `json:"input"`
+	StartedAt time.Time       `json:"started_at"`
+}
+
+// ToolCallEndPayload 工具调用结束事件。
+// 由 ToolHandler.OnEnd 回调透传；Output 为已截断（≤500 字符）的结果摘要。
+// Status 取值：completed / error / aborted / timeout。
+type ToolCallEndPayload struct {
+	ToolUseID  string `json:"tool_use_id"`
+	Name       string `json:"name"`
+	Output     string `json:"output"`
+	IsError    bool   `json:"is_error"`
+	DurationMs int64  `json:"duration_ms"`
+	Status     string `json:"status"`
+}
+
+// ToolCallDisplay 用于 session_loaded 中携带工具消息的完整展示数据。
+// Input / Output 均为已截断的字符串（不再是 RawMessage），方便前端直接渲染。
+// 持久化会话中恢复工具消息时使用该结构（区别于实时 tool_call_start/end）。
+type ToolCallDisplay struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	Input      string `json:"input"`
+	Output     string `json:"output"`
+	IsError    bool   `json:"is_error"`
+	DurationMs int64  `json:"duration_ms"`
+	Status     string `json:"status"`
 }
 
 // ContextUsagePayload 上下文窗口使用情况，PercentLeft 范围 0~100。

@@ -14,6 +14,7 @@ import (
 	"github.com/MeiCorl/CodePilot/src/internal/logger"
 	"github.com/MeiCorl/CodePilot/src/internal/memory/session"
 	"github.com/MeiCorl/CodePilot/src/llm"
+	"github.com/MeiCorl/CodePilot/src/tool"
 )
 
 // DefaultContextWindowSize 模型上下文窗口默认大小（token 数）。
@@ -24,6 +25,12 @@ const DefaultContextWindowSize = 200000
 // 它维护"当前活跃会话"状态（current Session + ConversationManager），
 // 并通过 streamState 状态机保证同一时刻只有一个流式请求进行中。
 // workdir 记录 CodePilot 启动时所在的工作目录，仅在 session_loaded 消息中透传至前端展示。
+//
+// Step 2 在此基础上接入 conversation.RunTurn + ToolHandler：
+//   - registry 持有工具描述源，runStream 每次发起 LLM 时按 cfg.Tools.Enabled
+//     过滤后转 []tool.ToolSpec 注入 Provider；
+//   - toolHandler 负责 LLM 触发的 tool_use 实际执行，并通过 OnStart/OnEnd
+//     把开始/结束事件外推为 tool_call_start / tool_call_end WebSocket 消息。
 type Handler struct {
 	provider           llm.Provider
 	sessMgr            *session.SessionManager
@@ -32,6 +39,8 @@ type Handler struct {
 	systemPrompt       string
 	contextWindowSize  int
 	workdir            string
+	registry           *tool.Registry
+	toolHandler        *conversation.ToolHandler
 
 	mu      sync.Mutex
 	current *session.Session
@@ -42,6 +51,8 @@ type Handler struct {
 // NewHandler 构造 Handler。
 // 构造时会尝试 sessMgr.LoadLatest() 恢复最近会话；无历史时创建新会话（不立即落盘）。
 // workdir 启动时获取，会随 session_loaded 透传给前端。
+// registry 为 nil 时 RunTurn 不会携带任何工具描述（与未启用工具等价）；
+// toolHandler 为 nil 时 RunTurn 仍可工作（无 tool_use 分发能力，LLM 不会调工具）。
 func NewHandler(
 	provider llm.Provider,
 	sessMgr *session.SessionManager,
@@ -50,6 +61,8 @@ func NewHandler(
 	systemPrompt string,
 	contextWindowSize int,
 	workdir string,
+	registry *tool.Registry,
+	toolHandler *conversation.ToolHandler,
 ) *Handler {
 	if contextWindowSize <= 0 {
 		contextWindowSize = DefaultContextWindowSize
@@ -62,6 +75,8 @@ func NewHandler(
 		systemPrompt:      systemPrompt,
 		contextWindowSize: contextWindowSize,
 		workdir:           workdir,
+		registry:          registry,
+		toolHandler:       toolHandler,
 	}
 	// 尝试恢复最近一个会话
 	if latest, err := sessMgr.LoadLatest(); err == nil && latest != nil {
@@ -141,9 +156,19 @@ func (h *Handler) handleUserInput(conn *websocket.Conn, msg Message) error {
 	return nil
 }
 
-// runStream 是流式响应的核心 goroutine。
-// ctx 在 abort_stream 时被 cancel，从而中断 Provider。
-// goroutine 退出前保证：状态置为空闲、流式状态机释放、发送 stream_done 与 context_usage。
+// runStream 是流式响应的核心 goroutine（Step 2: 接入 RunTurn + ToolHandler）。
+//
+// 调用流程：
+//  1. 构造 TurnHooks：把 chunk 推 stream_chunk、tool_use 推 tool_call_start
+//     + status_update(tool_running)、tool_result 推 tool_call_end、错误
+//     推 stream_error。
+//  2. 调 conv.RunTurn：内部完成"LLM → tool → 二次 LLM"闭环，过程中
+//     自动写 history（tool_use / tool_result / 最终 assistant 文本）。
+//  3. 退出前：把完整 history 持久化、推 stream_done + context_usage、
+//     释放流式状态机、切回 idle。
+//
+// ctx 在 abort_stream 时被 cancel；RunTurn 内部会响应 ctx 取消并
+// 把当前 LLM 流 / 工具执行一并中断，由 runStream 把 reason=aborted 发出。
 func (h *Handler) runStream(ctx context.Context, conn *websocket.Conn) {
 	// 防御性 defer：确保流式状态机被释放、状态切回 idle
 	defer func() {
@@ -151,85 +176,89 @@ func (h *Handler) runStream(ctx context.Context, conn *websocket.Conn) {
 		h.stream.release(ctx)
 	}()
 
-	// 取上下文窗口视图（在锁内拷一份，避免后续访问被并发修改）
-	h.mu.Lock()
-	messages := h.conv.GetContext(h.systemPrompt)
-	h.mu.Unlock()
-
-	chunkCh, err := h.provider.StreamChat(ctx, h.systemPrompt, messages)
-	if err != nil {
-		_ = h.sendStreamError(conn, "stream_init_failed", err.Error())
-		_ = h.sendStreamDone(conn, StreamReasonError)
-		return
+	// 把 toolHandler 的 OnStart/OnEnd 接到本连接的 WS 推送
+	// 注意：OnStart/OnEnd 内部会同步调回调，所以"工具开始→状态切到 tool_running
+	// →发 tool_call_start"三件事都在 ToolHandler.Execute 同步路径上完成。
+	if h.toolHandler != nil {
+		h.toolHandler.SetOnStart(func(evt conversation.ToolExecutionEvent) {
+			_ = h.sendStatusUpdate(conn, StatusToolRunning)
+			_ = h.sendToolCallStart(conn, ToolCallStartPayload{
+				ToolUseID: evt.ToolUseID,
+				Name:      evt.Name,
+				Input:     evt.Input,
+				StartedAt: evt.StartedAt,
+			})
+		})
+		h.toolHandler.SetOnEnd(func(evt conversation.ToolExecutionEvent) {
+			// OnEnd 之后，RunTurn 会立刻发起第二次 LLM；提前把状态切到
+			// StatusThinking，避免前端把"工具已结束但还在等 LLM 二次回复"
+			// 这段间隙误判为 idle。
+			_ = h.sendStatusUpdate(conn, StatusThinking)
+			_ = h.sendToolCallEnd(conn, ToolCallEndPayload{
+				ToolUseID:  evt.ToolUseID,
+				Name:       evt.Name,
+				Output:     SummarizeOutput(evt.Output),
+				IsError:    evt.IsError,
+				DurationMs: evt.DurationMs,
+				Status:     mapToolEventStatus(evt.Status),
+			})
+		})
 	}
 
-	// 累积助手消息文本
-	var buffer strings.Builder
-	aborted := false
-
-	for {
-		select {
-		case <-ctx.Done():
-			// abort_stream 触发 ctx 取消：标记 aborted 并排空可能残余的 chunk
-			aborted = true
-			for {
-				select {
-				case _, ok := <-chunkCh:
-					if !ok {
-						// channel 已关闭，退出 runStream
-						_ = h.persistAndFinish(conn, buffer.String(), aborted)
-						return
-					}
-				default:
-					// 已无更多 chunk，退出排空循环
-					_ = h.persistAndFinish(conn, buffer.String(), aborted)
-					return
-				}
-			}
-		case chunk, ok := <-chunkCh:
-			if !ok {
-				// channel 关闭（Provider 正常结束）
-				_ = h.persistAndFinish(conn, buffer.String(), aborted)
-				return
-			}
-			if chunk.Err != nil {
-				_ = h.sendStreamError(conn, "stream_error", chunk.Err.Error())
-				_ = h.sendStreamDone(conn, StreamReasonError)
-				return
-			}
-			if chunk.Done {
-				_ = h.persistAndFinish(conn, buffer.String(), aborted)
-				return
-			}
+	hooks := conversation.TurnHooks{
+		OnStreamChunk: func(chunk llm.StreamChunk) {
+			// 第一次 chunk 到达时，前端已通过 status_update(thinking) 切到
+			// "思考中"，这里只推文本 delta。
 			if chunk.Content != "" {
-				buffer.WriteString(chunk.Content)
 				_ = h.sendStreamChunk(conn, chunk.Content)
 			}
+		},
+		OnError: func(err error) {
+			_ = h.sendStreamError(conn, "stream_error", err.Error())
+		},
+		// OnToolUse / OnToolResult 由 ToolHandler.OnStart/OnEnd 替代承担，
+		// 这里置 nil；RunTurn 内部会按 nil 跳过调用。
+	}
+
+	// 工具描述：按配置过滤后转 []tool.ToolSpec；registry 为 nil 时不传任何工具。
+	// cfg.Tools.Enabled 为空时透传 registry 中全部已注册工具（白名单留空 = 全开）。
+	var toolSpecs []tool.ToolSpec
+	if h.registry != nil {
+		var enabled []string
+		if h.cfg != nil {
+			enabled = h.cfg.Tools.Enabled
 		}
+		toolSpecs = h.registry.ToSpecs(enabled)
 	}
-}
 
-// persistAndFinish 累积完整助手消息、持久化会话、发送 stream_done 与 context_usage。
-// 抽取出来减少 runStream 内部重复代码。
-func (h *Handler) persistAndFinish(conn *websocket.Conn, assistantText string, aborted bool) error {
+	result := h.conv.RunTurn(ctx, h.provider, h.systemPrompt, toolSpecs, h.toolHandler, hooks)
+
+	// 持久化：RunTurn 已把 tool_use / tool_result / 二次 LLM 文本写入 history
 	h.mu.Lock()
-	h.conv.AddAssistantMessage(assistantText)
-	h.current.Messages = h.conv.AllMessages()
-	saveErr := h.sessMgr.Save(h.current)
-	h.mu.Unlock()
-	if saveErr != nil {
-		logger.Warn("会话保存失败",
-			zap.String("session_id", h.current.ID),
-			zap.Error(saveErr),
-		)
+	if h.current != nil {
+		h.current.Messages = h.conv.AllMessages()
+		saveErr := h.sessMgr.Save(h.current)
+		h.mu.Unlock()
+		if saveErr != nil {
+			logger.Warn("会话保存失败",
+				zap.String("session_id", h.current.ID),
+				zap.Error(saveErr),
+			)
+		}
+	} else {
+		h.mu.Unlock()
 	}
 
+	// 退出原因：error > aborted > completed
 	reason := StreamReasonCompleted
-	if aborted {
+	if result.Aborted {
 		reason = StreamReasonAborted
 	}
+	if result.Error != nil {
+		reason = StreamReasonError
+	}
 	_ = h.sendStreamDone(conn, reason)
-	return h.sendContextUsage(conn)
+	_ = h.sendContextUsage(conn)
 }
 
 // handleAbortStream 中断当前流式请求。无正在进行的流时为 no-op。
@@ -462,6 +491,35 @@ func (h *Handler) sendStreamError(conn *websocket.Conn, code, message string) er
 	return h.sendMessage(conn, MsgTypeStreamError, StreamErrorPayload{Code: code, Message: message})
 }
 
+// sendToolCallStart 发送工具调用开始事件。
+func (h *Handler) sendToolCallStart(conn *websocket.Conn, p ToolCallStartPayload) error {
+	return h.sendMessage(conn, MsgTypeToolCallStart, p)
+}
+
+// sendToolCallEnd 发送工具调用结束事件。
+func (h *Handler) sendToolCallEnd(conn *websocket.Conn, p ToolCallEndPayload) error {
+	return h.sendMessage(conn, MsgTypeToolCallEnd, p)
+}
+
+// mapToolEventStatus 把 conversation 包的内部工具事件状态枚举
+// 映射为 web 包对外的 ToolCallStatus* 常量（与前端约定保持一致）。
+// 对应关系：running/completed/error/aborted 直接透传；toolHandler 没有
+// 单独的 timeout 枚举，被归类为 error，前端在 status='error' 时可读 is_error 区分。
+func mapToolEventStatus(s string) string {
+	switch s {
+	case conversation.ToolEventStatusRunning:
+		return ToolCallStatusRunning
+	case conversation.ToolEventStatusCompleted:
+		return ToolCallStatusCompleted
+	case conversation.ToolEventStatusError:
+		return ToolCallStatusError
+	case conversation.ToolEventStatusAborted:
+		return ToolCallStatusAborted
+	default:
+		return ToolCallStatusError
+	}
+}
+
 // sendStatusUpdate 发送状态更新。
 func (h *Handler) sendStatusUpdate(conn *websocket.Conn, status string) error {
 	return h.sendMessage(conn, MsgTypeStatusUpdate, StatusUpdatePayload{Status: status})
@@ -487,15 +545,13 @@ func (h *Handler) sendContextUsage(conn *websocket.Conn) error {
 	})
 }
 
-// sendSessionLoaded 发送 session_loaded 消息。
+// sendSessionLoaded 发送 session_loaded 消息（Step 2: 支持工具消息回放）。
+//
+// 工具消息处理：assistant 同时含 text + tool_use 时拆成两条 ChatMessage
+// （text 保持原样、tool_use 转为带 ToolCall 的展示条），user 消息里的
+// tool_result 块因为已经在 ToolCallDisplay.Output 里体现，故跳过。
 func (h *Handler) sendSessionLoaded(conn *websocket.Conn, sess *session.Session) error {
-	chatMsgs := make([]ChatMessage, 0, len(sess.Messages))
-	for _, m := range sess.Messages {
-		chatMsgs = append(chatMsgs, ChatMessage{
-			Role:    string(m.Role),
-			Content: extractText(m.Content),
-		})
-	}
+	chatMsgs := buildChatMessages(sess.Messages)
 	summary := SessionSummary{
 		ID:           sess.ID,
 		CreatedAt:    sess.CreatedAt,
@@ -512,7 +568,109 @@ func (h *Handler) sendSessionLoaded(conn *websocket.Conn, sess *session.Session)
 	})
 }
 
+// buildChatMessages 把 llm.Message 列表转换为前端 ChatMessage 列表，
+// 集中处理 tool_use / tool_result / text 混排的拆分与配对。
+//
+// 规则：
+//   - assistant 同时含 text + tool_use → 两条 ChatMessage（text 在前，ToolCall 在后）
+//   - assistant 仅含 tool_use          → 一条 ChatMessage（仅 ToolCall）
+//   - assistant 仅含 text               → 一条 ChatMessage（仅 Content）
+//   - user 仅含 tool_result            → 跳过（已合并到对应 ToolCall.Output）
+//   - user 含 text（含或不含 tool_result）→ 一条 ChatMessage
+//
+// 配对失败的 ToolUse（无对应 ToolResult）展示为 status=error / Output=""，
+// 避免前端拿到残缺数据；这是边角情况，正常 RunTurn 总会回写 tool_result。
+func buildChatMessages(messages []llm.Message) []ChatMessage {
+	// 先建立 toolUseID -> ToolResultBlock 的索引，便于 O(1) 配对
+	results := make(map[string]llm.ToolResultBlock)
+	for _, m := range messages {
+		if m.Role != llm.RoleUser {
+			continue
+		}
+		for _, b := range m.Content {
+			if tr, ok := b.(*llm.ToolResultBlock); ok {
+				results[tr.ToolUseID] = *tr
+			}
+		}
+	}
+
+	out := make([]ChatMessage, 0, len(messages))
+	for _, m := range messages {
+		// user 消息中纯 tool_result 块：跳过
+		if m.Role == llm.RoleUser && isOnlyToolResults(m.Content) {
+			continue
+		}
+
+		var textParts []string
+		for _, b := range m.Content {
+			if tb, ok := b.(*llm.TextBlock); ok {
+				if tb.Text != "" {
+					textParts = append(textParts, tb.Text)
+				}
+			}
+		}
+		textContent := strings.Join(textParts, "\n")
+
+		// 先放 text（若有）
+		if textContent != "" {
+			out = append(out, ChatMessage{
+				Role:    string(m.Role),
+				Content: textContent,
+			})
+		}
+
+		// 再为每个 ToolUse 放一条 ToolCall 消息（仅 assistant 角色会出现 tool_use）
+		for _, b := range m.Content {
+			tu, ok := b.(*llm.ToolUseBlock)
+			if !ok {
+				continue
+			}
+			tr, hasResult := results[tu.ID]
+			status := ToolCallStatusCompleted
+			isErr := false
+			output := ""
+			if hasResult {
+				isErr = tr.IsError
+				output = SummarizeOutput(tr.Content)
+				if isErr {
+					status = ToolCallStatusError
+				}
+			} else {
+				// 没有配对的 result（异常情况）：标记为 error
+				status = ToolCallStatusError
+				isErr = true
+			}
+			display := ToolDisplayFromExecution(
+				tu.ID, tu.Name,
+				SummarizeInput(tu.Input),
+				output, isErr, 0, status,
+			)
+			out = append(out, ChatMessage{
+				Role:     string(llm.RoleAssistant),
+				Content:  "",
+				ToolCall: &display,
+			})
+		}
+	}
+	return out
+}
+
+// isOnlyToolResults 判断 ContentBlock 数组是否全部是 ToolResultBlock。
+// 用于 buildChatMessages 决定是否跳过整条 user 消息。
+func isOnlyToolResults(blocks []llm.ContentBlock) bool {
+	if len(blocks) == 0 {
+		return false
+	}
+	for _, b := range blocks {
+		if _, ok := b.(*llm.ToolResultBlock); !ok {
+			return false
+		}
+	}
+	return true
+}
+
 // extractText 从 ContentBlock 数组中提取首段文本（多模态尚未启用）。
+// 仅用于 firstUserPreview 等"取一段用户消息文本"的旧逻辑。
 func extractText(blocks []llm.ContentBlock) string {
 	for _, b := range blocks {
 		if t := b.ToText(); t != "" {

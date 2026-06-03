@@ -23,6 +23,13 @@ func TestSetDefaults(t *testing.T) {
 	if cfg.MaxRetries != defaultMaxRetries {
 		t.Errorf("MaxRetries 默认值错误: 期望 %d, 实际 %d", defaultMaxRetries, cfg.MaxRetries)
 	}
+	if cfg.ToolExecutionTimeoutSeconds != defaultToolExecutionTimeoutSec {
+		t.Errorf("ToolExecutionTimeoutSeconds 默认值错误: 期望 %d, 实际 %d",
+			defaultToolExecutionTimeoutSec, cfg.ToolExecutionTimeoutSeconds)
+	}
+	if cfg.ToolWorkingDirectory != "" {
+		t.Errorf("ToolWorkingDirectory 默认值应为空字符串, 实际 %q", cfg.ToolWorkingDirectory)
+	}
 }
 
 // TestLoadFromPathSuccess 验证正常加载完整配置
@@ -72,6 +79,45 @@ func TestLoadFromPathDefaults(t *testing.T) {
 	}
 	if cfg.MaxRetries != 2 {
 		t.Errorf("MaxRetries 默认值错误: 期望 2, 实际 %d", cfg.MaxRetries)
+	}
+	if cfg.ToolExecutionTimeoutSeconds != 30 {
+		t.Errorf("ToolExecutionTimeoutSeconds 默认值错误: 期望 30, 实际 %d", cfg.ToolExecutionTimeoutSeconds)
+	}
+	if cfg.ToolWorkingDirectory != "" {
+		t.Errorf("ToolWorkingDirectory 默认值应为空, 实际 %q", cfg.ToolWorkingDirectory)
+	}
+	if len(cfg.Tools.Enabled) != 0 {
+		t.Errorf("Tools.Enabled 默认应为空, 实际 %v", cfg.Tools.Enabled)
+	}
+}
+
+// TestLoadFromPathWithToolsConfig 验证 tools 段被正确解析。
+func TestLoadFromPathWithToolsConfig(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	content, _ := json.Marshal(map[string]any{
+		"provider":                      "anthropic",
+		"model":                         "claude-sonnet-4-20250514",
+		"api_key":                       "sk-test",
+		"max_tokens":                    4096,
+		"tools":                         map[string]any{"enabled": []string{"read_file", "bash"}},
+		"tool_execution_timeout_seconds": 5,
+		"tool_working_directory":        "f:/CodePilot",
+	})
+	os.WriteFile(cfgPath, content, 0644)
+
+	cfg, err := LoadFromPath(cfgPath)
+	if err != nil {
+		t.Fatalf("加载失败: %v", err)
+	}
+	if got, want := cfg.Tools.Enabled, []string{"read_file", "bash"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("Tools.Enabled 错误: 期望 %v, 实际 %v", want, got)
+	}
+	if cfg.ToolExecutionTimeoutSeconds != 5 {
+		t.Errorf("ToolExecutionTimeoutSeconds 错误: 期望 5, 实际 %d", cfg.ToolExecutionTimeoutSeconds)
+	}
+	if cfg.ToolWorkingDirectory != "f:/CodePilot" {
+		t.Errorf("ToolWorkingDirectory 错误: 期望 f:/CodePilot, 实际 %q", cfg.ToolWorkingDirectory)
 	}
 }
 

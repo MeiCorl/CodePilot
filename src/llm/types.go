@@ -3,13 +3,20 @@
 // 使上层代码无需关心底层供应商 SDK 的差异。
 package llm
 
+import "encoding/json"
+
 // ContentBlockType 标识 ContentBlock 的具体类型。
-// 当前仅支持文本，后续将扩展图片（ImageBlock）、工具调用（ToolUseBlock）等类型。
+// 当前支持文本、工具调用（tool_use）、工具结果（tool_result），
+// 后续将扩展图片（ImageBlock）等类型。
 type ContentBlockType string
 
 const (
 	// ContentBlockTypeText 表示文本内容块
 	ContentBlockTypeText ContentBlockType = "text"
+	// ContentBlockTypeToolUse 表示 LLM 发出的工具调用请求（Anthropic 协议对齐为 "tool_use"）
+	ContentBlockTypeToolUse ContentBlockType = "tool_use"
+	// ContentBlockTypeToolResult 表示系统回传给 LLM 的工具执行结果（Anthropic 协议对齐为 "tool_result"）
+	ContentBlockTypeToolResult ContentBlockType = "tool_result"
 )
 
 // ContentBlock 是消息内容块的统一接口。
@@ -37,6 +44,60 @@ func (b *TextBlock) ToText() string { return b.Text }
 // NewTextBlock 创建一个文本内容块。
 func NewTextBlock(text string) ContentBlock {
 	return &TextBlock{Text: text}
+}
+
+// ToolUseBlock 表示 LLM 发出的工具调用请求。
+// 对应 Anthropic 协议的 tool_use 与 OpenAI 协议的 tool_calls.function。
+// Input 为原始 JSON，由工具自身解析到内部结构。
+type ToolUseBlock struct {
+	// ID 为本次调用的唯一标识（Anthropic: tool_use.id；OpenAI: tool_call.id）
+	ID string `json:"id"`
+	// Name 为被调用的工具名（必须与 Tool.Name() 一致）
+	Name string `json:"name"`
+	// Input 为 LLM 传入的参数，原始 JSON 对象
+	Input json.RawMessage `json:"input"`
+}
+
+// Type 返回 ToolUseBlock 的类型标识。
+func (b *ToolUseBlock) Type() ContentBlockType { return ContentBlockTypeToolUse }
+
+// ToText 返回 ToolUseBlock 的文本表示，格式 `tool_use(<name>, id=<id>)`。
+func (b *ToolUseBlock) ToText() string {
+	return "tool_use(" + b.Name + ", id=" + b.ID + ")"
+}
+
+// NewToolUseBlock 创建一个工具调用内容块。
+func NewToolUseBlock(id, name string, input json.RawMessage) ContentBlock {
+	return &ToolUseBlock{ID: id, Name: name, Input: input}
+}
+
+// ToolResultBlock 表示系统回传给 LLM 的工具执行结果。
+// 对应 Anthropic 协议的 tool_result 与 OpenAI 协议的 role=tool 消息。
+// 失败时 IsError=true，Content 为错误描述字符串。
+type ToolResultBlock struct {
+	// ToolUseID 关联到对应的 ToolUseBlock.ID
+	ToolUseID string `json:"tool_use_id"`
+	// Content 为工具返回的文本结果（成功时为输出，失败时为错误描述）
+	Content string `json:"content"`
+	// IsError 标识工具是否执行失败；true 时 LLM 视 Content 为错误信息
+	IsError bool `json:"is_error"`
+}
+
+// Type 返回 ToolResultBlock 的类型标识。
+func (b *ToolResultBlock) Type() ContentBlockType { return ContentBlockTypeToolResult }
+
+// ToText 返回 ToolResultBlock 的文本表示。
+// 失败时前缀 `error:` 以便日志/调试时一眼区分。
+func (b *ToolResultBlock) ToText() string {
+	if b.IsError {
+		return "error: " + b.Content
+	}
+	return b.Content
+}
+
+// NewToolResultBlock 创建一个工具结果内容块。
+func NewToolResultBlock(toolUseID, content string, isError bool) ContentBlock {
+	return &ToolResultBlock{ToolUseID: toolUseID, Content: content, IsError: isError}
 }
 
 // --- 消息角色 ---
@@ -72,4 +133,8 @@ type StreamChunk struct {
 	Done bool
 	// Err 非 nil 表示发生错误（网络错误、API 错误等）
 	Err error
+	// ToolUse 非 nil 表示本次 LLM 响应包含一个 tool_use 块。
+	// 仅在 Done=true 的最后一个 chunk 上携带；正常文本流保持 nil。
+	// 上层（conversation manager）据此判断是否进入工具执行阶段。
+	ToolUse *ToolUseBlock
 }

@@ -31,11 +31,17 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/MeiCorl/CodePilot/src/internal/config"
+	"github.com/MeiCorl/CodePilot/src/internal/engine/conversation"
 	"github.com/MeiCorl/CodePilot/src/internal/interaction/web"
 	"github.com/MeiCorl/CodePilot/src/internal/logger"
 	"github.com/MeiCorl/CodePilot/src/internal/memory/session"
 	"github.com/MeiCorl/CodePilot/src/internal/runtime/console"
 	"github.com/MeiCorl/CodePilot/src/llm"
+	"github.com/MeiCorl/CodePilot/src/tool"
+	// import 触发 builtin 包的 init()，将 5 个内置工具以 cwd + 30s 兜底
+	// 注册到 tool.DefaultRegistry()；main 随后按 cfg 调
+	// builtin.RegisterWithOptions 用 cfg 中的工作目录/超时覆盖默认实例。
+	"github.com/MeiCorl/CodePilot/src/tool/builtin"
 )
 
 const (
@@ -95,10 +101,29 @@ func run() error {
 	}
 	logger.Info("工作目录", zap.String("workdir", workdir))
 
-	// 6. 构造 Handler / Server
+	// 6. 工具系统配置：把 cfg 中的工作目录/超时/白名单实际注入到工具层。
+	// builtin 包的 init() 已用 cwd + 30s 兜底注册；此处用 cfg 显式覆盖，
+	// 保证 cfg.Tools.Enabled / ToolWorkingDirectory / ToolExecutionTimeoutSeconds
+	// 字段真正生效。toolWorkingDir 为空时回退到进程 cwd。
+	toolRegistry := tool.DefaultRegistry()
+	toolWorkdir := cfg.ToolWorkingDirectory
+	if toolWorkdir == "" {
+		toolWorkdir = workdir
+	}
+	bashTimeout := time.Duration(cfg.ToolExecutionTimeoutSeconds) * time.Second
+	builtin.RegisterWithOptions(toolRegistry, toolWorkdir, bashTimeout)
+	toolHandler := conversation.NewToolHandler(toolRegistry, bashTimeout, toolWorkdir)
+	logger.Info("工具系统就绪",
+		zap.Int("count", toolRegistry.Count()),
+		zap.Strings("enabled", toolRegistry.EnabledNames(cfg.Tools.Enabled)),
+		zap.String("sandbox_dir", toolWorkdir),
+		zap.Duration("execution_timeout", bashTimeout),
+	)
+
+	// 7. 构造 Handler / Server
 	// 使用 DefaultAddr（127.0.0.1:0）让 OS 自动分配端口，
 	// 这样多个项目下可同时启动多个 CodePilot 进程互不冲突。
-	handler := web.NewHandler(provider, sessMgr, cfg, defaultMaxRounds, "", 0, workdir)
+	handler := web.NewHandler(provider, sessMgr, cfg, defaultMaxRounds, "", 0, workdir, toolRegistry, toolHandler)
 	server := web.NewServer(web.DefaultAddr)
 	handler.Register(server.Router())
 

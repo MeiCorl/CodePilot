@@ -38,8 +38,8 @@
         wsReconnectIntervalMs: 3000,
 
         sessionId: null,
-        messages: [],                  // [{ role, content }]  与 DOM 镜像
-        agentStatus: 'idle',           // idle | thinking | error
+        messages: [],                  // [{ role, content, tool_call? }]  与 DOM 镜像
+        agentStatus: 'idle',           // idle | thinking | tool_running | error
         ctx: { used: 0, limit: 100, percentLeft: 100 },
         modelName: '--',
         streaming: false,              // 当前是否有流式响应进行中
@@ -49,6 +49,7 @@
         slashItems: [],
         userScrolledUp: false,         // 用户向上滚动后停止自动滚动
         sessionsTableActive: false,    // /sessions 表格视图是否启用（true 时 session_list 响应会渲染表格）
+        _toolById: {},                 // tool_use_id -> DOM 节点，用于 end 事件定位
     };
 
     // ---- / 快捷命令清单（Step 9 落地后将替换为命令注册表查询） ----
@@ -178,6 +179,27 @@
         SessionDeleted:    'session_deleted',
         StatusUpdate:      'status_update',
         ContextUsage:      'context_usage',
+        ToolCallStart:     'tool_call_start',
+        ToolCallEnd:       'tool_call_end',
+    };
+
+    // ---- 工具名 → 短缩写（图标方块字符）。未知工具回退到 '⚙' ----
+    const TOOL_ICON = {
+        read_file:    '📖',
+        write_file:   '✏',
+        bash:         '$_',
+        glob:         '*',
+        grep:         '⌕',
+    };
+    const TOOL_ICON_FALLBACK = '⚙';
+
+    // ---- 状态徽章文案映射（与服务端 ToolCallStatus* 一致） ----
+    const TOOL_STATUS_LABEL = {
+        running:   'running',
+        completed: 'done',
+        error:     'failed',
+        aborted:   'aborted',
+        timeout:   'timeout',
     };
 
     // =========================================================================
@@ -194,6 +216,8 @@
             case MsgType.SessionLoaded:   return onSessionLoaded(msg.payload);
             case MsgType.SessionDeleted:  return onSessionDeleted(msg.payload);
             case MsgType.ContextUsage:    return onContextUsage(msg.payload);
+            case MsgType.ToolCallStart:   return onToolCallStart(msg.payload);
+            case MsgType.ToolCallEnd:     return onToolCallEnd(msg.payload);
             default: console.warn('未知消息类型:', msg.type, msg.payload);
         }
     }
@@ -284,17 +308,48 @@
         renderCtxBar();
     }
 
+    // ---- 工具消息：开始 / 结束事件 ----
+    // Step 2 引入。tool_call_start 立即插入"running"占位块;
+    // tool_call_end 按 tool_use_id 找到对应块并切换为完成/失败/取消态。
+    // 设计为幂等：重复收到同一 id 的 start 不重复插入；end 在没有匹配 start
+    // 时直接插入一个"已完成"块（兜底）。
+    function onToolCallStart(p) {
+        if (!p || !p.tool_use_id) return;
+        // 若已存在同 id 的块（异常重发），跳过
+        if (state._toolById[p.tool_use_id]) return;
+        const node = appendToolStartNode(p.tool_use_id, p.name, p.input, p.started_at);
+        state._toolById[p.tool_use_id] = node;
+        scrollToBottomIfNeeded();
+    }
+
+    function onToolCallEnd(p) {
+        if (!p || !p.tool_use_id) return;
+        let node = state._toolById[p.tool_use_id];
+        if (!node) {
+            // 异常路径：end 先到 start 后到（或 start 丢失），按已完成态直接插入
+            node = appendToolStartNode(p.tool_use_id, p.name, '', p.started_at);
+            state._toolById[p.tool_use_id] = node;
+        }
+        updateToolEndNode(node, p);
+        scrollToBottomIfNeeded();
+    }
+
     // =========================================================================
     // 渲染层
     // =========================================================================
 
     function setAgentStatus(status) {
         state.agentStatus = status;
-        const map = { idle: '就绪', thinking: '思考中', error: '错误' };
+        const map = {
+            idle: '就绪',
+            thinking: '思考中',
+            tool_running: '工具执行中',
+            error: '错误',
+        };
         dom.statusText.textContent = map[status] || status;
         dom.statusDot.dataset.status = status;
-        // 输入框禁用态
-        dom.input.disabled = (status === 'thinking');
+        // 输入框禁用态：思考中 / 工具执行中 都不可输入
+        dom.input.disabled = (status === 'thinking' || status === 'tool_running');
         // 若用户刚发了消息而 thinking 节点尚未渲染（后端 status_update 抢先到达），
         // 兜底补一个；正常情况下 onSendClicked 已主动插入。
         if (status === 'thinking' && state.expectingAssistant) {
@@ -304,7 +359,7 @@
     }
 
     function renderSendButton() {
-        if (state.streaming || state.agentStatus === 'thinking') {
+        if (state.streaming || state.agentStatus === 'thinking' || state.agentStatus === 'tool_running') {
             dom.sendBtn.classList.remove('send-btn');
             dom.sendBtn.classList.add('abort-btn');
             dom.sendBtn.textContent = 'Stop';
@@ -514,12 +569,33 @@
 
     function renderAllMessages() {
         dom.messages.innerHTML = '';
+        // 切换会话时清空工具 id 索引（旧的 DOM 节点已不在 DOM 树里）
+        state._toolById = {};
         if (!state.messages.length) {
             renderEmptyState();
             return;
         }
         for (const m of state.messages) {
-            appendMessageNode(m.role, m.content, /*streaming=*/ false);
+            if (m.tool_call) {
+                // 历史工具消息：直接以"已完成/失败"态插入，不带 running 占位
+                const node = appendToolStartNode(
+                    m.tool_call.id,
+                    m.tool_call.name,
+                    m.tool_call.input,
+                    null,
+                );
+                updateToolEndNode(node, {
+                    tool_use_id: m.tool_call.id,
+                    name:        m.tool_call.name,
+                    output:      m.tool_call.output,
+                    is_error:    m.tool_call.is_error,
+                    duration_ms: m.tool_call.duration_ms,
+                    status:      m.tool_call.status,
+                });
+                state._toolById[m.tool_call.id] = node;
+            } else {
+                appendMessageNode(m.role, m.content, /*streaming=*/ false);
+            }
         }
         scrollToBottomIfNeeded();
     }
@@ -577,6 +653,174 @@
 
         dom.messages.appendChild(wrap);
         return wrap;
+    }
+
+    // ---- 工具消息块：appendToolStartNode / updateToolEndNode ----
+    // 与普通消息节点不同，工具消息块是"自管理"的——start 插入占位、end 切换
+    // 状态，全程不依赖全局 _streamingWrap，避免与流式文本互相干扰。
+
+    // 把任意值格式化为展示用的字符串（避免 [object Object]）。
+    function formatToolArg(v) {
+        if (v == null) return '';
+        if (typeof v === 'string') return v;
+        if (typeof v === 'object') {
+            try { return JSON.stringify(v, null, 2); } catch { return String(v); }
+        }
+        return String(v);
+    }
+
+    // 尝试把 input 解析为对象；解析失败时回退到原文。
+    function parseInputObject(input) {
+        if (input == null || input === '') return null;
+        if (typeof input === 'object') return input;
+        try { return JSON.parse(input); } catch { return null; }
+    }
+
+    // appendToolStartNode 插入"正在执行"占位块并返回 DOM 引用。
+    // 参数 input 接受 string（已压缩 JSON）或 object；StartedAtIso 为 ISO 字符串
+    // 或 null（null 时不显示开始时间，仅显示 running）。
+    function appendToolStartNode(toolUseId, name, input, startedAtIso) {
+        const empty = dom.messages.querySelector('.messages-empty');
+        if (empty) empty.remove();
+        hideThinking();
+
+        const wrap = document.createElement('div');
+        wrap.className = 'message-tool';
+        wrap.dataset.toolUseId = toolUseId;
+        wrap.dataset.status = 'running';
+        wrap.dataset.expanded = 'false';
+
+        // 头部：图标 + 工具名 + 状态徽章 + 耗时（运行中显示开始时间） + 折叠箭头
+        const header = document.createElement('div');
+        header.className = 'message-tool-header';
+        header.addEventListener('click', () => {
+            wrap.dataset.expanded = (wrap.dataset.expanded === 'true') ? 'false' : 'true';
+        });
+
+        const icon = document.createElement('span');
+        icon.className = 'message-tool-icon';
+        icon.textContent = TOOL_ICON[name] || TOOL_ICON_FALLBACK;
+        header.appendChild(icon);
+
+        const nameEl = document.createElement('span');
+        nameEl.className = 'message-tool-name';
+        nameEl.textContent = name;
+        header.appendChild(nameEl);
+
+        const status = document.createElement('span');
+        status.className = 'message-tool-status';
+        status.textContent = TOOL_STATUS_LABEL.running;
+        header.appendChild(status);
+
+        const dur = document.createElement('span');
+        dur.className = 'message-tool-duration';
+        dur.textContent = startedAtIso ? formatStartedAt(startedAtIso) : '';
+        header.appendChild(dur);
+
+        const toggle = document.createElement('span');
+        toggle.className = 'message-tool-toggle';
+        toggle.setAttribute('aria-hidden', 'true');
+        header.appendChild(toggle);
+
+        wrap.appendChild(header);
+
+        // 折叠区：参数 + 输出（运行时仅参数填了；end 时再补输出）
+        const details = document.createElement('div');
+        details.className = 'message-tool-details';
+
+        const paramObj = parseInputObject(input);
+        if (paramObj && typeof paramObj === 'object') {
+            const sec = document.createElement('div');
+            sec.className = 'message-tool-section';
+            const label = document.createElement('span');
+            label.className = 'message-tool-section-label';
+            label.textContent = 'Arguments';
+            sec.appendChild(label);
+            const pre = document.createElement('pre');
+            pre.className = 'message-tool-input';
+            try { pre.textContent = JSON.stringify(paramObj, null, 2); }
+            catch { pre.textContent = formatToolArg(input); }
+            sec.appendChild(pre);
+            details.appendChild(sec);
+        } else if (typeof input === 'string' && input) {
+            const sec = document.createElement('div');
+            sec.className = 'message-tool-section';
+            const label = document.createElement('span');
+            label.className = 'message-tool-section-label';
+            label.textContent = 'Arguments';
+            sec.appendChild(label);
+            const pre = document.createElement('pre');
+            pre.className = 'message-tool-input';
+            pre.textContent = input;
+            sec.appendChild(pre);
+            details.appendChild(sec);
+        }
+
+        wrap.appendChild(details);
+        dom.messages.appendChild(wrap);
+        return wrap;
+    }
+
+    // updateToolEndNode 把工具块从 running 切到 done/failed/aborted/timeout。
+    // 同时填充 output、设置耗时徽章。如已有 output 节则替换为最新值。
+    function updateToolEndNode(node, endPayload) {
+        if (!node) return;
+        const status = endPayload.status || (endPayload.is_error ? 'error' : 'completed');
+        node.dataset.status = status;
+        // 默认展开，方便用户看到工具结果
+        node.dataset.expanded = 'true';
+
+        const statusEl = node.querySelector('.message-tool-status');
+        if (statusEl) {
+            statusEl.textContent = TOOL_STATUS_LABEL[status] || status;
+        }
+        const durEl = node.querySelector('.message-tool-duration');
+        if (durEl) {
+            durEl.textContent = formatDuration(endPayload.duration_ms);
+        }
+        const nameEl = node.querySelector('.message-tool-name');
+        if (nameEl && endPayload.name) {
+            nameEl.textContent = endPayload.name;
+        }
+
+        // 找到或创建 output 节
+        const details = node.querySelector('.message-tool-details');
+        if (!details) return;
+        let outSec = details.querySelector('.message-tool-section-output');
+        if (!outSec) {
+            outSec = document.createElement('div');
+            outSec.className = 'message-tool-section message-tool-section-output';
+            const label = document.createElement('span');
+            label.className = 'message-tool-section-label';
+            label.textContent = 'Output';
+            outSec.appendChild(label);
+            const pre = document.createElement('pre');
+            pre.className = 'message-tool-output';
+            outSec.appendChild(pre);
+            details.appendChild(outSec);
+        }
+        const pre = outSec.querySelector('pre');
+        if (pre) {
+            pre.textContent = (endPayload.output == null) ? '' : String(endPayload.output);
+            pre.classList.toggle('message-tool-output-error', !!endPayload.is_error);
+        }
+    }
+
+    // formatDuration 把毫秒数格式化为 "Xms" / "X.Ys"。
+    function formatDuration(ms) {
+        if (ms == null) return '';
+        if (ms < 1000) return `${ms}ms`;
+        return `${(ms / 1000).toFixed(2)}s`;
+    }
+
+    // formatStartedAt 把 ISO 时间格式化为 HH:MM:SS。
+    function formatStartedAt(iso) {
+        try {
+            const d = new Date(iso);
+            if (isNaN(d.getTime())) return '';
+            const pad = (n) => String(n).padStart(2, '0');
+            return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+        } catch { return ''; }
     }
 
     // ---- Thinking 占位节点（3 个弹跳圆点 + "Thinking…" 文字） ----

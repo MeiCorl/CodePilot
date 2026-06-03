@@ -19,6 +19,7 @@ import (
 	"github.com/MeiCorl/CodePilot/src/internal/config"
 	"github.com/MeiCorl/CodePilot/src/internal/memory/session"
 	"github.com/MeiCorl/CodePilot/src/llm"
+	"github.com/MeiCorl/CodePilot/src/tool"
 )
 
 // mockProvider 实现 llm.Provider，支持：
@@ -33,7 +34,7 @@ type mockProvider struct {
 	calls      int32
 }
 
-func (m *mockProvider) StreamChat(ctx context.Context, systemPrompt string, messages []llm.Message) (<-chan llm.StreamChunk, error) {
+func (m *mockProvider) StreamChat(ctx context.Context, systemPrompt string, messages []llm.Message, toolSpecs []tool.ToolSpec) (<-chan llm.StreamChunk, error) {
 	atomic.AddInt32(&m.calls, 1)
 
 	m.mu.Lock()
@@ -102,7 +103,7 @@ func newTestRig(t *testing.T, chunks []llm.StreamChunk) *testRig {
 		MaxTokens: 1024,
 	}
 	mp := &mockProvider{chunks: chunks}
-	h := NewHandler(mp, sm, cfg, 10, "", 100000, t.TempDir())
+	h := NewHandler(mp, sm, cfg, 10, "", 100000, t.TempDir(), nil, nil)
 
 	s := NewServer("127.0.0.1:0")
 	h.Register(s.Router())
@@ -385,7 +386,7 @@ func TestListSessions(t *testing.T) {
 
 	cfg := &config.Config{Provider: "anthropic", Model: "test", APIKey: "k", MaxTokens: 1024}
 	mp := &mockProvider{}
-	h := NewHandler(mp, sm, cfg, 10, "", 100000, t.TempDir())
+	h := NewHandler(mp, sm, cfg, 10, "", 100000, t.TempDir(), nil, nil)
 	s := NewServer("127.0.0.1:0")
 	h.Register(s.Router())
 	ts := httptest.NewServer(http.HandlerFunc(s.ConnectionManager().HandleWS))
@@ -439,7 +440,7 @@ func TestListSessionsTableMode(t *testing.T) {
 
 	cfg := &config.Config{Provider: "anthropic", Model: "test", APIKey: "k", MaxTokens: 1024}
 	mp := &mockProvider{}
-	h := NewHandler(mp, sm, cfg, 10, "", 100000, t.TempDir())
+	h := NewHandler(mp, sm, cfg, 10, "", 100000, t.TempDir(), nil, nil)
 	s := NewServer("127.0.0.1:0")
 	h.Register(s.Router())
 	ts := httptest.NewServer(http.HandlerFunc(s.ConnectionManager().HandleWS))
@@ -544,7 +545,7 @@ func TestResumeSessionPrefixMatch(t *testing.T) {
 
 	cfg := &config.Config{Provider: "anthropic", Model: "test", APIKey: "k", MaxTokens: 1024}
 	mp := &mockProvider{}
-	h := NewHandler(mp, sm, cfg, 10, "", 100000, t.TempDir())
+	h := NewHandler(mp, sm, cfg, 10, "", 100000, t.TempDir(), nil, nil)
 	s := NewServer("127.0.0.1:0")
 	h.Register(s.Router())
 	ts := httptest.NewServer(http.HandlerFunc(s.ConnectionManager().HandleWS))
@@ -614,7 +615,7 @@ func TestResumeSessionAmbiguous(t *testing.T) {
 
 	cfg := &config.Config{Provider: "anthropic", Model: "test", APIKey: "k", MaxTokens: 1024}
 	mp := &mockProvider{}
-	h := NewHandler(mp, sm, cfg, 10, "", 100000, t.TempDir())
+	h := NewHandler(mp, sm, cfg, 10, "", 100000, t.TempDir(), nil, nil)
 	s := NewServer("127.0.0.1:0")
 	h.Register(s.Router())
 	ts := httptest.NewServer(http.HandlerFunc(s.ConnectionManager().HandleWS))
@@ -652,7 +653,7 @@ func TestSessionLoadedIncludesChatMessages(t *testing.T) {
 
 	cfg := &config.Config{Provider: "anthropic", Model: "test", APIKey: "k", MaxTokens: 1024}
 	mp := &mockProvider{}
-	h := NewHandler(mp, sm, cfg, 10, "", 100000, t.TempDir())
+	h := NewHandler(mp, sm, cfg, 10, "", 100000, t.TempDir(), nil, nil)
 	s := NewServer("127.0.0.1:0")
 	h.Register(s.Router())
 	ts := httptest.NewServer(http.HandlerFunc(s.ConnectionManager().HandleWS))
@@ -695,7 +696,7 @@ func TestGetCurrentSessionPushesCurrent(t *testing.T) {
 
 	cfg := &config.Config{Provider: "anthropic", Model: "test", APIKey: "k", MaxTokens: 1024}
 	mp := &mockProvider{}
-	h := NewHandler(mp, sm, cfg, 10, "", 100000, t.TempDir())
+	h := NewHandler(mp, sm, cfg, 10, "", 100000, t.TempDir(), nil, nil)
 	if h.CurrentSessionID() != sess.ID {
 		t.Fatalf("构造后 CurrentSessionID = %q，期望 %q", h.CurrentSessionID(), sess.ID)
 	}
@@ -730,7 +731,7 @@ func TestGetCurrentSessionEmptyMgr(t *testing.T) {
 	sm, _ := session.NewSessionManagerWithDir(dir)
 	cfg := &config.Config{Provider: "anthropic", Model: "test", APIKey: "k", MaxTokens: 1024}
 	mp := &mockProvider{}
-	h := NewHandler(mp, sm, cfg, 10, "", 100000, t.TempDir())
+	h := NewHandler(mp, sm, cfg, 10, "", 100000, t.TempDir(), nil, nil)
 
 	s := NewServer("127.0.0.1:0")
 	h.Register(s.Router())
@@ -765,7 +766,7 @@ func TestHandlerRecoversLatestSession(t *testing.T) {
 
 	cfg := &config.Config{Provider: "anthropic", Model: "test", APIKey: "k", MaxTokens: 1024}
 	mp := &mockProvider{}
-	h := NewHandler(mp, sm, cfg, 10, "", 100000, t.TempDir())
+	h := NewHandler(mp, sm, cfg, 10, "", 100000, t.TempDir(), nil, nil)
 
 	if h.CurrentSessionID() != sess.ID {
 		t.Errorf("CurrentSessionID = %q，期望 %q", h.CurrentSessionID(), sess.ID)
@@ -785,7 +786,7 @@ func TestDeleteSessionRemovesFileAndNotifies(t *testing.T) {
 	// 假设当前激活的是 s2（最近更新），删 s1
 	cfg := &config.Config{Provider: "anthropic", Model: "test", APIKey: "k", MaxTokens: 1024}
 	mp := &mockProvider{}
-	h := NewHandler(mp, sm, cfg, 10, "", 100000, t.TempDir())
+	h := NewHandler(mp, sm, cfg, 10, "", 100000, t.TempDir(), nil, nil)
 	// 直接覆盖构造时 LoadLatest 决定的 current，确保其是 s2
 	h.mu.Lock()
 	loaded, _ := sm.Load(s2.ID)
@@ -840,7 +841,7 @@ func TestDeleteSessionSwitchesCurrentWhenDeletingCurrent(t *testing.T) {
 
 	cfg := &config.Config{Provider: "anthropic", Model: "test", APIKey: "k", MaxTokens: 1024}
 	mp := &mockProvider{}
-	h := NewHandler(mp, sm, cfg, 10, "", 100000, t.TempDir())
+	h := NewHandler(mp, sm, cfg, 10, "", 100000, t.TempDir(), nil, nil)
 	// 强制把 current 设为 s1（稍旧），然后删除它，预期切到 s2
 	h.mu.Lock()
 	loaded, _ := sm.Load(s1.ID)

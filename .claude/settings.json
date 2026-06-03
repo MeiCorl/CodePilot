@@ -17,6 +17,7 @@
       "Bash(grep *)",
       "Bash(curl *)",
       "Bash(cd *)",
+      "Bash(echo *)",
       "Bash(head *)",
       "Bash(tail *)",
       "Bash(mkdir *)",

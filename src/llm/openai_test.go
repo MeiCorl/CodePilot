@@ -2,10 +2,13 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/MeiCorl/CodePilot/src/internal/config"
+	"github.com/MeiCorl/CodePilot/src/tool"
 )
 
 // newTestOpenAIProvider 创建测试用 OpenAIProvider（不调用真实 API）
@@ -95,7 +98,7 @@ func TestOpenAICtxCancel(t *testing.T) {
 		{Role: RoleUser, Content: []ContentBlock{NewTextBlock("test")}},
 	}
 
-	ch, err := p.StreamChat(ctx, "system prompt", messages)
+	ch, err := p.StreamChat(ctx, "system prompt", messages, nil)
 	if err != nil {
 		t.Fatalf("StreamChat 返回错误: %v", err)
 	}
@@ -130,5 +133,158 @@ func TestOpenAIShouldRetry(t *testing.T) {
 				t.Errorf("shouldRetry(%v) = %v, want %v", tt.err, got, tt.wantRetry)
 			}
 		})
+	}
+}
+
+// TestOpenAIConvertTools 验证 ToolSpec 列表正确转换为 OpenAI tools 数组。
+// 通过 JSON 序列化检查关键字段（type=function / function.name / function.description / function.parameters）。
+func TestOpenAIConvertTools(t *testing.T) {
+	p := newTestOpenAIProvider()
+
+	specs := []tool.ToolSpec{
+		{
+			Name:        "read_file",
+			Description: "读取文件内容",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"file_path":{"type":"string"}},"required":["file_path"]}`),
+		},
+	}
+
+	tools := p.convertTools(specs)
+	if len(tools) != 1 {
+		t.Fatalf("转换后工具数量错误: 期望 1, 实际 %d", len(tools))
+	}
+
+	data, err := json.Marshal(tools[0])
+	if err != nil {
+		t.Fatalf("序列化失败: %v", err)
+	}
+	s := string(data)
+	if !strings.Contains(s, `"type":"function"`) {
+		t.Errorf("缺少 type=function 字段: %s", s)
+	}
+	if !strings.Contains(s, `"name":"read_file"`) {
+		t.Errorf("缺少 function.name 字段: %s", s)
+	}
+	if !strings.Contains(s, `"description":"读取文件内容"`) {
+		t.Errorf("缺少 function.description 字段: %s", s)
+	}
+	if !strings.Contains(s, `"parameters"`) {
+		t.Errorf("缺少 function.parameters 字段: %s", s)
+	}
+}
+
+// TestOpenAIConvertToolsEmpty 验证空 specs 不 panic
+func TestOpenAIConvertToolsEmpty(t *testing.T) {
+	p := newTestOpenAIProvider()
+	tools := p.convertTools(nil)
+	if len(tools) != 0 {
+		t.Errorf("空 specs 应返回空数组, 实际长度 %d", len(tools))
+	}
+}
+
+// TestOpenAIConvertMessagesWithToolCalls 验证 assistant 消息中含 ToolUseBlock 时
+// 能正确转换为 OpenAI assistant 消息（带 tool_calls 字段）。
+func TestOpenAIConvertMessagesWithToolCalls(t *testing.T) {
+	p := newTestOpenAIProvider()
+
+	messages := []Message{
+		{
+			Role: RoleUser,
+			Content: []ContentBlock{
+				NewTextBlock("读一下 main.go"),
+			},
+		},
+		{
+			Role: RoleAssistant,
+			Content: []ContentBlock{
+				NewToolUseBlock("call_abc123", "read_file", json.RawMessage(`{"file_path":"main.go"}`)),
+			},
+		},
+	}
+
+	params := p.convertMessages(messages)
+	if len(params) != 2 {
+		t.Fatalf("转换后消息数量错误: 期望 2, 实际 %d", len(params))
+	}
+
+	// 验证 assistant 消息序列化后含 tool_calls 字段
+	data, err := json.Marshal(params[1])
+	if err != nil {
+		t.Fatalf("序列化失败: %v", err)
+	}
+	s := string(data)
+	if !strings.Contains(s, `"tool_calls"`) {
+		t.Errorf("缺少 tool_calls 字段: %s", s)
+	}
+	if !strings.Contains(s, `"call_abc123"`) {
+		t.Errorf("缺少 tool call ID: %s", s)
+	}
+	if !strings.Contains(s, `"read_file"`) {
+		t.Errorf("缺少 tool call name: %s", s)
+	}
+}
+
+// TestOpenAIConvertMessagesWithToolResult 验证 user 消息中含 ToolResultBlock 时
+// 能正确转换为 role=tool 消息，并通过 JSON 序列化验证 role / tool_call_id / content 落地。
+func TestOpenAIConvertMessagesWithToolResult(t *testing.T) {
+	p := newTestOpenAIProvider()
+
+	messages := []Message{
+		{
+			Role: RoleAssistant,
+			Content: []ContentBlock{
+				NewToolUseBlock("call_abc123", "read_file", json.RawMessage(`{"file_path":"main.go"}`)),
+			},
+		},
+		{
+			Role: RoleUser,
+			Content: []ContentBlock{
+				NewToolResultBlock("call_abc123", "L1: package main", false),
+			},
+		},
+	}
+
+	params := p.convertMessages(messages)
+	// assistant 1 条 + tool 1 条 = 2
+	if len(params) != 2 {
+		t.Fatalf("转换后消息数量错误: 期望 2, 实际 %d", len(params))
+	}
+
+	// 第二条应是 role=tool 消息
+	data, err := json.Marshal(params[1])
+	if err != nil {
+		t.Fatalf("序列化失败: %v", err)
+	}
+	s := string(data)
+	if !strings.Contains(s, `"role":"tool"`) {
+		t.Errorf("缺少 role=tool 字段: %s", s)
+	}
+	if !strings.Contains(s, `"tool_call_id":"call_abc123"`) {
+		t.Errorf("缺少 tool_call_id 字段: %s", s)
+	}
+	if !strings.Contains(s, `"L1: package main"`) {
+		t.Errorf("缺少 content 字段: %s", s)
+	}
+}
+
+// TestOpenAIConvertMessagesMixedUserToolAndText 验证 user 消息同时含 text 与 tool_result
+// 时，text 段独立成 user 消息、tool_result 独立成 role=tool 消息（OpenAI 协议强制）。
+func TestOpenAIConvertMessagesMixedUserToolAndText(t *testing.T) {
+	p := newTestOpenAIProvider()
+
+	messages := []Message{
+		{
+			Role: RoleUser,
+			Content: []ContentBlock{
+				NewTextBlock("这是 text"),
+				NewToolResultBlock("call_1", "result", false),
+			},
+		},
+	}
+
+	params := p.convertMessages(messages)
+	// text 1 条 + tool 1 条 = 2
+	if len(params) != 2 {
+		t.Fatalf("混合 user 消息应拆分为 2 条, 实际 %d", len(params))
 	}
 }

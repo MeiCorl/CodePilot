@@ -2,10 +2,13 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/MeiCorl/CodePilot/src/internal/config"
+	"github.com/MeiCorl/CodePilot/src/tool"
 )
 
 // newTestAnthropicProvider 创建测试用 AnthropicProvider（不调用真实 API）
@@ -101,7 +104,7 @@ func TestAnthropicCtxCancel(t *testing.T) {
 		{Role: RoleUser, Content: []ContentBlock{NewTextBlock("test")}},
 	}
 
-	ch, err := p.StreamChat(ctx, "system prompt", messages)
+	ch, err := p.StreamChat(ctx, "system prompt", messages, nil)
 	if err != nil {
 		t.Fatalf("StreamChat 返回错误: %v", err)
 	}
@@ -138,5 +141,122 @@ func TestAnthropicShouldRetry(t *testing.T) {
 				t.Errorf("shouldRetry(%v) = %v, want %v", tt.err, got, tt.wantRetry)
 			}
 		})
+	}
+}
+
+// TestAnthropicConvertTools 验证 ToolSpec 列表正确转换为 Anthropic tools 数组。
+// 通过 JSON 序列化检查关键字段（name / description / input_schema）落地。
+func TestAnthropicConvertTools(t *testing.T) {
+	p := newTestAnthropicProvider()
+
+	specs := []tool.ToolSpec{
+		{
+			Name:        "read_file",
+			Description: "读取文件内容",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"file_path":{"type":"string"}},"required":["file_path"]}`),
+		},
+		{
+			Name:        "bash",
+			Description: "执行 Shell 命令",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"}}}`),
+		},
+	}
+
+	tools := p.convertTools(specs)
+	if len(tools) != 2 {
+		t.Fatalf("转换后工具数量错误: 期望 2, 实际 %d", len(tools))
+	}
+
+	// 验证第一个工具的 JSON 序列化形态
+	data, err := json.Marshal(tools[0].OfTool)
+	if err != nil {
+		t.Fatalf("序列化失败: %v", err)
+	}
+	s := string(data)
+	if !strings.Contains(s, `"name":"read_file"`) {
+		t.Errorf("缺少 name 字段: %s", s)
+	}
+	if !strings.Contains(s, `"description":"读取文件内容"`) {
+		t.Errorf("缺少 description 字段: %s", s)
+	}
+	if !strings.Contains(s, `"input_schema"`) {
+		t.Errorf("缺少 input_schema 字段: %s", s)
+	}
+	if !strings.Contains(s, `"required":["file_path"]`) {
+		t.Errorf("缺少 required 字段: %s", s)
+	}
+}
+
+// TestAnthropicConvertToolsEmpty 验证空 specs 不 panic
+func TestAnthropicConvertToolsEmpty(t *testing.T) {
+	p := newTestAnthropicProvider()
+	tools := p.convertTools(nil)
+	if len(tools) != 0 {
+		t.Errorf("空 specs 应返回空数组, 实际长度 %d", len(tools))
+	}
+}
+
+// TestAnthropicConvertMessagesWithToolUse 验证 assistant 消息中含 ToolUseBlock 时
+// 能正确转换为 Anthropic assistant 消息（带 tool_use 块）。
+func TestAnthropicConvertMessagesWithToolUse(t *testing.T) {
+	p := newTestAnthropicProvider()
+
+	messages := []Message{
+		{
+			Role: RoleUser,
+			Content: []ContentBlock{
+				NewTextBlock("读一下 main.go"),
+			},
+		},
+		{
+			Role: RoleAssistant,
+			Content: []ContentBlock{
+				NewToolUseBlock("tool_use_1", "read_file", json.RawMessage(`{"file_path":"main.go"}`)),
+			},
+		},
+	}
+
+	params := p.convertMessages(messages)
+	if len(params) != 2 {
+		t.Fatalf("转换后消息数量错误: 期望 2, 实际 %d", len(params))
+	}
+	// 不 panic 即视为通过；具体 union 内容由 Anthropic SDK 自身保证
+}
+
+// TestAnthropicConvertMessagesWithToolResult 验证 user 消息中含 ToolResultBlock 时
+// 能正确转换为 Anthropic tool_result 块（无 panic）。
+func TestAnthropicConvertMessagesWithToolResult(t *testing.T) {
+	p := newTestAnthropicProvider()
+
+	messages := []Message{
+		{
+			Role: RoleAssistant,
+			Content: []ContentBlock{
+				NewToolUseBlock("tool_use_1", "read_file", json.RawMessage(`{"file_path":"main.go"}`)),
+			},
+		},
+		{
+			Role: RoleUser,
+			Content: []ContentBlock{
+				NewToolResultBlock("tool_use_1", "L1: package main", false),
+			},
+		},
+	}
+
+	params := p.convertMessages(messages)
+	if len(params) != 2 {
+		t.Fatalf("转换后消息数量错误: 期望 2, 实际 %d", len(params))
+	}
+}
+
+// TestStreamChunkToolUseField 验证 StreamChunk 新增 ToolUse 字段可被正常赋值
+func TestStreamChunkToolUseField(t *testing.T) {
+	toolUse := NewToolUseBlock("abc", "read_file", json.RawMessage(`{"file_path":"x"}`)).(*ToolUseBlock)
+	chunk := StreamChunk{Done: true, ToolUse: toolUse}
+	if chunk.ToolUse == nil {
+		t.Fatal("ToolUse 字段未被赋值")
+	}
+	if chunk.ToolUse.ID != "abc" {
+		t.Errorf("ToolUse.ID 错误: %s", chunk.ToolUse.ID)
 	}
 }

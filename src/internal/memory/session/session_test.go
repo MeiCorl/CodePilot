@@ -484,3 +484,133 @@ func TestTruncateText(t *testing.T) {
 		}
 	}
 }
+
+// TestSessionRoundTripWithToolUseAndToolResult 验证 ToolUseBlock / ToolResultBlock
+// 在会话 save+load 后能完整还原（spec 能力清单 16：会话持久化兼容）。
+func TestSessionRoundTripWithToolUseAndToolResult(t *testing.T) {
+	dir := t.TempDir()
+	sm := &SessionManager{sessionsDir: dir}
+
+	inputJSON := json.RawMessage(`{"file_path":"src/main.go","offset":0,"limit":20}`)
+	original := &Session{
+		ID:        "tool-roundtrip",
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		Messages: []llm.Message{
+			{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.NewTextBlock("请读一下 src/main.go 前 20 行")}},
+			{
+				Role: llm.RoleAssistant,
+				Content: []llm.ContentBlock{
+					&llm.ToolUseBlock{ID: "toolu_abc123", Name: "read_file", Input: inputJSON},
+				},
+			},
+			{
+				Role: llm.RoleUser,
+				Content: []llm.ContentBlock{
+					&llm.ToolResultBlock{ToolUseID: "toolu_abc123", Content: "L1: package main\nL2:", IsError: false},
+				},
+			},
+			{Role: llm.RoleAssistant, Content: []llm.ContentBlock{llm.NewTextBlock("前 20 行内容如上。")}},
+		},
+	}
+	if err := sm.Save(original); err != nil {
+		t.Fatalf("Save 失败: %v", err)
+	}
+
+	loaded, err := sm.Load("tool-roundtrip")
+	if err != nil {
+		t.Fatalf("Load 失败: %v", err)
+	}
+	if len(loaded.Messages) != len(original.Messages) {
+		t.Fatalf("消息数不匹配: 期望 %d, 实际 %d", len(original.Messages), len(loaded.Messages))
+	}
+
+	// 验证 assistant tool_use 消息
+	asstToolUse := loaded.Messages[1].Content[0]
+	if asstToolUse.Type() != llm.ContentBlockTypeToolUse {
+		t.Fatalf("第 2 条消息类型: 期望 %s, 实际 %s", llm.ContentBlockTypeToolUse, asstToolUse.Type())
+	}
+	tu, ok := asstToolUse.(*llm.ToolUseBlock)
+	if !ok {
+		t.Fatalf("第 2 条消息应能转回 *ToolUseBlock, 实际 %T", asstToolUse)
+	}
+	if tu.ID != "toolu_abc123" || tu.Name != "read_file" {
+		t.Errorf("ToolUse 字段不一致: ID=%s Name=%s", tu.ID, tu.Name)
+	}
+	if string(tu.Input) != string(inputJSON) {
+		// session 落盘用 MarshalIndent 会重排空白，原始 RawMessage 不会逐字节相等；
+		// 改用解析后语义比对：两边都 unmarshal 成 map，验证键值一致
+		var orig, got map[string]any
+		if err := json.Unmarshal(inputJSON, &orig); err != nil {
+			t.Fatalf("原 Input JSON 解析失败: %v", err)
+		}
+		if err := json.Unmarshal(tu.Input, &got); err != nil {
+			t.Fatalf("回读 Input JSON 解析失败: %v", err)
+		}
+		if fmt.Sprintf("%v", orig) != fmt.Sprintf("%v", got) {
+			t.Errorf("ToolUse.Input 语义不一致: 期望 %v, 实际 %v", orig, got)
+		}
+	}
+
+	// 验证 user tool_result 消息
+	userToolResult := loaded.Messages[2].Content[0]
+	if userToolResult.Type() != llm.ContentBlockTypeToolResult {
+		t.Fatalf("第 3 条消息类型: 期望 %s, 实际 %s", llm.ContentBlockTypeToolResult, userToolResult.Type())
+	}
+	tr, ok := userToolResult.(*llm.ToolResultBlock)
+	if !ok {
+		t.Fatalf("第 3 条消息应能转回 *ToolResultBlock, 实际 %T", userToolResult)
+	}
+	if tr.ToolUseID != "toolu_abc123" || tr.IsError || tr.Content == "" {
+		t.Errorf("ToolResult 字段不一致: ID=%s IsError=%v Content=%q", tr.ToolUseID, tr.IsError, tr.Content)
+	}
+}
+
+// TestSessionRawJSONContainsToolUseType 验证 session JSON 文件中含
+// `type: "tool_use"` 与 `type: "tool_result"` 字段（spec 8.1）。
+func TestSessionRawJSONContainsToolUseType(t *testing.T) {
+	dir := t.TempDir()
+	sm := &SessionManager{sessionsDir: dir}
+	s := &Session{
+		ID:        "raw-tool",
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		Messages: []llm.Message{
+			{Role: llm.RoleAssistant, Content: []llm.ContentBlock{
+				&llm.ToolUseBlock{ID: "u1", Name: "bash", Input: json.RawMessage(`{"command":"ls"}`)},
+			}},
+			{Role: llm.RoleUser, Content: []llm.ContentBlock{
+				&llm.ToolResultBlock{ToolUseID: "u1", Content: "ok", IsError: false},
+			}},
+		},
+	}
+	if err := sm.Save(s); err != nil {
+		t.Fatalf("Save 失败: %v", err)
+	}
+
+	// 解析落盘 JSON 检查 type 字段（避开缩进空格带来的字符串匹配歧义）
+	var parsed struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content []struct {
+				Type string `json:"type"`
+			} `json:"content"`
+		} `json:"messages"`
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, "raw-tool.json"))
+	if err != nil {
+		t.Fatalf("读 session 文件失败: %v", err)
+	}
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		t.Fatalf("解析 session JSON 失败: %v\n原始内容: %s", err, raw)
+	}
+	if len(parsed.Messages) != 2 {
+		t.Fatalf("期望 2 条消息, 实际 %d", len(parsed.Messages))
+	}
+	if got := parsed.Messages[0].Content[0].Type; got != "tool_use" {
+		t.Errorf("assistant content[0].type: 期望 tool_use, 实际 %s", got)
+	}
+	if got := parsed.Messages[1].Content[0].Type; got != "tool_result" {
+		t.Errorf("user content[0].type: 期望 tool_result, 实际 %s", got)
+	}
+}
