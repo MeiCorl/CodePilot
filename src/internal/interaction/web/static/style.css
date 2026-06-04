@@ -661,9 +661,11 @@ body {
 
 /* ===== Step 1.2: 代码块增强（语言标签 / 复制按钮 / JSON 校验） ===== */
 /* 容器改为 relative，header 绝对定位；padding-top 36px 给 header 留位 */
+/* transition: padding-top 平滑流式渲染结束时 .code-block 类被添加的视觉跳变 */
 .message-assistant .message-bubble pre.code-block {
     position: relative;
     padding-top: 36px;
+    transition: padding-top 0.15s ease-out;
 }
 
 /* header：28px 高的灰底条，左侧语言标签、右侧 Copy 按钮 */

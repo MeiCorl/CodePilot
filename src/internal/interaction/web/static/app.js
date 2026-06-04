@@ -252,6 +252,8 @@
         state.streaming = false;
         state.expectingAssistant = false;
         hideThinking();
+        // 中断/错误时先将已接收的流式内容固化为完整消息，避免内容丢失
+        finalizeAssistantMessage();
         const code = p?.code || 'unknown';
         const message = p?.message || '未知错误';
         renderErrorCard(code, message);
@@ -569,6 +571,13 @@
 
     function renderAllMessages() {
         dom.messages.innerHTML = '';
+        // 切换会话时清理打字机动画状态（rAF 可能仍持有旧 DOM 引用）
+        if (state._typewriterRafId) {
+            cancelAnimationFrame(state._typewriterRafId);
+            state._typewriterRafId = null;
+        }
+        state._streamingWrap = null;
+        state._streamingBuffer = '';
         // 切换会话时清空工具 id 索引（旧的 DOM 节点已不在 DOM 树里）
         state._toolById = {};
         if (!state.messages.length) {
@@ -641,7 +650,7 @@
         if (isUser) {
             bubble.textContent = content;       // 用户消息纯文本，避免 XSS
         } else {
-            // 助手消息：流式时不渲染，结束时调用 marked.parse
+            // 助手消息：流式时先设空文本占位，实际渲染由 typewriterTick 打字机动画驱动
             if (streaming) {
                 bubble.textContent = content;
             } else {
@@ -865,31 +874,218 @@
 
     function appendStreamDelta(delta) {
         // 流式 chunk 追加：保证状态机只有一个"in-progress"助手消息
-        if (!state._streamingWrap) {
+        const isFirstChunk = !state._streamingWrap;
+        if (isFirstChunk) {
             // 清空空状态 + thinking 占位
             const empty = dom.messages.querySelector('.messages-empty');
             if (empty) empty.remove();
             hideThinking();
             state._streamingWrap = appendMessageNode('assistant', '', true);
             state._streamingBuffer = '';
+            state._revealedLen = 0;
         }
         state._streamingBuffer += delta;
-        const bubble = state._streamingWrap.querySelector('.message-bubble');
-        bubble.textContent = state._streamingBuffer;
-        scrollToBottomIfNeeded();
+
+        // 启动打字机动画（仅首个 delta 或动画已停止时触发）
+        if (!state._typewriterRafId) {
+            state._typewriterRafId = requestAnimationFrame(typewriterTick);
+        }
     }
 
     function finalizeAssistantMessage() {
         if (!state._streamingWrap) return;
+
+        // 1. 停止打字机动画
+        if (state._typewriterRafId) {
+            cancelAnimationFrame(state._typewriterRafId);
+            state._typewriterRafId = null;
+        }
+
         const bubble = state._streamingWrap.querySelector('.message-bubble');
         const text = state._streamingBuffer || '';
-        bubble.innerHTML = renderMarkdown(text);
+
+        // 2. 最终渲染：使用 renderMarkdown（不带光标），确保最终内容干净
+        if (text && bubble) {
+            bubble.innerHTML = renderMarkdown(text);
+        }
+
+        // 3. 对已渲染的内容执行最终增强：hljs 语法高亮、代码块 header（复制按钮）、JSON 校验
         enhanceCodeBlocks(bubble);
-        // 把流式消息固化为普通消息
+
+        // 4. 固化为普通消息
         state.messages.push({ role: 'assistant', content: text });
         state._streamingWrap = null;
         state._streamingBuffer = '';
+        state._revealedLen = 0;
         scrollToBottomIfNeeded();
+    }
+
+    // ---- 流式渲染核心：打字机效果 ----
+    // 核心思路：把「收到了多少」和「显示了多少」解耦。
+    // appendStreamDelta 只负责往缓冲区追加文本；
+    // typewriterTick 每帧匀速推进"揭示光标"，逐步展示缓冲区内容。
+    // 无论 LLM token 到达多快，用户看到的都是匀速的打字机输出。
+    // 流结束后由 finalizeAssistantMessage 立即显示全部剩余内容。
+
+    /** 每帧推进的字符数（基础速度） */
+    const TYPEWRITER_BASE_SPEED = 2;
+    /** 自适应加速阈值：积压超过此值时提速追赶 */
+    const TYPEWRITER_SPEEDUP_THRESHOLD = 30;
+    /** 每帧最大推进字符数（防止长响应结尾时追赶太猛） */
+    const TYPEWRITER_MAX_SPEED = 24;
+
+    /**
+     * typewriterTick — 打字机动画的每帧回调。
+     * 推进"已揭示长度"，渲染可见部分（带光标），如仍有积压则调度下一帧。
+     */
+    function typewriterTick() {
+        state._typewriterRafId = null;
+        if (!state._streamingWrap || !state._streamingBuffer) return;
+
+        const bufferLen = state._streamingBuffer.length;
+        if (state._revealedLen >= bufferLen) return; // 已追上，等待新 delta 触发
+
+        // 自适应速度：积压越多越快，避免长响应追赶太慢
+        const backlog = bufferLen - state._revealedLen;
+        const speed = backlog > TYPEWRITER_SPEEDUP_THRESHOLD
+            ? Math.min(backlog, TYPEWRITER_MAX_SPEED)
+            : TYPEWRITER_BASE_SPEED;
+        state._revealedLen = Math.min(state._revealedLen + speed, bufferLen);
+
+        // 取已揭示部分的文本，走 Markdown 解析 + DOMPurify 过滤
+        const visibleText = state._streamingBuffer.substring(0, state._revealedLen);
+        const bubble = state._streamingWrap.querySelector('.message-bubble');
+        if (bubble) {
+            const html = streamingRenderMarkdown(visibleText);
+            bubble.innerHTML = html + '<span class="cursor" aria-hidden="true"></span>';
+        }
+
+        // 直接滚动（已在 rAF 回调内，无需再套一层 rAF）
+        if (!state.userScrolledUp) {
+            dom.messages.scrollTop = dom.messages.scrollHeight;
+        }
+
+        // 还有未显示的内容，调度下一帧
+        if (state._revealedLen < bufferLen) {
+            state._typewriterRafId = requestAnimationFrame(typewriterTick);
+        }
+    }
+
+    /**
+     * closeOpenFences — 检测文本中未闭合的围栏代码块，自动在末尾补上闭合标记。
+     * 确保 marked.parse 对不完整代码块也能生成 <pre><code> 容器，而非当作纯文本。
+     *
+     * 支持两种围栏标记：```（反引号）和 ~~~（波浪号）。
+     * 仅处理位于行首（可选缩进）的围栏标记。
+     *
+     * @param {string} text - 已累积的流式文本
+     * @returns {string} - 处理后的文本（可能追加了闭合标记）
+     */
+    function closeOpenFences(text) {
+        // 按行扫描，追踪每种围栏的开启/闭合状态
+        const lines = text.split('\n');
+        // 用栈追踪当前打开的围栏：每个元素为围栏标记的字符（` 或 ~）
+        const fenceStack = [];
+        const fenceRe = /^(\s{0,3})(```+|~~~+)/;
+
+        for (const line of lines) {
+            const m = line.match(fenceRe);
+            if (m) {
+                const fenceChar = m[2][0]; // ` 或 ~
+                if (fenceStack.length > 0 && fenceStack[fenceStack.length - 1] === fenceChar) {
+                    // 闭合当前围栏
+                    fenceStack.pop();
+                } else {
+                    // 开启新围栏
+                    fenceStack.push(fenceChar);
+                }
+            }
+        }
+
+        // 栈中剩余的即为未闭合的围栏，逐个补上闭合标记
+        let result = text;
+        for (const fenceChar of fenceStack) {
+            result += '\n' + fenceChar.repeat(3);
+        }
+        return result;
+    }
+
+    /**
+     * htmlDecode — 将 marked 输出中的 HTML 实体还原为原始字符。
+     * marked 会将 code 块内的 < > & " ' 转义，传给 hljs.highlight() 前需还原。
+     * 使用纯字符串替换，避免创建临时 DOM 元素的额外开销。
+     *
+     * @param {string} str - 含 HTML 实体的字符串
+     * @returns {string} - 还原后的字符串
+     */
+    function htmlDecode(str) {
+        return str
+            .replace(/&amp;/g, '&')
+            .replace(/&lt;/g, '<')
+            .replace(/&gt;/g, '>')
+            .replace(/&quot;/g, '"')
+            .replace(/&#39;/g, "'");
+    }
+
+    /**
+     * highlightCodeInHTML — 对 HTML 字符串中的代码块应用 hljs 语法高亮。
+     *
+     * 在 marked.parse() 之后、DOMPurify.sanitize() 之前调用。
+     * 使用 hljs.highlight()（字符串 API）而非 hljs.highlightElement()（DOM API），
+     * 避免每帧 innerHTML 全量替换时的 DOM 节点销毁/重建开销。
+     *
+     * 工作流程：
+     *   1. 正则匹配 <code class="language-xxx">content</code>
+     *   2. htmlDecode 还原转义字符
+     *   3. hljs.highlight(rawCode, {language}) 得到带 <span class="hljs-keyword"> 的高亮 HTML
+     *   4. 替换回原位，追加 hljs class 使 CSS 主题生效
+     *
+     * @param {string} html - marked.parse() 输出的 HTML 字符串
+     * @returns {string} - 含高亮 token 的 HTML 字符串（未 sanitize）
+     */
+    function highlightCodeInHTML(html) {
+        if (!window.hljs) return html;
+        return html.replace(
+            /<code class="language-([\w+-]+)">([\s\S]*?)<\/code>/g,
+            (match, lang, codeHtml) => {
+                const rawCode = htmlDecode(codeHtml);
+                try {
+                    const result = window.hljs.highlight(rawCode, { language: lang });
+                    return `<code class="language-${lang} hljs">${result.value}</code>`;
+                } catch {
+                    // 语言不被 hljs 支持时原样返回
+                    return match;
+                }
+            }
+        );
+    }
+
+    /**
+     * streamingRenderMarkdown — 流式渲染专用的 Markdown 解析。
+     * 与 renderMarkdown 的区别：
+     *   1. 先预处理未闭合代码块（closeOpenFences）
+     *   2. marked 解析后对代码块内联 hljs 语法高亮（highlightCodeInHTML）
+     *   3. 最后 DOMPurify 过滤
+     * XSS 防护规则与 renderMarkdown 完全一致，安全不降级。
+     *
+     * @param {string} text - 已累积的流式文本（可能含未闭合围栏）
+     * @returns {string} - 经高亮 + DOMPurify 过滤的安全 HTML
+     */
+    function streamingRenderMarkdown(text) {
+        if (!text) return '';
+        try {
+            const preprocessed = closeOpenFences(text);
+            const raw = window.marked.parse(preprocessed);
+            // 在 DOMPurify 之前注入 hljs 高亮 token，让代码块实时带颜色
+            const highlighted = highlightCodeInHTML(raw);
+            return window.DOMPurify.sanitize(highlighted, {
+                ADD_ATTR: ['class'],
+                FORBID_TAGS: ['style', 'iframe', 'script'],
+            });
+        } catch (err) {
+            console.error('流式 Markdown 渲染失败', err);
+            return escapeHTML(text);
+        }
     }
 
     // ---- Markdown 渲染 ----
