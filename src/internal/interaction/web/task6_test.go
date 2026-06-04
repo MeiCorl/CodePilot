@@ -35,13 +35,13 @@ func TestMultiTurnSessionPersistence(t *testing.T) {
 	sess.Messages = []llm.Message{
 		{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.NewTextBlock("读取 a.txt 并写入 b.txt")}},
 		{Role: llm.RoleAssistant, Content: []llm.ContentBlock{
-			&llm.ToolUseBlock{ID: "tu-1", Name: "read_file", Input: json.RawMessage(`{"file_path":"a.txt"}`)},
+			&llm.ToolUseBlock{ID: "tu-1", Name: "ReadFile", Input: json.RawMessage(`{"file_path":"a.txt"}`)},
 		}},
 		{Role: llm.RoleUser, Content: []llm.ContentBlock{
 			&llm.ToolResultBlock{ToolUseID: "tu-1", Content: "hello world", IsError: false},
 		}},
 		{Role: llm.RoleAssistant, Content: []llm.ContentBlock{
-			&llm.ToolUseBlock{ID: "tu-2", Name: "write_file", Input: json.RawMessage(`{"file_path":"b.txt","content":"hello world"}`)},
+			&llm.ToolUseBlock{ID: "tu-2", Name: "WriteFile", Input: json.RawMessage(`{"file_path":"b.txt","content":"hello world"}`)},
 		}},
 		{Role: llm.RoleUser, Content: []llm.ContentBlock{
 			&llm.ToolResultBlock{ToolUseID: "tu-2", Content: "ok", IsError: false},
@@ -80,14 +80,14 @@ func TestMultiTurnSessionPersistence(t *testing.T) {
 		t.Errorf("第 1 条: role=%q content=%q", chatMsgs[0].Role, chatMsgs[0].Content)
 	}
 	// 第 2 条：ToolCall read_file
-	if chatMsgs[1].ToolCall == nil || chatMsgs[1].ToolCall.Name != "read_file" {
+	if chatMsgs[1].ToolCall == nil || chatMsgs[1].ToolCall.Name != "ReadFile" {
 		t.Errorf("第 2 条: 应为 read_file ToolCall, 实际: %+v", chatMsgs[1])
 	}
 	if chatMsgs[1].ToolCall.Output != "hello world" {
 		t.Errorf("第 2 条 Output = %q, 期望 hello world", chatMsgs[1].ToolCall.Output)
 	}
 	// 第 3 条：ToolCall write_file
-	if chatMsgs[2].ToolCall == nil || chatMsgs[2].ToolCall.Name != "write_file" {
+	if chatMsgs[2].ToolCall == nil || chatMsgs[2].ToolCall.Name != "WriteFile" {
 		t.Errorf("第 3 条: 应为 write_file ToolCall, 实际: %+v", chatMsgs[2])
 	}
 	// 第 4 条：assistant text
@@ -106,7 +106,7 @@ func TestOldSessionBackwardCompatible(t *testing.T) {
 	sess.Messages = []llm.Message{
 		{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.NewTextBlock("读取 main.go")}},
 		{Role: llm.RoleAssistant, Content: []llm.ContentBlock{
-			&llm.ToolUseBlock{ID: "old-1", Name: "read_file", Input: json.RawMessage(`{"file_path":"main.go"}`)},
+			&llm.ToolUseBlock{ID: "old-1", Name: "ReadFile", Input: json.RawMessage(`{"file_path":"main.go"}`)},
 		}},
 		{Role: llm.RoleUser, Content: []llm.ContentBlock{
 			&llm.ToolResultBlock{ToolUseID: "old-1", Content: "package main", IsError: false},
@@ -147,7 +147,7 @@ func TestOldSessionBackwardCompatible(t *testing.T) {
 	if p.Messages[1].ToolCall == nil {
 		t.Fatalf("第 2 条应为 ToolCall")
 	}
-	if p.Messages[1].ToolCall.Name != "read_file" {
+	if p.Messages[1].ToolCall.Name != "ReadFile" {
 		t.Errorf("ToolCall.Name = %q, 期望 read_file", p.Messages[1].ToolCall.Name)
 	}
 	if p.Messages[1].ToolCall.Output != "package main" {
@@ -165,7 +165,7 @@ func TestToolErrorInMultiTurnSession(t *testing.T) {
 	sess.Messages = []llm.Message{
 		{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.NewTextBlock("读取不存在的文件")}},
 		{Role: llm.RoleAssistant, Content: []llm.ContentBlock{
-			&llm.ToolUseBlock{ID: "err-1", Name: "read_file", Input: json.RawMessage(`{"file_path":"/no/such/file"}`)},
+			&llm.ToolUseBlock{ID: "err-1", Name: "ReadFile", Input: json.RawMessage(`{"file_path":"/no/such/file"}`)},
 		}},
 		{Role: llm.RoleUser, Content: []llm.ContentBlock{
 			&llm.ToolResultBlock{ToolUseID: "err-1", Content: "文件不存在: /no/such/file", IsError: true},

@@ -19,8 +19,8 @@ import (
 	"github.com/MeiCorl/CodePilot/src/internal/tool/safety"
 )
 
-// ReadFileName 是 ReadFile 工具的 snake_case 唯一标识。
-const ReadFileName = "read_file"
+// ReadFileName 是 ReadFile 工具的唯一标识（大驼峰格式）。
+const ReadFileName = "ReadFile"
 
 const (
 	readFileDefaultLimit = 2000
@@ -49,7 +49,7 @@ func NewReadFileTool(workingDir string) *ReadFileTool {
 	return &ReadFileTool{
 		BaseTool: tool.BaseTool{
 			ToolName:        ReadFileName,
-			ToolDescription: "读取文件内容并按行返回（每行带行号 L<n>:）。支持 offset/limit 分页读取大文件。无法读取二进制文件、不存在的文件或沙箱外的路径。",
+			ToolDescription: "读取文件内容并按行返回（每行带行号 L<n>:）。支持 offset/limit 分页读取大文件。无法读取二进制文件、不存在的文件或沙箱外的路径。优先使用此内置工具而非 Bash 命令（如 cat/head/tail）来读取文件。",
 			ToolInputSchema: readFileSchema,
 			ToolPermission:  tool.PermRead,
 		},

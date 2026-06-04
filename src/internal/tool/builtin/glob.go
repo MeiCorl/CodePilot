@@ -16,8 +16,8 @@ import (
 	"github.com/bmatcuk/doublestar/v4"
 )
 
-// GlobName 是 Glob 工具的 snake_case 唯一标识。
-const GlobName = "glob"
+// GlobName 是 Glob 工具的唯一标识（大驼峰格式）。
+const GlobName = "Glob"
 
 const (
 	globMaxResults = 100
@@ -42,7 +42,7 @@ func NewGlobTool(workingDir string) *GlobTool {
 	return &GlobTool{
 		BaseTool: tool.BaseTool{
 			ToolName:        GlobName,
-			ToolDescription: "按 glob 模式查找匹配的文件路径，支持 ** 递归（如 src/**/*.go）。结果按绝对路径排序，最多返回 100 条。基准目录与匹配结果均需落在工作目录之内。",
+			ToolDescription: "按 glob 模式查找匹配的文件路径，支持 ** 递归（如 src/**/*.go）。结果按绝对路径排序，最多返回 100 条。基准目录与匹配结果均需落在工作目录之内。优先使用此内置工具而非 Bash 命令（如 find/ls）来搜索文件。",
 			ToolInputSchema: globSchema,
 			ToolPermission:  tool.PermRead,
 		},

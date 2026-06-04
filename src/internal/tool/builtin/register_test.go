@@ -8,17 +8,17 @@ import (
 	"github.com/MeiCorl/CodePilot/src/internal/tool"
 )
 
-// TestRegisterAllFive 验证 Register 把 5 个工具全部注册到 Registry。
-func TestRegisterAllFive(t *testing.T) {
+// TestRegisterAllSix 验证 Register 把 6 个工具全部注册到 Registry。
+func TestRegisterAllSix(t *testing.T) {
 	r := tool.NewRegistry()
 	Register(r)
 
 	names := r.EnabledNames(nil)
-	if len(names) != 5 {
-		t.Fatalf("应注册 5 个工具, 实际 %d: %v", len(names), names)
+	if len(names) != 6 {
+		t.Fatalf("应注册 6 个工具, 实际 %d: %v", len(names), names)
 	}
 
-	expected := []string{"bash", "glob", "grep", "read_file", "write_file"}
+	expected := []string{"Bash", "EditFile", "Glob", "Grep", "ReadFile", "WriteFile"}
 	for i, want := range expected {
 		if names[i] != want {
 			t.Errorf("names[%d] 错误: 期望 %s, 实际 %s", i, want, names[i])
@@ -89,11 +89,11 @@ func TestRegisterWithOptionsOverrides(t *testing.T) {
 	customWorkdir := t.TempDir()
 	RegisterWithOptions(r, customWorkdir, 7*time.Second)
 
-	if r.Count() != 5 {
-		t.Errorf("覆盖后仍应注册 5 个工具, 实际 %d", r.Count())
+	if r.Count() != 6 {
+		t.Errorf("覆盖后仍应注册 6 个工具, 实际 %d", r.Count())
 	}
 	// 重新拿一次 Bash 工具实例，验证 Bash 工具被替换为新构造的实例
-	bash, ok := r.Get("bash")
+	bash, ok := r.Get("Bash")
 	if !ok {
 		t.Fatal("Bash 工具未注册")
 	}

@@ -15,8 +15,8 @@ import (
 	"github.com/MeiCorl/CodePilot/src/internal/tool/safety"
 )
 
-// BashName 是 Bash 工具的 snake_case 唯一标识。
-const BashName = "bash"
+// BashName 是 Bash 工具的唯一标识（大驼峰格式）。
+const BashName = "Bash"
 
 const (
 	bashDefaultTimeoutSec = 30
@@ -46,7 +46,7 @@ func NewBashTool(defaultTimeout time.Duration) *BashTool {
 	return &BashTool{
 		BaseTool: tool.BaseTool{
 			ToolName:        BashName,
-			ToolDescription: "在宿主 shell 中执行一条命令，捕获 stdout/stderr/exit code。支持管道、重定向、复合命令。带超时控制（默认 30s）。危险命令（rm -rf /、mkfs、shutdown 等）会被黑名单拦截，不会执行。",
+			ToolDescription: "在宿主 shell 中执行一条命令，捕获 stdout/stderr/exit code。支持管道、重定向、复合命令。带超时控制（默认 30s）。危险命令（rm -rf /、mkfs、shutdown 等）会被黑名单拦截，不会执行。注意：当内置工具（ReadFile/WriteFile/EditFile/Grep/Glob）可以完成相同任务时，必须优先使用内置工具，仅在内置工具无法胜任时才使用 Bash。",
 			ToolInputSchema: bashSchema,
 			ToolPermission:  tool.PermExec,
 		},
@@ -69,11 +69,6 @@ func (t *BashTool) Execute(parent context.Context, input json.RawMessage) (strin
 		return "", err
 	}
 
-	// Windows 平台暂不支持 sh
-	if runtime.GOOS == "windows" {
-		return "", errors.New("Bash 工具在 Windows 平台暂不支持，请使用 PowerShell 或 WSL 替代")
-	}
-
 	// 超时控制
 	timeout := t.DefaultTimeout
 	if in.Timeout > 0 {
@@ -82,8 +77,13 @@ func (t *BashTool) Execute(parent context.Context, input json.RawMessage) (strin
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 
-	// 通过 sh -c 执行，支持管道/重定向/复合命令
-	cmd := exec.CommandContext(ctx, "sh", "-c", in.Command)
+	// 根据平台选择 shell：Unix 用 sh -c，Windows 用 powershell -Command
+	var cmd *exec.Cmd
+	if runtime.GOOS == "windows" {
+		cmd = exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", in.Command)
+	} else {
+		cmd = exec.CommandContext(ctx, "sh", "-c", in.Command)
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &limitedWriter{w: &stdout, n: bashMaxOutputBytes}
 	cmd.Stderr = &limitedWriter{w: &stderr, n: bashMaxOutputBytes}

@@ -501,7 +501,7 @@ func TestSessionRoundTripWithToolUseAndToolResult(t *testing.T) {
 			{
 				Role: llm.RoleAssistant,
 				Content: []llm.ContentBlock{
-					&llm.ToolUseBlock{ID: "toolu_abc123", Name: "read_file", Input: inputJSON},
+					&llm.ToolUseBlock{ID: "toolu_abc123", Name: "ReadFile", Input: inputJSON},
 				},
 			},
 			{
@@ -534,7 +534,7 @@ func TestSessionRoundTripWithToolUseAndToolResult(t *testing.T) {
 	if !ok {
 		t.Fatalf("第 2 条消息应能转回 *ToolUseBlock, 实际 %T", asstToolUse)
 	}
-	if tu.ID != "toolu_abc123" || tu.Name != "read_file" {
+	if tu.ID != "toolu_abc123" || tu.Name != "ReadFile" {
 		t.Errorf("ToolUse 字段不一致: ID=%s Name=%s", tu.ID, tu.Name)
 	}
 	if string(tu.Input) != string(inputJSON) {
@@ -577,7 +577,7 @@ func TestSessionRawJSONContainsToolUseType(t *testing.T) {
 		UpdatedAt: time.Now(),
 		Messages: []llm.Message{
 			{Role: llm.RoleAssistant, Content: []llm.ContentBlock{
-				&llm.ToolUseBlock{ID: "u1", Name: "bash", Input: json.RawMessage(`{"command":"ls"}`)},
+				&llm.ToolUseBlock{ID: "u1", Name: "Bash", Input: json.RawMessage(`{"command":"ls"}`)},
 			}},
 			{Role: llm.RoleUser, Content: []llm.ContentBlock{
 				&llm.ToolResultBlock{ToolUseID: "u1", Content: "ok", IsError: false},

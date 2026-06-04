@@ -151,12 +151,12 @@ func TestAnthropicConvertTools(t *testing.T) {
 
 	specs := []tool.ToolSpec{
 		{
-			Name:        "read_file",
+			Name:        "ReadFile",
 			Description: "读取文件内容",
 			InputSchema: json.RawMessage(`{"type":"object","properties":{"file_path":{"type":"string"}},"required":["file_path"]}`),
 		},
 		{
-			Name:        "bash",
+			Name:        "Bash",
 			Description: "执行 Shell 命令",
 			InputSchema: json.RawMessage(`{"type":"object","properties":{"command":{"type":"string"}}}`),
 		},
@@ -173,7 +173,7 @@ func TestAnthropicConvertTools(t *testing.T) {
 		t.Fatalf("序列化失败: %v", err)
 	}
 	s := string(data)
-	if !strings.Contains(s, `"name":"read_file"`) {
+	if !strings.Contains(s, `"name":"ReadFile"`) {
 		t.Errorf("缺少 name 字段: %s", s)
 	}
 	if !strings.Contains(s, `"description":"读取文件内容"`) {
@@ -211,7 +211,7 @@ func TestAnthropicConvertMessagesWithToolUse(t *testing.T) {
 		{
 			Role: RoleAssistant,
 			Content: []ContentBlock{
-				NewToolUseBlock("tool_use_1", "read_file", json.RawMessage(`{"file_path":"main.go"}`)),
+				NewToolUseBlock("tool_use_1", "ReadFile", json.RawMessage(`{"file_path":"main.go"}`)),
 			},
 		},
 	}
@@ -232,7 +232,7 @@ func TestAnthropicConvertMessagesWithToolResult(t *testing.T) {
 		{
 			Role: RoleAssistant,
 			Content: []ContentBlock{
-				NewToolUseBlock("tool_use_1", "read_file", json.RawMessage(`{"file_path":"main.go"}`)),
+				NewToolUseBlock("tool_use_1", "ReadFile", json.RawMessage(`{"file_path":"main.go"}`)),
 			},
 		},
 		{
@@ -251,7 +251,7 @@ func TestAnthropicConvertMessagesWithToolResult(t *testing.T) {
 
 // TestStreamChunkToolUsesField 验证 StreamChunk 新增 ToolUses 切片字段可被正常赋值
 func TestStreamChunkToolUsesField(t *testing.T) {
-	toolUse := ToolUseBlock{ID: "abc", Name: "read_file", Input: json.RawMessage(`{"file_path":"x"}`)}
+	toolUse := ToolUseBlock{ID: "abc", Name: "ReadFile", Input: json.RawMessage(`{"file_path":"x"}`)}
 	chunk := StreamChunk{Done: true, ToolUses: []ToolUseBlock{toolUse}}
 	if !chunk.HasToolUse() {
 		t.Fatal("HasToolUse() 应返回 true")

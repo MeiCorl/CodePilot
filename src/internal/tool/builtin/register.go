@@ -6,7 +6,7 @@
 //
 //	import _ "src/tool/builtin"  // 触发 init()
 //
-// 即可使用 Registry.List() 拿到 5 个内置工具。
+// 即可使用 Registry.List() 拿到 6 个内置工具。
 // 后续新增工具只需在本包添加实现，并在 Register() 函数中追加一行。
 package builtin
 
@@ -45,12 +45,13 @@ func Register(r *tool.Registry) {
 // RegisterWithOptions 用显式的工作目录与 Bash 超时注册所有内置工具。
 //
 // 适用于主流程在加载 config 后调用：用 cfg.ToolWorkingDirectory /
-// cfg.ToolExecutionTimeoutSeconds 重新构造 5 个工具实例并覆盖
+// cfg.ToolExecutionTimeoutSeconds 重新构造 6 个工具实例并覆盖
 // init() 时按 cwd 兜底注册的实例，保证配置字段真正生效。
 func RegisterWithOptions(r *tool.Registry, workdir string, bashTimeout time.Duration) {
 	r.MustReplace(
 		NewReadFileTool(workdir),
 		NewWriteFileTool(workdir),
+		NewEditFileTool(workdir),
 		NewBashTool(bashTimeout),
 		NewGlobTool(workdir),
 		NewGrepTool(workdir),

@@ -100,7 +100,7 @@ func TestLoadFromPathWithToolsConfig(t *testing.T) {
 		"model":                         "claude-sonnet-4-20250514",
 		"api_key":                       "sk-test",
 		"max_tokens":                    4096,
-		"tools":                         map[string]any{"enabled": []string{"read_file", "bash"}},
+		"tools":                         map[string]any{"enabled": []string{"ReadFile", "Bash"}},
 		"tool_execution_timeout_seconds": 5,
 		"tool_working_directory":        "f:/CodePilot",
 	})
@@ -110,7 +110,7 @@ func TestLoadFromPathWithToolsConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("加载失败: %v", err)
 	}
-	if got, want := cfg.Tools.Enabled, []string{"read_file", "bash"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+	if got, want := cfg.Tools.Enabled, []string{"ReadFile", "Bash"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
 		t.Errorf("Tools.Enabled 错误: 期望 %v, 实际 %v", want, got)
 	}
 	if cfg.ToolExecutionTimeoutSeconds != 5 {

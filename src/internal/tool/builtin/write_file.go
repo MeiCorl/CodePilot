@@ -13,8 +13,8 @@ import (
 	"github.com/MeiCorl/CodePilot/src/internal/tool/safety"
 )
 
-// WriteFileName 是 WriteFile 工具的 snake_case 唯一标识。
-const WriteFileName = "write_file"
+// WriteFileName 是 WriteFile 工具的唯一标识（大驼峰格式）。
+const WriteFileName = "WriteFile"
 
 // writeFileInput 是 WriteFile 工具的入参结构。
 type writeFileInput struct {
@@ -35,7 +35,7 @@ func NewWriteFileTool(workingDir string) *WriteFileTool {
 	return &WriteFileTool{
 		BaseTool: tool.BaseTool{
 			ToolName:        WriteFileName,
-			ToolDescription: "创建或覆盖写入文件。若父目录不存在会自动创建（mkdir -p 语义）。",
+			ToolDescription: "创建或覆盖写入文件。若父目录不存在会自动创建（mkdir -p 语义）。优先使用此内置工具而非 Bash 命令来创建/写入文件。仅创建新文件或需全量覆盖时使用；局部修改请使用 EditFile。",
 			ToolInputSchema: writeFileSchema,
 			ToolPermission:  tool.PermWrite,
 		},

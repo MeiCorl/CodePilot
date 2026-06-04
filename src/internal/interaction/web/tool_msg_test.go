@@ -104,7 +104,7 @@ func TestBuildChatMessages_TextOnly(t *testing.T) {
 
 // TestBuildChatMessages_ToolUseWithResult 验证 tool_use + tool_result 配对生成 ToolCall。
 func TestBuildChatMessages_ToolUseWithResult(t *testing.T) {
-	tu := &llm.ToolUseBlock{ID: "call-1", Name: "read_file", Input: json.RawMessage(`{"file_path":"a.go"}`)}
+	tu := &llm.ToolUseBlock{ID: "call-1", Name: "ReadFile", Input: json.RawMessage(`{"file_path":"a.go"}`)}
 	tr := &llm.ToolResultBlock{ToolUseID: "call-1", Content: "file content", IsError: false}
 	msgs := []llm.Message{
 		{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.NewTextBlock("请读 a.go")}},
@@ -121,7 +121,7 @@ func TestBuildChatMessages_ToolUseWithResult(t *testing.T) {
 		t.Fatalf("第 2 条应为 ToolCall, 实际: %+v", out[1])
 	}
 	tc := out[1].ToolCall
-	if tc.ID != "call-1" || tc.Name != "read_file" {
+	if tc.ID != "call-1" || tc.Name != "ReadFile" {
 		t.Errorf("ToolCall 元数据错误: %+v", tc)
 	}
 	if tc.Output != "file content" {
@@ -137,7 +137,7 @@ func TestBuildChatMessages_ToolUseWithResult(t *testing.T) {
 
 // TestBuildChatMessages_ToolError 验证工具错误时 ToolCall.IsError=true / status=error。
 func TestBuildChatMessages_ToolError(t *testing.T) {
-	tu := &llm.ToolUseBlock{ID: "e1", Name: "bash", Input: json.RawMessage(`{"command":"rm -rf /"}`)}
+	tu := &llm.ToolUseBlock{ID: "e1", Name: "Bash", Input: json.RawMessage(`{"command":"rm -rf /"}`)}
 	tr := &llm.ToolResultBlock{ToolUseID: "e1", Content: "dangerous command", IsError: true}
 	msgs := []llm.Message{
 		{Role: llm.RoleAssistant, Content: []llm.ContentBlock{tu}},

@@ -128,12 +128,12 @@ func TestMessageMarshalEmptyContent(t *testing.T) {
 // TestToolUseBlockType 验证 ToolUseBlock 的类型标识与文本表示。
 func TestToolUseBlockType(t *testing.T) {
 	input := json.RawMessage(`{"file_path":"main.go"}`)
-	block := NewToolUseBlock("call_001", "read_file", input)
+	block := NewToolUseBlock("call_001", "ReadFile", input)
 	if block.Type() != ContentBlockTypeToolUse {
 		t.Errorf("Type 错误: %s", block.Type())
 	}
 	got := block.ToText()
-	if got != "tool_use(read_file, id=call_001)" {
+	if got != "tool_use(ReadFile, id=call_001)" {
 		t.Errorf("ToText 错误: %s", got)
 	}
 }
@@ -161,7 +161,7 @@ func TestMessageRoundTripToolUse(t *testing.T) {
 		Role: RoleAssistant,
 		Content: []ContentBlock{
 			NewTextBlock("我需要读取文件"),
-			NewToolUseBlock("call_abc", "read_file", input),
+			NewToolUseBlock("call_abc", "ReadFile", input),
 		},
 	}
 	data, err := json.Marshal(orig)
@@ -175,7 +175,7 @@ func TestMessageRoundTripToolUse(t *testing.T) {
 		`"type":"text"`,
 		`"type":"tool_use"`,
 		`"id":"call_abc"`,
-		`"name":"read_file"`,
+		`"name":"ReadFile"`,
 		`"file_path":"src/main.go"`,
 	} {
 		if !contains(s, want) {
@@ -197,7 +197,7 @@ func TestMessageRoundTripToolUse(t *testing.T) {
 	if tub.ID != "call_abc" {
 		t.Errorf("ID 错误: %s", tub.ID)
 	}
-	if tub.Name != "read_file" {
+	if tub.Name != "ReadFile" {
 		t.Errorf("Name 错误: %s", tub.Name)
 	}
 	if string(tub.Input) != string(input) {
@@ -255,8 +255,8 @@ func TestMessageRoundTripMixedAssistant(t *testing.T) {
 		Role: RoleAssistant,
 		Content: []ContentBlock{
 			NewTextBlock("我来读取文件。"),
-			NewToolUseBlock("call_001", "read_file", json.RawMessage(`{"file_path":"a.go"}`)),
-			NewToolUseBlock("call_002", "read_file", json.RawMessage(`{"file_path":"b.go"}`)),
+			NewToolUseBlock("call_001", "ReadFile", json.RawMessage(`{"file_path":"a.go"}`)),
+			NewToolUseBlock("call_002", "ReadFile", json.RawMessage(`{"file_path":"b.go"}`)),
 		},
 	}
 	data, err := json.Marshal(orig)

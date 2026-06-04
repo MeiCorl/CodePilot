@@ -396,7 +396,7 @@ func TestSessionLoadedIncludesToolHistory(t *testing.T) {
 	sess.Messages = []llm.Message{
 		{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.NewTextBlock("请读文件")}},
 		{Role: llm.RoleAssistant, Content: []llm.ContentBlock{
-			&llm.ToolUseBlock{ID: "hist-1", Name: "read_file", Input: json.RawMessage(`{"file_path":"a.go"}`)},
+			&llm.ToolUseBlock{ID: "hist-1", Name: "ReadFile", Input: json.RawMessage(`{"file_path":"a.go"}`)},
 		}},
 		{Role: llm.RoleUser, Content: []llm.ContentBlock{
 			&llm.ToolResultBlock{ToolUseID: "hist-1", Content: "package main", IsError: false},
@@ -438,7 +438,7 @@ func TestSessionLoadedIncludesToolHistory(t *testing.T) {
 	if tc == nil {
 		t.Fatalf("第 2 条应为 ToolCall, 实际: %+v", p.Messages[1])
 	}
-	if tc.ID != "hist-1" || tc.Name != "read_file" {
+	if tc.ID != "hist-1" || tc.Name != "ReadFile" {
 		t.Errorf("ToolCall 元数据: %+v", tc)
 	}
 	if tc.Output != "package main" {
@@ -495,11 +495,11 @@ func TestStreamStateRejectsDuringToolRun(t *testing.T) {
 func TestToolsEnabledWhitelistApplied(t *testing.T) {
 	// 在 registry 中塞两个工具：echo / glob
 	echo := newNamedEcho("echo")
-	glob := newNamedEcho("glob")
+	glob := newNamedEcho("Glob")
 	r := newToolRigWithEnabled(t,
 		[][]llm.StreamChunk{{{Content: "ok", Done: true}}},
 		nil,
-		[]string{"glob"},
+		[]string{"Glob"},
 	)
 	// 把两个工具都加进 rig 的 registry（绕过 newToolRig 的 toolInstance 限制）
 	if err := r.h.registry.Register(echo); err != nil {
@@ -521,7 +521,7 @@ func TestToolsEnabledWhitelistApplied(t *testing.T) {
 	for _, s := range r.mp.recordedSpecs[0] {
 		gotNames = append(gotNames, s.Name)
 	}
-	if len(gotNames) != 1 || gotNames[0] != "glob" {
+	if len(gotNames) != 1 || gotNames[0] != "Glob" {
 		t.Errorf("cfg.Tools.Enabled 白名单过滤错误: 期望 [glob], 实际 %v", gotNames)
 	}
 }
@@ -530,7 +530,7 @@ func TestToolsEnabledWhitelistApplied(t *testing.T) {
 // 中所有已注册工具的描述都透传给 Provider（白名单留空 = 全开）。
 func TestToolsEnabledEmptyMeansAll(t *testing.T) {
 	echo := newNamedEcho("echo")
-	glob := newNamedEcho("glob")
+	glob := newNamedEcho("Glob")
 	r := newToolRigWithEnabled(t,
 		[][]llm.StreamChunk{{{Content: "ok", Done: true}}},
 		nil,

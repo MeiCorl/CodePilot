@@ -17,8 +17,8 @@ import (
 	"github.com/bmatcuk/doublestar/v4"
 )
 
-// GrepName 是 Grep 工具的 snake_case 唯一标识。
-const GrepName = "grep"
+// GrepName 是 Grep 工具的唯一标识（大驼峰格式）。
+const GrepName = "Grep"
 
 const (
 	grepMaxResults   = 100
@@ -47,7 +47,7 @@ func NewGrepTool(workingDir string) *GrepTool {
 	return &GrepTool{
 		BaseTool: tool.BaseTool{
 			ToolName:        GrepName,
-			ToolDescription: "在指定目录下按正则搜索文件内容，输出 路径:L<行号>:<行内容>。支持 include glob 过滤（如 *.go）。最多返回 100 条匹配。基准目录、include 路径、文件均需落在工作目录之内。",
+			ToolDescription: "在指定目录下按正则搜索文件内容，输出 路径:L<行号>:<行内容>。支持 include glob 过滤（如 *.go）。最多返回 100 条匹配。基准目录、include 路径、文件均需落在工作目录之内。优先使用此内置工具而非 Bash 命令（如 grep/rg/ack）来搜索文件内容。",
 			ToolInputSchema: grepSchema,
 			ToolPermission:  tool.PermRead,
 		},

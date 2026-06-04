@@ -95,3 +95,23 @@ var grepSchema = json.RawMessage(`{
   },
   "required": ["pattern"]
 }`)
+
+// editFileSchema — EditFile 工具的 JSON Schema
+var editFileSchema = json.RawMessage(`{
+  "type": "object",
+  "properties": {
+    "file_path": {
+      "type": "string",
+      "description": "要编辑的文件路径（相对工作目录或绝对路径）"
+    },
+    "old_string": {
+      "type": "string",
+      "description": "要被替换的原文本（必须精确匹配，包括缩进）"
+    },
+    "new_string": {
+      "type": "string",
+      "description": "替换后的新文本（设为空字符串可删除 old_string）"
+    }
+  },
+  "required": ["file_path", "old_string", "new_string"]
+}`)

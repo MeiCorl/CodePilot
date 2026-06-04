@@ -102,8 +102,8 @@ func TestConversationManager_TokenEstimateEnglish(t *testing.T) {
 	m.AddUserMessage(text)
 	tokens := m.TokenEstimate()
 	// 100 / 4 = 25 tokens + 消息开销(15) + 工具定义开销(400) ≈ 440
-	if tokens < 400 || tokens > 500 {
-		t.Fatalf("100 个英文字符估算 token 应在 400~500 范围内（含结构+工具开销），实际为 %d", tokens)
+	if tokens < 400 || tokens > 560 {
+		t.Fatalf("100 个英文字符估算 token 应在 400~560 范围内（含结构+工具开销），实际为 %d", tokens)
 	}
 }
 
@@ -117,8 +117,8 @@ func TestConversationManager_TokenEstimateChinese(t *testing.T) {
 	m.AddUserMessage(text)
 	tokens := m.TokenEstimate()
 	// 100 / 2 = 50 tokens + 消息开销(15) + 工具定义开销(400) ≈ 465
-	if tokens < 430 || tokens > 520 {
-		t.Fatalf("100 个中文字符估算 token 应在 430~520 范围内（含结构+工具开销），实际为 %d", tokens)
+	if tokens < 430 || tokens > 580 {
+		t.Fatalf("100 个中文字符估算 token 应在 430~580 范围内（含结构+工具开销），实际为 %d", tokens)
 	}
 }
 
@@ -701,7 +701,7 @@ L2: world
 	p1 := &scriptedProvider{
 		scripts: [][]llm.StreamChunk{
 			{
-				{Done: true, ToolUses: []llm.ToolUseBlock{{ID: "t1", Name: "bash", Input: json.RawMessage(`{"command":"rm -rf /"}`)}}},
+				{Done: true, ToolUses: []llm.ToolUseBlock{{ID: "t1", Name: "Bash", Input: json.RawMessage(`{"command":"rm -rf /"}`)}}},
 			},
 			{
 				{Content: "我已拒绝执行该命令。", Done: true},
@@ -725,7 +725,7 @@ L2: world
 	p2 := &scriptedProvider{
 		scripts: [][]llm.StreamChunk{
 			{
-				{Done: true, ToolUses: []llm.ToolUseBlock{{ID: "t2", Name: "read_file", Input: json.RawMessage(`{"file_path":"hello.txt"}`)}}},
+				{Done: true, ToolUses: []llm.ToolUseBlock{{ID: "t2", Name: "ReadFile", Input: json.RawMessage(`{"file_path":"hello.txt"}`)}}},
 			},
 			{
 				{Content: "hello.txt 内容如上。", Done: true},

@@ -143,7 +143,7 @@ func TestOpenAIConvertTools(t *testing.T) {
 
 	specs := []tool.ToolSpec{
 		{
-			Name:        "read_file",
+			Name:        "ReadFile",
 			Description: "读取文件内容",
 			InputSchema: json.RawMessage(`{"type":"object","properties":{"file_path":{"type":"string"}},"required":["file_path"]}`),
 		},
@@ -162,7 +162,7 @@ func TestOpenAIConvertTools(t *testing.T) {
 	if !strings.Contains(s, `"type":"function"`) {
 		t.Errorf("缺少 type=function 字段: %s", s)
 	}
-	if !strings.Contains(s, `"name":"read_file"`) {
+	if !strings.Contains(s, `"name":"ReadFile"`) {
 		t.Errorf("缺少 function.name 字段: %s", s)
 	}
 	if !strings.Contains(s, `"description":"读取文件内容"`) {
@@ -197,7 +197,7 @@ func TestOpenAIConvertMessagesWithToolCalls(t *testing.T) {
 		{
 			Role: RoleAssistant,
 			Content: []ContentBlock{
-				NewToolUseBlock("call_abc123", "read_file", json.RawMessage(`{"file_path":"main.go"}`)),
+				NewToolUseBlock("call_abc123", "ReadFile", json.RawMessage(`{"file_path":"main.go"}`)),
 			},
 		},
 	}
@@ -219,7 +219,7 @@ func TestOpenAIConvertMessagesWithToolCalls(t *testing.T) {
 	if !strings.Contains(s, `"call_abc123"`) {
 		t.Errorf("缺少 tool call ID: %s", s)
 	}
-	if !strings.Contains(s, `"read_file"`) {
+	if !strings.Contains(s, `"ReadFile"`) {
 		t.Errorf("缺少 tool call name: %s", s)
 	}
 }
@@ -233,7 +233,7 @@ func TestOpenAIConvertMessagesWithToolResult(t *testing.T) {
 		{
 			Role: RoleAssistant,
 			Content: []ContentBlock{
-				NewToolUseBlock("call_abc123", "read_file", json.RawMessage(`{"file_path":"main.go"}`)),
+				NewToolUseBlock("call_abc123", "ReadFile", json.RawMessage(`{"file_path":"main.go"}`)),
 			},
 		},
 		{

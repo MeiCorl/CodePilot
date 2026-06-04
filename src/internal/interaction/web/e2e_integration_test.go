@@ -246,7 +246,7 @@ func TestE2E_9_1_AnthropicReadFile(t *testing.T) {
 	}
 	sawReadFile := false
 	for _, s := range tr.ToolStarts {
-		if s.Name == "read_file" {
+		if s.Name == "ReadFile" {
 			sawReadFile = true
 		}
 	}
@@ -280,10 +280,10 @@ func TestE2E_9_3_AnthropicGlobAndGrep(t *testing.T) {
 	sawGlob := false
 	sawGrep := false
 	for _, n := range allNames {
-		if n == "glob" {
+		if n == "Glob" {
 			sawGlob = true
 		}
-		if n == "grep" {
+		if n == "Grep" {
 			sawGrep = true
 		}
 	}
