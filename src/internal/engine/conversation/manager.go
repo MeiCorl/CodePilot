@@ -89,18 +89,45 @@ func (m *ConversationManager) AllMessages() []llm.Message {
 }
 
 // TokenEstimate 估算当前发送给 LLM 的窗口视图已使用的 token 数。
-// 采用粗估策略：中文按 2 字符/token，英文按 4 字符/token，
-// 不需要精确，仅用于状态栏展示和窗口控制参考。
+// 采用粗估策略：文本按字符类型估算 + 每条消息固定结构开销 + 工具定义开销。
+// 不需要精确，仅用于状态栏展示和溢出保护参考，但需要比纯文本估算更接近真实值。
 // 注意：此处基于窗口视图（而非完整历史）估算，反映的是实际发送给 LLM 的上下文量。
 func (m *ConversationManager) TokenEstimate() int {
 	messages := m.GetContext("")
 	totalTokens := 0
+
+	// 1. 每条消息的基础结构开销（role 标签、JSON 格式化、消息边界标记等）
+	// 实测 Anthropic/OpenAI 协议每条消息约有 10-15 个 token 的结构开销
+	const messageOverhead = 15
 	for _, msg := range messages {
+		totalTokens += messageOverhead
 		for _, block := range msg.Content {
 			totalTokens += estimateTextTokens(block.ToText())
 		}
 	}
+
+	// 2. 补充估算：工具定义的 token 开销
+	// 每个注册工具的 JSON Schema 定义约占用 50-100 个 token（含名称、描述、参数结构）
+	// 通过注册表获取已注册的工具数量来估算
+	totalTokens += estimateToolDefinitionTokens()
+
 	return totalTokens
+}
+
+// estimateToolDefinitionTokens 估算当前注册的所有工具定义的 token 开销。
+// 每个工具的 JSON Schema（名称+描述+参数结构）约占用 80 个 token。
+// 这个值在 AgentLoop 每次迭代检查上下文溢出时使用，偏高比偏低安全。
+func estimateToolDefinitionTokens() int {
+	registry := tool.DefaultRegistry()
+	if registry == nil {
+		return 0
+	}
+	toolCount := registry.Count()
+	if toolCount == 0 {
+		return 0
+	}
+	// 每个工具约 80 token（name + description + input_schema JSON）
+	return toolCount * 80
 }
 
 // RemainingTokens 返回在给定的最大 token 额度下，剩余可用的 token 数。
@@ -203,42 +230,31 @@ type TurnHooks struct {
 // TurnResult 是 RunTurn 的返回值，描述本轮对话的最终结果。
 //
 // 字段语义：
-//   - FinalText: 二次 LLM 调用（基于 tool_result 生成的最终回复）累积的完整文本；
+//   - FinalText: 最终 LLM 回复累积的完整文本；
 //     当本轮没有触发 tool_use 时，等价于第一次 LLM 的回复文本
-//   - ToolUse: 本轮触发的 tool_use 块（如有），未触发时为 nil
-//   - ToolResult: 与 ToolUse 对应的工具执行结果（如有），未触发时为零值
+//   - ToolUses: 本轮触发的所有 tool_use 块（如有），未触发时为 nil
+//   - ToolResults: 与 ToolUses 对应的工具执行结果（如有），未触发时为 nil
 //   - Aborted: 本轮是否被 ctx 取消
 //   - Error: 本轮发生的不可恢复错误（StreamChat 失败、chunk.Err 等）
 type TurnResult struct {
 	// FinalText 为本轮用户可见的最终回复文本（流式累积）
 	FinalText string
-	// ToolUse 为触发的 tool_use 块（如有）
-	ToolUse *llm.ToolUseBlock
-	// ToolResult 为工具执行结果（如有）
-	ToolResult llm.ToolResultBlock
+	// ToolUses 为触发的所有 tool_use 块（如有）
+	ToolUses []llm.ToolUseBlock
+	// ToolResults 为工具执行结果列表（如有），与 ToolUses 一一对应
+	ToolResults []llm.ToolResultBlock
 	// Aborted 标识本轮是否被 ctx 取消中断
 	Aborted bool
 	// Error 为本轮发生的不可恢复错误（如有）
 	Error error
 }
 
-// RunTurn 执行一轮 LLM 对话 +（可选的）单次工具执行。
+// RunTurn 执行一轮 LLM 对话 + Agent Loop 循环。
 //
-// 调用流程：
-//  1. 调 provider.StreamChat 发起第一次 LLM 请求；
-//  2. 消费 StreamChunk 流，累积 assistant 文本与 ContentBlock 列表，
-//     通过 OnStreamChunk 外推每个 chunk；
-//  3. 流结束后检查 ToolUse 字段：
-//     - 若 nil：本轮无 tool_use，把累积的 assistant 文本写入 history 并返回
-//     - 若非 nil：把 assistant tool_use 消息写入 history → 调
-//       toolHandler.Execute 获取 tool_result → 把 tool_result 消息写入
-//       history → 通过 OnToolResult 外推 → 发起第二次 LLM 请求（同一 ctx）
-//       → 消费流式并把最终回复文本写入 history → 返回
+// RunTurn 是 AgentLoop 的兼容包装：内部构造 AgentLoopConfig 并委托给 AgentLoop，
+// 保持原有的调用签名不变。调用方（如 web/handler）无需感知内部重构。
 //
-// 错误处理：StreamChat 初始化失败、StreamChunk.Err 通过 OnError 回调外推
-// 并立即返回；RunTurn 不会向上层 panic。任何写入 history 的内容都已记录
-// 完整消息结构，便于后续持久化与历史回放。
-//
+// 当 AgentLoopConfig 未指定时，默认使用 MaxIterations=25 的循环配置。
 // 并发约束：RunTurn 直接读写 history，调用方需保证同一时刻只有一个
 // RunTurn 活跃（实际由 web/handler 的 streamState 状态机串行化）。
 func (m *ConversationManager) RunTurn(
@@ -249,81 +265,92 @@ func (m *ConversationManager) RunTurn(
 	toolHandler *ToolHandler,
 	hooks TurnHooks,
 ) TurnResult {
-	// 第一次 LLM 调用
-	var firstTurn RunOneTurnResult
-	firstTurn = m.runOneLLM(ctx, provider, systemPrompt, toolSpecs, hooks)
-	if firstTurn.Err != nil {
-		return TurnResult{Aborted: firstTurn.Aborted, Error: firstTurn.Err}
-	}
+	// 记录当前 history 长度，用于事后提取本轮新增的工具调用信息
+	historyBefore := len(m.history)
 
-	// 无 tool_use → 写 assistant 文本到 history 并返回
-	if firstTurn.ToolUse == nil {
-		if firstTurn.Text != "" {
-			m.AddAssistantMessage(firstTurn.Text)
-		}
-		return TurnResult{FinalText: firstTurn.Text, Aborted: firstTurn.Aborted}
-	}
-
-	// 触发 tool_use：写 assistant tool_use 消息、调工具、写 tool_result
-	m.AddMessage(llm.Message{
-		Role: llm.RoleAssistant,
-		Content: []llm.ContentBlock{
-			firstTurn.ToolUse,
+	// 委托给 AgentLoop，使用默认配置
+	loopResult := m.AgentLoop(ctx, provider, systemPrompt, toolSpecs, toolHandler,
+		AgentLoopConfig{
+			MaxIterations: 25,
 		},
-	})
-	if hooks.OnToolUse != nil {
-		hooks.OnToolUse(*firstTurn.ToolUse)
-	}
-
-	result := toolHandler.Execute(ctx, *firstTurn.ToolUse)
-	m.AddMessage(llm.Message{
-		Role: llm.RoleUser,
-		Content: []llm.ContentBlock{
-			&result,
+		AgentLoopHooks{
+			TurnHooks: hooks,
 		},
-	})
-	if hooks.OnToolResult != nil {
-		hooks.OnToolResult(result)
+	)
+
+	// 将 AgentLoopResult 转换为 TurnResult
+	result := TurnResult{
+		FinalText: loopResult.FinalText,
+		Aborted:   loopResult.Aborted,
+		Error:     loopResult.Error,
 	}
 
-	// 第二次 LLM：把 tool_result 回传给 LLM 拿最终回复
-	var second RunOneTurnResult
-	second = m.runOneLLM(ctx, provider, systemPrompt, toolSpecs, hooks)
-	if second.Err != nil {
-		return TurnResult{
-			FinalText:  firstTurn.Text,
-			ToolUse:    firstTurn.ToolUse,
-			ToolResult: result,
-			Aborted:    second.Aborted,
-			Error:      second.Err,
+	// 从本轮新增的 history 中提取 tool_use 和 tool_result，填充兼容字段
+	var toolUses []llm.ToolUseBlock
+	var toolResults []llm.ToolResultBlock
+	for i := historyBefore; i < len(m.history); i++ {
+		for _, block := range m.history[i].Content {
+			if tu, ok := block.(*llm.ToolUseBlock); ok {
+				toolUses = append(toolUses, *tu)
+			}
+			if tr, ok := block.(*llm.ToolResultBlock); ok {
+				toolResults = append(toolResults, *tr)
+			}
 		}
 	}
-	if second.Text != "" {
-		m.AddAssistantMessage(second.Text)
-	}
-	return TurnResult{
-		FinalText:  second.Text,
-		ToolUse:    firstTurn.ToolUse,
-		ToolResult: result,
-		Aborted:    second.Aborted,
-	}
+	result.ToolUses = toolUses
+	result.ToolResults = toolResults
+
+	return result
 }
 
-// runOneLLMResult 是 runOneLLM 的内部返回值，描述单次 LLM 流式调用的结果。
+// RunAgentLoop 是 RunTurn 的增强版，支持传入完整的 AgentLoopConfig。
+//
+// 与 RunTurn 的区别：
+//   - 支持配置 MaxIterations、ContextSafetyMargin、ContextWindowSize
+//   - 支持 OnIterationStart / OnLoopDone 回调
+//   - 返回 AgentLoopResult（含 Iterations、TotalToolCalls、StopReason）
+func (m *ConversationManager) RunAgentLoop(
+	ctx context.Context,
+	provider llm.Provider,
+	systemPrompt string,
+	toolSpecs []tool.ToolSpec,
+	toolHandler *ToolHandler,
+	cfg AgentLoopConfig,
+	hooks AgentLoopHooks,
+) AgentLoopResult {
+	return m.AgentLoop(ctx, provider, systemPrompt, toolSpecs, toolHandler, cfg, hooks)
+}
+
+// RunOneTurnResult 是 runOneLLM 的内部返回值，描述单次 LLM 流式调用的结果。
 type RunOneTurnResult struct {
 	// Text 为累积的 assistant 文本
 	Text string
-	// ToolUse 为流结束时的 ToolUse 字段（如有）
-	ToolUse *llm.ToolUseBlock
+	// ToolUses 为流结束时累积的所有 tool_use 块（支持并行工具调用）
+	ToolUses []llm.ToolUseBlock
 	// Aborted 标识本次流是否被 ctx 取消
 	Aborted bool
 	// Err 为 StreamChat 初始化失败或 chunk.Err 携带的错误
 	Err error
 }
 
+// HasToolUse 返回本次 LLM 响应是否包含 tool_use 块。
+func (r RunOneTurnResult) HasToolUse() bool {
+	return len(r.ToolUses) > 0
+}
+
+// FirstToolUse 返回第一个 tool_use 块（如无则返回 nil）。
+// 便捷方法，适用于单工具调用场景。
+func (r RunOneTurnResult) FirstToolUse() *llm.ToolUseBlock {
+	if len(r.ToolUses) == 0 {
+		return nil
+	}
+	return &r.ToolUses[0]
+}
+
 // runOneLLM 发起一次 LLM 流式调用并消费完整流。
 //
-// 不修改 history；返回累积的文本与 ToolUse 供 RunTurn 决策下一步。
+// 不修改 history；返回累积的文本与 ToolUses 供上层决策下一步。
 // 通过 hooks.OnStreamChunk 把每个 chunk 推给上层（含 Done=true 的结束 chunk）。
 func (m *ConversationManager) runOneLLM(
 	ctx context.Context,
@@ -342,10 +369,10 @@ func (m *ConversationManager) runOneLLM(
 	}
 
 	var (
-		textBuf       []byte
-		pendingToolUse *llm.ToolUseBlock
-		aborted       bool
-		streamDone    bool
+		textBuf    []byte
+		toolUses   []llm.ToolUseBlock
+		aborted    bool
+		streamDone bool
 	)
 	for {
 		select {
@@ -356,10 +383,10 @@ func (m *ConversationManager) runOneLLM(
 				select {
 				case _, ok := <-chunkCh:
 					if !ok {
-						return RunOneTurnResult{Text: string(textBuf), ToolUse: pendingToolUse, Aborted: true}
+						return RunOneTurnResult{Text: string(textBuf), ToolUses: toolUses, Aborted: true}
 					}
 				default:
-					return RunOneTurnResult{Text: string(textBuf), ToolUse: pendingToolUse, Aborted: true}
+					return RunOneTurnResult{Text: string(textBuf), ToolUses: toolUses, Aborted: true}
 				}
 			}
 		case chunk, ok := <-chunkCh:
@@ -371,16 +398,17 @@ func (m *ConversationManager) runOneLLM(
 						hooks.OnStreamChunk(llm.StreamChunk{Done: true})
 					}
 				}
-				return RunOneTurnResult{Text: string(textBuf), ToolUse: pendingToolUse, Aborted: aborted}
+				return RunOneTurnResult{Text: string(textBuf), ToolUses: toolUses, Aborted: aborted}
 			}
 			if chunk.Err != nil {
 				if hooks.OnError != nil {
 					hooks.OnError(chunk.Err)
 				}
-				return RunOneTurnResult{Text: string(textBuf), ToolUse: pendingToolUse, Aborted: aborted, Err: chunk.Err}
+				return RunOneTurnResult{Text: string(textBuf), ToolUses: toolUses, Aborted: aborted, Err: chunk.Err}
 			}
-			if chunk.ToolUse != nil {
-				pendingToolUse = chunk.ToolUse
+			// 收集所有 tool_use 块（Done chunk 上携带）
+			if chunk.HasToolUse() {
+				toolUses = append(toolUses, chunk.ToolUses...)
 			}
 			if chunk.Content != "" {
 				textBuf = append(textBuf, chunk.Content...)
@@ -390,7 +418,7 @@ func (m *ConversationManager) runOneLLM(
 			}
 			if chunk.Done {
 				streamDone = true
-				return RunOneTurnResult{Text: string(textBuf), ToolUse: pendingToolUse, Aborted: aborted}
+				return RunOneTurnResult{Text: string(textBuf), ToolUses: toolUses, Aborted: aborted}
 			}
 		}
 	}

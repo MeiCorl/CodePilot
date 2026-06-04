@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"fmt"
+	"runtime/debug"
 	"strings"
 	"sync"
 
@@ -44,6 +45,12 @@ type Handler struct {
 
 	mu      sync.Mutex
 	current *session.Session
+
+	// writeMu 保护 WebSocket 写操作的互斥锁。
+	// gorilla/websocket 要求同一时刻只有一个 writer；Handler 的读循环 goroutine
+	// （HandleLoop）和流式输出 goroutine（runStream）都会向 conn 写消息，
+	// 必须通过 writeMu 串行化以避免 "concurrent write to websocket connection" panic。
+	writeMu sync.Mutex
 
 	stream streamState
 }
@@ -156,22 +163,45 @@ func (h *Handler) handleUserInput(conn *websocket.Conn, msg Message) error {
 	return nil
 }
 
-// runStream 是流式响应的核心 goroutine（Step 2: 接入 RunTurn + ToolHandler）。
+// runStream 是流式响应的核心 goroutine（Step 3: 接入 AgentLoop + ToolHandler）。
 //
 // 调用流程：
-//  1. 构造 TurnHooks：把 chunk 推 stream_chunk、tool_use 推 tool_call_start
-//     + status_update(tool_running)、tool_result 推 tool_call_end、错误
-//     推 stream_error。
-//  2. 调 conv.RunTurn：内部完成"LLM → tool → 二次 LLM"闭环，过程中
-//     自动写 history（tool_use / tool_result / 最终 assistant 文本）。
+//  1. 构造 AgentLoopHooks：把 chunk 推 stream_chunk、迭代进度推 agent_iteration、
+//     工具事件推 tool_call_start/end、错误推 stream_error。
+//  2. 调 conv.RunAgentLoop：内部完成 ReAct 循环迭代，每轮"LLM 推理 → 工具执行 →
+//     结果反馈"自动写 history（tool_use / tool_result / 最终 assistant 文本）。
 //  3. 退出前：把完整 history 持久化、推 stream_done + context_usage、
 //     释放流式状态机、切回 idle。
 //
-// ctx 在 abort_stream 时被 cancel；RunTurn 内部会响应 ctx 取消并
-// 把当前 LLM 流 / 工具执行一并中断，由 runStream 把 reason=aborted 发出。
+// ctx 在 abort_stream 时被 cancel；AgentLoop 内部会响应 ctx 取消并
+// 把当前 LLM 流 / 工具执行一并中断，由 runStream 根据 StopReason 映射退出原因。
 func (h *Handler) runStream(ctx context.Context, conn *websocket.Conn) {
-	// 防御性 defer：确保流式状态机被释放、状态切回 idle
+	// recovered 标记是否因 panic 进入恢复逻辑
+	var recovered bool
+
+	// 防御性 defer：确保流式状态机被释放、stream_done 被发送。
+	// 即使 runStream 内部 panic（如 gorilla/websocket 并发写），也能保证
+	// 前端收到 stream_done 从而解除 streaming 状态。
 	defer func() {
+		if r := recover(); r != nil {
+			recovered = true
+			logger.Error("runStream goroutine panic，已恢复",
+				zap.Any("panic", r),
+				zap.String("stack", string(debug.Stack())),
+			)
+			// panic 恢复后通知前端流式结束（错误原因）
+			_ = h.sendStreamError(conn, "internal_error", fmt.Sprintf("内部错误: %v", r))
+		}
+		// 无论正常退出还是 panic 恢复，都发送 stream_done 释放前端状态
+		if !recovered {
+			// 正常退出时 AgentLoop 已通过 result 发送 stream_done；
+			// 但为安全起见，在 panic 场景下补发一次
+		} else {
+			_ = h.sendStreamDone(conn, StreamReasonError)
+			_ = h.sendContextUsage(conn)
+		}
+		// 持久化当前已有的 history（即使 panic 也能保留已完成的消息）
+		h.saveCurrentSession()
 		_ = h.sendStatusUpdate(conn, StatusIdle)
 		h.stream.release(ctx)
 	}()
@@ -190,8 +220,8 @@ func (h *Handler) runStream(ctx context.Context, conn *websocket.Conn) {
 			})
 		})
 		h.toolHandler.SetOnEnd(func(evt conversation.ToolExecutionEvent) {
-			// OnEnd 之后，RunTurn 会立刻发起第二次 LLM；提前把状态切到
-			// StatusThinking，避免前端把"工具已结束但还在等 LLM 二次回复"
+			// OnEnd 之后，AgentLoop 会立刻发起下一轮 LLM；提前把状态切到
+			// StatusThinking，避免前端把"工具已结束但还在等 LLM 回复"
 			// 这段间隙误判为 idle。
 			_ = h.sendStatusUpdate(conn, StatusThinking)
 			_ = h.sendToolCallEnd(conn, ToolCallEndPayload{
@@ -205,19 +235,38 @@ func (h *Handler) runStream(ctx context.Context, conn *websocket.Conn) {
 		})
 	}
 
-	hooks := conversation.TurnHooks{
-		OnStreamChunk: func(chunk llm.StreamChunk) {
-			// 第一次 chunk 到达时，前端已通过 status_update(thinking) 切到
-			// "思考中"，这里只推文本 delta。
-			if chunk.Content != "" {
-				_ = h.sendStreamChunk(conn, chunk.Content)
-			}
+	// 构造 AgentLoopHooks：复用原有 TurnHooks 的 chunk/error 回调，
+	// 新增 OnIterationStart 推送迭代进度和 thinking 状态，
+	// 新增 OnLoopDone 在每次迭代结束时触发增量保存。
+	loopHooks := conversation.AgentLoopHooks{
+		TurnHooks: conversation.TurnHooks{
+			OnStreamChunk: func(chunk llm.StreamChunk) {
+				// 第一次 chunk 到达时，前端已通过 status_update(thinking) 切到
+				// "思考中"，这里只推文本 delta。
+				if chunk.Content != "" {
+					_ = h.sendStreamChunk(conn, chunk.Content)
+				}
+			},
+			OnError: func(err error) {
+				_ = h.sendStreamError(conn, "stream_error", err.Error())
+			},
+			// OnToolUse / OnToolResult 由 ToolHandler.OnStart/OnEnd 替代承担，
+			// 这里置 nil；AgentLoop 内部会按 nil 跳过调用。
 		},
-		OnError: func(err error) {
-			_ = h.sendStreamError(conn, "stream_error", err.Error())
+		// OnIterationStart 在每轮迭代开始时推送迭代进度事件，
+		// 同时将状态切到 thinking，告知前端 Agent 进入新一轮推理。
+		OnIterationStart: func(iteration int, maxIterations int) {
+			_ = h.sendStatusUpdate(conn, StatusThinking)
+			_ = h.sendAgentIteration(conn, AgentIterationPayload{
+				Current: iteration,
+				Max:     maxIterations,
+			})
 		},
-		// OnToolUse / OnToolResult 由 ToolHandler.OnStart/OnEnd 替代承担，
-		// 这里置 nil；RunTurn 内部会按 nil 跳过调用。
+		// OnLoopDone 在 AgentLoop 结束后回调，用于增量保存会话。
+		// 确保即使 AgentLoop 正常完成，会话也能在 stream_done 之前落盘。
+		OnLoopDone: func(result conversation.AgentLoopResult) {
+			h.saveCurrentSession()
+		},
 	}
 
 	// 工具描述：按配置过滤后转 []tool.ToolSpec；registry 为 nil 时不传任何工具。
@@ -231,34 +280,44 @@ func (h *Handler) runStream(ctx context.Context, conn *websocket.Conn) {
 		toolSpecs = h.registry.ToSpecs(enabled)
 	}
 
-	result := h.conv.RunTurn(ctx, h.provider, h.systemPrompt, toolSpecs, h.toolHandler, hooks)
-
-	// 持久化：RunTurn 已把 tool_use / tool_result / 二次 LLM 文本写入 history
-	h.mu.Lock()
-	if h.current != nil {
-		h.current.Messages = h.conv.AllMessages()
-		saveErr := h.sessMgr.Save(h.current)
-		h.mu.Unlock()
-		if saveErr != nil {
-			logger.Warn("会话保存失败",
-				zap.String("session_id", h.current.ID),
-				zap.Error(saveErr),
-			)
+	// 构造 AgentLoopConfig：从全局 Config 读取迭代上限和上下文安全余量
+	loopCfg := conversation.AgentLoopConfig{
+		MaxIterations:       25,
+		ContextSafetyMargin: 4096,
+		ContextWindowSize:   h.contextWindowSize,
+	}
+	if h.cfg != nil {
+		if h.cfg.MaxAgentLoopIterations > 0 {
+			loopCfg.MaxIterations = h.cfg.MaxAgentLoopIterations
 		}
-	} else {
-		h.mu.Unlock()
+		if h.cfg.ContextSafetyMargin > 0 {
+			loopCfg.ContextSafetyMargin = h.cfg.ContextSafetyMargin
+		}
 	}
 
-	// 退出原因：error > aborted > completed
-	reason := StreamReasonCompleted
-	if result.Aborted {
-		reason = StreamReasonAborted
-	}
-	if result.Error != nil {
-		reason = StreamReasonError
-	}
+	result := h.conv.RunAgentLoop(ctx, h.provider, h.systemPrompt, toolSpecs, h.toolHandler, loopCfg, loopHooks)
+
+	// 将 AgentLoopResult.StopReason 映射为前端 stream_done 的 reason 字符串
+	reason := mapStopReason(result.StopReason)
 	_ = h.sendStreamDone(conn, reason)
 	_ = h.sendContextUsage(conn)
+}
+
+// saveCurrentSession 把当前 ConversationManager 中的完整历史持久化到磁盘。
+// 无论成功还是失败都不影响调用方继续运行；失败仅记录日志。
+func (h *Handler) saveCurrentSession() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.current == nil {
+		return
+	}
+	h.current.Messages = h.conv.AllMessages()
+	if err := h.sessMgr.Save(h.current); err != nil {
+		logger.Warn("会话增量保存失败",
+			zap.String("session_id", h.current.ID),
+			zap.Error(err),
+		)
+	}
 }
 
 // handleAbortStream 中断当前流式请求。无正在进行的流时为 no-op。
@@ -462,13 +521,18 @@ func (h *Handler) handleDeleteSession(conn *websocket.Conn, msg Message) error {
 
 // ---- 内部 send helper ----
 
-// sendMessage 编码并发送一条带 payload 的消息。失败仅记录日志，不返回错误。
+// sendMessage 编码并发送一条带 payload 的消息。
+// 内部通过 writeMu 串行化 WebSocket 写操作，防止多个 goroutine 并发写入
+// 导致 gorilla/websocket "concurrent write" panic。
+// 失败仅记录日志，不返回错误。
 func (h *Handler) sendMessage(conn *websocket.Conn, typ string, payload any) error {
 	data, err := EncodePayload(typ, payload)
 	if err != nil {
 		logger.Warn("编码消息失败", zap.String("type", typ), zap.Error(err))
 		return err
 	}
+	h.writeMu.Lock()
+	defer h.writeMu.Unlock()
 	if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
 		logger.Warn("发送消息失败", zap.String("type", typ), zap.Error(err))
 		return err
@@ -501,6 +565,12 @@ func (h *Handler) sendToolCallEnd(conn *websocket.Conn, p ToolCallEndPayload) er
 	return h.sendMessage(conn, MsgTypeToolCallEnd, p)
 }
 
+// sendAgentIteration 发送 Agent Loop 迭代进度事件。
+// 每轮迭代开始时调用，告知前端当前迭代序号和最大迭代次数。
+func (h *Handler) sendAgentIteration(conn *websocket.Conn, p AgentIterationPayload) error {
+	return h.sendMessage(conn, MsgTypeAgentIteration, p)
+}
+
 // mapToolEventStatus 把 conversation 包的内部工具事件状态枚举
 // 映射为 web 包对外的 ToolCallStatus* 常量（与前端约定保持一致）。
 // 对应关系：running/completed/error/aborted 直接透传；toolHandler 没有
@@ -517,6 +587,26 @@ func mapToolEventStatus(s string) string {
 		return ToolCallStatusAborted
 	default:
 		return ToolCallStatusError
+	}
+}
+
+// mapStopReason 将 AgentLoop 的 StopReason 枚举映射为前端 stream_done 的 reason 字符串。
+// 对应关系：completed → completed, aborted → aborted, error → error,
+// max_iterations → max_iterations, context_overflow → context_overflow。
+func mapStopReason(reason conversation.StopReason) string {
+	switch reason {
+	case conversation.StopReasonCompleted:
+		return StreamReasonCompleted
+	case conversation.StopReasonAborted:
+		return StreamReasonAborted
+	case conversation.StopReasonError:
+		return StreamReasonError
+	case conversation.StopReasonMaxIterations:
+		return StreamReasonMaxIterations
+	case conversation.StopReasonContextOverflow:
+		return StreamReasonContextOverflow
+	default:
+		return StreamReasonError
 	}
 }
 

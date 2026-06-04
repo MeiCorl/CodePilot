@@ -249,14 +249,17 @@ func TestAnthropicConvertMessagesWithToolResult(t *testing.T) {
 	}
 }
 
-// TestStreamChunkToolUseField 验证 StreamChunk 新增 ToolUse 字段可被正常赋值
-func TestStreamChunkToolUseField(t *testing.T) {
-	toolUse := NewToolUseBlock("abc", "read_file", json.RawMessage(`{"file_path":"x"}`)).(*ToolUseBlock)
-	chunk := StreamChunk{Done: true, ToolUse: toolUse}
-	if chunk.ToolUse == nil {
-		t.Fatal("ToolUse 字段未被赋值")
+// TestStreamChunkToolUsesField 验证 StreamChunk 新增 ToolUses 切片字段可被正常赋值
+func TestStreamChunkToolUsesField(t *testing.T) {
+	toolUse := ToolUseBlock{ID: "abc", Name: "read_file", Input: json.RawMessage(`{"file_path":"x"}`)}
+	chunk := StreamChunk{Done: true, ToolUses: []ToolUseBlock{toolUse}}
+	if !chunk.HasToolUse() {
+		t.Fatal("HasToolUse() 应返回 true")
 	}
-	if chunk.ToolUse.ID != "abc" {
-		t.Errorf("ToolUse.ID 错误: %s", chunk.ToolUse.ID)
+	if chunk.FirstToolUse() == nil {
+		t.Fatal("FirstToolUse() 不应为 nil")
+	}
+	if chunk.FirstToolUse().ID != "abc" {
+		t.Errorf("FirstToolUse().ID 错误: %s", chunk.FirstToolUse().ID)
 	}
 }

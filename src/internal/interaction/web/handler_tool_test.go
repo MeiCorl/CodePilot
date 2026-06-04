@@ -223,7 +223,7 @@ func TestToolCallStartPayload(t *testing.T) {
 		// 第一次 LLM：返回 tool_use（无文本）
 		{{
 			Done:    true,
-			ToolUse: &llm.ToolUseBlock{ID: "call-001", Name: "echo", Input: json.RawMessage(`{"msg":"ping"}`)},
+			ToolUses: []llm.ToolUseBlock{{ID: "call-001", Name: "echo", Input: json.RawMessage(`{"msg":"ping"}`)}},
 		}},
 		// 第二次 LLM：基于 tool_result 给最终回复
 		{{Content: "done", Done: true}},
@@ -261,7 +261,7 @@ func TestToolCallEndPayload(t *testing.T) {
 	scripts := [][]llm.StreamChunk{
 		{{
 			Done:    true,
-			ToolUse: &llm.ToolUseBlock{ID: "c1", Name: "echo", Input: json.RawMessage(`{"msg":"hi"}`)},
+			ToolUses: []llm.ToolUseBlock{{ID: "c1", Name: "echo", Input: json.RawMessage(`{"msg":"hi"}`)}},
 		}},
 		{{Content: "ok", Done: true}},
 	}
@@ -298,7 +298,7 @@ func TestStatusUpdateTransitions(t *testing.T) {
 		// 第一次 LLM 故意加 chunkDelay，确保 OnStart 在 streaming chunk 之前到位
 		{{
 			Done:    true,
-			ToolUse: &llm.ToolUseBlock{ID: "s1", Name: "echo", Input: json.RawMessage(`{"msg":"x"}`)},
+			ToolUses: []llm.ToolUseBlock{{ID: "s1", Name: "echo", Input: json.RawMessage(`{"msg":"x"}`)}},
 		}},
 		{{Content: "ok", Done: true}},
 	}
@@ -346,7 +346,7 @@ func TestAbortDuringToolExecution(t *testing.T) {
 	scripts := [][]llm.StreamChunk{
 		{{
 			Done:    true,
-			ToolUse: &llm.ToolUseBlock{ID: "slow1", Name: "slow", Input: json.RawMessage(`{}`)},
+			ToolUses: []llm.ToolUseBlock{{ID: "slow1", Name: "slow", Input: json.RawMessage(`{}`)}},
 		}},
 		{{Content: "should not reach", Done: true}},
 	}
@@ -460,7 +460,7 @@ func TestStreamStateRejectsDuringToolRun(t *testing.T) {
 	scripts := [][]llm.StreamChunk{
 		{{
 			Done:    true,
-			ToolUse: &llm.ToolUseBlock{ID: "s1", Name: "slow", Input: json.RawMessage(`{}`)},
+			ToolUses: []llm.ToolUseBlock{{ID: "s1", Name: "slow", Input: json.RawMessage(`{}`)}},
 		}},
 		{{Content: "done", Done: true}},
 	}
@@ -650,3 +650,260 @@ func (s *slowToolForTest) InputSchema() json.RawMessage {
 	return json.RawMessage(`{"type":"object"}`)
 }
 func (s *slowToolForTest) Permission() tool.ToolPermission { return tool.PermRead }
+
+// ---- Task 5: AgentLoop 适配测试 ----
+
+// TestAgentIterationEvent 验证每轮迭代开始时前端收到 agent_iteration 事件。
+//
+// 场景：第一次 LLM 返回 tool_use → 执行 echo → 第二次 LLM 返回纯文本。
+// 期望收到 2 个 agent_iteration 事件（第 1 轮和第 2 轮），且 Current/Max 正确。
+func TestAgentIterationEvent(t *testing.T) {
+	toolInst := &echoToolForTest{}
+	scripts := [][]llm.StreamChunk{
+		// 第 1 次迭代：LLM 返回 tool_use
+		{{
+			Done:     true,
+			ToolUses: []llm.ToolUseBlock{{ID: "it-1", Name: "echo", Input: json.RawMessage(`{"msg":"hi"}`)}},
+		}},
+		// 第 2 次迭代：LLM 返回纯文本
+		{{Content: "done", Done: true}},
+	}
+	r := newToolRig(t, scripts, toolInst)
+
+	r.client.WriteMessage(websocket.TextMessage, mustEncode(MsgTypeUserInput, UserInputPayload{Text: "test"}))
+
+	msgs := r.recvAll(t, 2*time.Second)
+
+	// 验证收到 agent_iteration 事件
+	iterations := findAllByType(msgs, MsgTypeAgentIteration)
+	if len(iterations) < 2 {
+		t.Fatalf("期望至少 2 个 agent_iteration 事件（2 轮迭代），实际收到 %d 个", len(iterations))
+	}
+
+	// 验证第 1 轮：current=1, max=25
+	p1, _ := AsPayload[AgentIterationPayload](iterations[0])
+	if p1.Current != 1 {
+		t.Errorf("第 1 轮 Current = %d, 期望 1", p1.Current)
+	}
+	if p1.Max != 25 {
+		t.Errorf("第 1 轮 Max = %d, 期望 25", p1.Max)
+	}
+
+	// 验证第 2 轮：current=2, max=25
+	p2, _ := AsPayload[AgentIterationPayload](iterations[1])
+	if p2.Current != 2 {
+		t.Errorf("第 2 轮 Current = %d, 期望 2", p2.Current)
+	}
+	if p2.Max != 25 {
+		t.Errorf("第 2 轮 Max = %d, 期望 25", p2.Max)
+	}
+}
+
+// TestAgentIterationEventNoToolUse 验证无工具调用时只有 1 个 agent_iteration 事件。
+func TestAgentIterationEventNoToolUse(t *testing.T) {
+	scripts := [][]llm.StreamChunk{
+		// 仅 1 次迭代：LLM 直接回复纯文本
+		{{Content: "hello", Done: true}},
+	}
+	r := newToolRig(t, scripts, nil)
+
+	r.client.WriteMessage(websocket.TextMessage, mustEncode(MsgTypeUserInput, UserInputPayload{Text: "hi"}))
+
+	msgs := r.recvAll(t, 2*time.Second)
+
+	iterations := findAllByType(msgs, MsgTypeAgentIteration)
+	if len(iterations) != 1 {
+		t.Fatalf("期望 1 个 agent_iteration 事件（无工具调用），实际收到 %d 个", len(iterations))
+	}
+	p, _ := AsPayload[AgentIterationPayload](iterations[0])
+	if p.Current != 1 {
+		t.Errorf("Current = %d, 期望 1", p.Current)
+	}
+	if p.Max != 25 {
+		t.Errorf("Max = %d, 期望 25", p.Max)
+	}
+}
+
+// TestStreamDoneReasonCompleted 验证正常完成时 stream_done reason=completed。
+func TestStreamDoneReasonCompleted(t *testing.T) {
+	scripts := [][]llm.StreamChunk{
+		{{Content: "ok", Done: true}},
+	}
+	r := newToolRig(t, scripts, nil)
+	r.client.WriteMessage(websocket.TextMessage, mustEncode(MsgTypeUserInput, UserInputPayload{Text: "hi"}))
+
+	msgs := r.recvAll(t, 2*time.Second)
+	done := findByType(msgs, MsgTypeStreamDone)
+	if done == nil {
+		t.Fatal("未收到 stream_done")
+	}
+	p, _ := AsPayload[StreamDonePayload](*done)
+	if p.Reason != StreamReasonCompleted {
+		t.Errorf("Reason = %q, 期望 completed", p.Reason)
+	}
+}
+
+// TestStreamDoneReasonAborted 验证中断时 stream_done reason=aborted。
+func TestStreamDoneReasonAborted(t *testing.T) {
+	toolInst := &slowToolForTest{delay: 500 * time.Millisecond}
+	scripts := [][]llm.StreamChunk{
+		{{
+			Done:     true,
+			ToolUses: []llm.ToolUseBlock{{ID: "s1", Name: "slow", Input: json.RawMessage(`{}`)}},
+		}},
+		{{Content: "should not reach", Done: true}},
+	}
+	r := newToolRig(t, scripts, toolInst)
+	r.client.WriteMessage(websocket.TextMessage, mustEncode(MsgTypeUserInput, UserInputPayload{Text: "go"}))
+
+	// 等工具开始执行后 abort
+	if waitForType(t, r, MsgTypeToolCallStart, 2*time.Second) == nil {
+		t.Fatal("未收到 tool_call_start")
+	}
+	time.Sleep(50 * time.Millisecond)
+	r.client.WriteMessage(websocket.TextMessage, mustEncode(MsgTypeAbortStream, nil))
+
+	msgs := r.recvAll(t, 2*time.Second)
+	done := findByType(msgs, MsgTypeStreamDone)
+	if done == nil {
+		t.Fatal("未收到 stream_done")
+	}
+	p, _ := AsPayload[StreamDonePayload](*done)
+	if p.Reason != StreamReasonAborted {
+		t.Errorf("Reason = %q, 期望 aborted", p.Reason)
+	}
+}
+
+// TestMapStopReason 验证 mapStopReason 所有分支映射正确。
+func TestMapStopReason(t *testing.T) {
+	tests := []struct {
+		input    conversation.StopReason
+		expected string
+	}{
+		{conversation.StopReasonCompleted, StreamReasonCompleted},
+		{conversation.StopReasonAborted, StreamReasonAborted},
+		{conversation.StopReasonError, StreamReasonError},
+		{conversation.StopReasonMaxIterations, StreamReasonMaxIterations},
+		{conversation.StopReasonContextOverflow, StreamReasonContextOverflow},
+		{conversation.StopReason("unknown"), StreamReasonError},
+	}
+	for _, tt := range tests {
+		got := mapStopReason(tt.input)
+		if got != tt.expected {
+			t.Errorf("mapStopReason(%q) = %q, 期望 %q", tt.input, got, tt.expected)
+		}
+	}
+}
+
+// TestMultiIterationToolCalls 验证多轮迭代的 tool_call_start/end 事件序列完整。
+//
+// 场景：3 次迭代（tool_use → tool_use → 纯文本），验证每轮工具执行的事件正常推送。
+func TestMultiIterationToolCalls(t *testing.T) {
+	toolInst := &echoToolForTest{}
+	scripts := [][]llm.StreamChunk{
+		// 第 1 次迭代：返回 tool_use
+		{{
+			Done:     true,
+			ToolUses: []llm.ToolUseBlock{{ID: "m1", Name: "echo", Input: json.RawMessage(`{"msg":"a"}`)}},
+		}},
+		// 第 2 次迭代：再次返回 tool_use
+		{{
+			Done:     true,
+			ToolUses: []llm.ToolUseBlock{{ID: "m2", Name: "echo", Input: json.RawMessage(`{"msg":"b"}`)}},
+		}},
+		// 第 3 次迭代：返回纯文本
+		{{Content: "all done", Done: true}},
+	}
+	r := newToolRig(t, scripts, toolInst)
+
+	r.client.WriteMessage(websocket.TextMessage, mustEncode(MsgTypeUserInput, UserInputPayload{Text: "multi"}))
+	msgs := r.recvAll(t, 3*time.Second)
+
+	// 验证收到 2 对 tool_call_start/end
+	startEvents := findAllByType(msgs, MsgTypeToolCallStart)
+	endEvents := findAllByType(msgs, MsgTypeToolCallEnd)
+	if len(startEvents) != 2 {
+		t.Errorf("tool_call_start 事件数 = %d, 期望 2", len(startEvents))
+	}
+	if len(endEvents) != 2 {
+		t.Errorf("tool_call_end 事件数 = %d, 期望 2", len(endEvents))
+	}
+
+	// 验证第 1 个 tool_call_start 的 ToolUseID
+	if len(startEvents) > 0 {
+		p1, _ := AsPayload[ToolCallStartPayload](startEvents[0])
+		if p1.ToolUseID != "m1" {
+			t.Errorf("第 1 个 start ToolUseID = %q, 期望 m1", p1.ToolUseID)
+		}
+	}
+	if len(startEvents) > 1 {
+		p2, _ := AsPayload[ToolCallStartPayload](startEvents[1])
+		if p2.ToolUseID != "m2" {
+			t.Errorf("第 2 个 start ToolUseID = %q, 期望 m2", p2.ToolUseID)
+		}
+	}
+
+	// 验证收到 3 个 agent_iteration 事件
+	iterations := findAllByType(msgs, MsgTypeAgentIteration)
+	if len(iterations) != 3 {
+		t.Errorf("agent_iteration 事件数 = %d, 期望 3（3 轮迭代）", len(iterations))
+	}
+
+	// 验证最终 stream_done reason=completed
+	done := findByType(msgs, MsgTypeStreamDone)
+	if done == nil {
+		t.Fatal("未收到 stream_done")
+	}
+	dp, _ := AsPayload[StreamDonePayload](*done)
+	if dp.Reason != StreamReasonCompleted {
+		t.Errorf("最终 Reason = %q, 期望 completed", dp.Reason)
+	}
+}
+
+// ---- Task 6: 主流程接入验证 ----
+
+// TestAgentLoopConfigFromHandler 验证 Handler 通过 cfg 正确传递 AgentLoop 配置。
+func TestAgentLoopConfigFromHandler(t *testing.T) {
+	toolInst := &echoToolForTest{}
+	scripts := [][]llm.StreamChunk{
+		{{Content: "ok", Done: true}},
+	}
+	dir := t.TempDir()
+	sm, _ := session.NewSessionManagerWithDir(dir)
+	cfg := &config.Config{
+		Provider:               "anthropic",
+		Model:                  "claude-test",
+		APIKey:                 "test-key",
+		MaxTokens:              1024,
+		MaxAgentLoopIterations: 10,
+		ContextSafetyMargin:    2048,
+	}
+	mp := &scriptedProvider{scripts: scripts, chunkDelay: 5 * time.Millisecond}
+	registry := tool.NewRegistry()
+	if err := registry.Register(toolInst); err != nil {
+		t.Fatalf("注册工具失败: %v", err)
+	}
+	toolHandler := conversation.NewToolHandler(registry, 5*time.Second, dir)
+
+	h := NewHandler(mp, sm, cfg, 10, "", 50000, dir, registry, toolHandler)
+	s := NewServer("127.0.0.1:0")
+	h.Register(s.Router())
+	ts := httptest.NewServer(http.HandlerFunc(s.ConnectionManager().HandleWS))
+	defer ts.Close()
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/"
+	client, _, _ := websocket.DefaultDialer.Dial(wsURL, nil)
+	defer client.Close()
+
+	r := &toolRig{h: h, mp: mp, sessDir: dir, srv: ts, client: client, toolHandler: toolHandler}
+	client.WriteMessage(websocket.TextMessage, mustEncode(MsgTypeUserInput, UserInputPayload{Text: "hi"}))
+
+	msgs := r.recvAll(t, 2*time.Second)
+	done := findByType(msgs, MsgTypeStreamDone)
+	if done == nil {
+		t.Fatal("未收到 stream_done")
+	}
+	p, _ := AsPayload[StreamDonePayload](*done)
+	if p.Reason != StreamReasonCompleted {
+		t.Errorf("Reason = %q, 期望 completed", p.Reason)
+	}
+}

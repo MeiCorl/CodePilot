@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -79,13 +80,15 @@ func TestConversationManager_GetContextWithSystemPrompt(t *testing.T) {
 func TestConversationManager_TokenEstimate(t *testing.T) {
 	m := NewConversationManager(5)
 	// 英文: "hello" = 5 个非 CJK 字符，约 5/4 ≈ 2 tokens
+	// 加上消息结构开销(15) + 工具定义开销(5工具×80=400) ≈ 417
 	m.AddUserMessage("hello")
 	tokens := m.TokenEstimate()
 	if tokens <= 0 {
 		t.Fatalf("Token 估算应大于 0，实际为 %d", tokens)
 	}
-	if tokens > 5 {
-		t.Fatalf("单条短消息 token 估算不应过大，实际为 %d", tokens)
+	// 估算值 = 文本(2) + 消息开销(15) + 工具定义开销(400) ≈ 417
+	if tokens < 400 || tokens > 500 {
+		t.Fatalf("单条短消息 token 估算应在 400~500 范围内（含结构+工具开销），实际为 %d", tokens)
 	}
 }
 
@@ -98,9 +101,9 @@ func TestConversationManager_TokenEstimateEnglish(t *testing.T) {
 	}
 	m.AddUserMessage(text)
 	tokens := m.TokenEstimate()
-	// 100 / 4 = 25 tokens
-	if tokens < 15 || tokens > 35 {
-		t.Fatalf("100 个英文字符估算 token 应在 15~35 范围内，实际为 %d", tokens)
+	// 100 / 4 = 25 tokens + 消息开销(15) + 工具定义开销(400) ≈ 440
+	if tokens < 400 || tokens > 500 {
+		t.Fatalf("100 个英文字符估算 token 应在 400~500 范围内（含结构+工具开销），实际为 %d", tokens)
 	}
 }
 
@@ -113,9 +116,9 @@ func TestConversationManager_TokenEstimateChinese(t *testing.T) {
 	}
 	m.AddUserMessage(text)
 	tokens := m.TokenEstimate()
-	// 100 / 2 = 50 tokens
-	if tokens < 40 || tokens > 60 {
-		t.Fatalf("100 个中文字符估算 token 应在 40~60 范围内，实际为 %d", tokens)
+	// 100 / 2 = 50 tokens + 消息开销(15) + 工具定义开销(400) ≈ 465
+	if tokens < 430 || tokens > 520 {
+		t.Fatalf("100 个中文字符估算 token 应在 430~520 范围内（含结构+工具开销），实际为 %d", tokens)
 	}
 }
 
@@ -309,8 +312,8 @@ func TestRunTurn_NoToolUse(t *testing.T) {
 	if res.FinalText != "Hello, world!" {
 		t.Errorf("FinalText = %q，期望 %q", res.FinalText, "Hello, world!")
 	}
-	if res.ToolUse != nil {
-		t.Errorf("不应有 ToolUse，实际: %+v", res.ToolUse)
+	if len(res.ToolUses) != 0 {
+		t.Errorf("不应有 ToolUse，实际: %+v", res.ToolUses)
 	}
 
 	// history 应只追加 1 条 assistant 文本消息
@@ -336,7 +339,7 @@ func TestRunTurn_ToolUseHappensOnce(t *testing.T) {
 			{
 				{
 					Done:    true,
-					ToolUse: &llm.ToolUseBlock{ID: "call-1", Name: "echo", Input: json.RawMessage(`{"msg":"ping"}`)},
+					ToolUses: []llm.ToolUseBlock{{ID: "call-1", Name: "echo", Input: json.RawMessage(`{"msg":"ping"}`)}},
 				},
 			},
 			// 第二次 LLM：基于 tool_result 给出最终回复
@@ -376,13 +379,13 @@ func TestRunTurn_ToolUseHappensOnce(t *testing.T) {
 	if res.FinalText != "done" {
 		t.Errorf("FinalText = %q，期望 %q", res.FinalText, "done")
 	}
-	if res.ToolUse == nil || res.ToolUse.ID != "call-1" {
-		t.Errorf("ToolUse = %+v，期望 ID=call-1", res.ToolUse)
+	if len(res.ToolUses) == 0 || res.ToolUses[0].ID != "call-1" {
+		t.Errorf("ToolUse = %+v，期望 ID=call-1", res.ToolUses)
 	}
-	if res.ToolResult.Content != "echo:ping" {
-		t.Errorf("ToolResult.Content = %q，期望 %q", res.ToolResult.Content, "echo:ping")
+	if res.ToolResults[0].Content != "echo:ping" {
+		t.Errorf("ToolResult.Content = %q，期望 %q", res.ToolResults[0].Content, "echo:ping")
 	}
-	if res.ToolResult.IsError {
+	if res.ToolResults[0].IsError {
 		t.Errorf("ToolResult.IsError 应为 false")
 	}
 
@@ -440,7 +443,7 @@ func TestRunTurn_ToolErrorPropagatesAsIsError(t *testing.T) {
 	p := &scriptedProvider{
 		scripts: [][]llm.StreamChunk{
 			{
-				{Done: true, ToolUse: &llm.ToolUseBlock{ID: "e1", Name: "always_err", Input: json.RawMessage(`{}`)}},
+				{Done: true, ToolUses: []llm.ToolUseBlock{{ID: "e1", Name: "always_err", Input: json.RawMessage(`{}`)}}},
 			},
 			{
 				{Content: "我看到错误了", Done: true},
@@ -459,10 +462,10 @@ func TestRunTurn_ToolErrorPropagatesAsIsError(t *testing.T) {
 	if res.Error != nil {
 		t.Fatalf("RunTurn 返回错误: %v", res.Error)
 	}
-	if !res.ToolResult.IsError {
+	if !res.ToolResults[0].IsError {
 		t.Error("ToolResult.IsError 应为 true")
 	}
-	if res.ToolResult.Content == "" {
+	if res.ToolResults[0].Content == "" {
 		t.Error("ToolResult.Content 应包含错误描述")
 	}
 	if res.FinalText != "我看到错误了" {
@@ -475,7 +478,7 @@ func TestRunTurn_ToolNotFoundInRegistry(t *testing.T) {
 	p := &scriptedProvider{
 		scripts: [][]llm.StreamChunk{
 			{
-				{Done: true, ToolUse: &llm.ToolUseBlock{ID: "x", Name: "missing", Input: json.RawMessage(`{}`)}},
+				{Done: true, ToolUses: []llm.ToolUseBlock{{ID: "x", Name: "missing", Input: json.RawMessage(`{}`)}}},
 			},
 			{
 				{Content: "工具不存在", Done: true},
@@ -490,11 +493,11 @@ func TestRunTurn_ToolNotFoundInRegistry(t *testing.T) {
 	if res.Error != nil {
 		t.Fatalf("RunTurn 返回错误: %v", res.Error)
 	}
-	if !res.ToolResult.IsError {
+	if !res.ToolResults[0].IsError {
 		t.Error("未注册工具应返回 IsError=true")
 	}
-	if !strings.Contains(res.ToolResult.Content, "missing") {
-		t.Errorf("错误信息应包含工具名 missing，实际: %s", res.ToolResult.Content)
+	if !strings.Contains(res.ToolResults[0].Content, "missing") {
+		t.Errorf("错误信息应包含工具名 missing，实际: %s", res.ToolResults[0].Content)
 	}
 }
 
@@ -518,7 +521,7 @@ func TestRunTurn_FirstLLMContextCancelled(t *testing.T) {
 	if res.Error != nil {
 		t.Fatalf("不应有 Error: %v", res.Error)
 	}
-	if res.ToolUse != nil {
+	if len(res.ToolUses) != 0 {
 		t.Error("不应触发 tool_use")
 	}
 	// ctx 在 RunTurn 期间已取消，第二次 LLM 不会被调用，所以 Res.Aborted 可能为 false
@@ -559,7 +562,7 @@ func TestRunTurn_ToolHandlerOnStartOnEnd(t *testing.T) {
 	p := &scriptedProvider{
 		scripts: [][]llm.StreamChunk{
 			{
-				{Done: true, ToolUse: &llm.ToolUseBlock{ID: "e1", Name: "echo", Input: json.RawMessage(`{"msg":"hi"}`)}},
+				{Done: true, ToolUses: []llm.ToolUseBlock{{ID: "e1", Name: "echo", Input: json.RawMessage(`{"msg":"hi"}`)}}},
 			},
 			{
 				{Content: "final", Done: true},
@@ -628,7 +631,7 @@ func TestRunTurn_ToolHandlerTimeout(t *testing.T) {
 	p := &scriptedProvider{
 		scripts: [][]llm.StreamChunk{
 			{
-				{Done: true, ToolUse: &llm.ToolUseBlock{ID: "s1", Name: "slow", Input: json.RawMessage(`{}`)}},
+				{Done: true, ToolUses: []llm.ToolUseBlock{{ID: "s1", Name: "slow", Input: json.RawMessage(`{}`)}}},
 			},
 			{
 				{Content: "give up", Done: true},
@@ -647,11 +650,11 @@ func TestRunTurn_ToolHandlerTimeout(t *testing.T) {
 	if res.Error != nil {
 		t.Fatalf("RunTurn 返回错误: %v", res.Error)
 	}
-	if !res.ToolResult.IsError {
+	if !res.ToolResults[0].IsError {
 		t.Error("工具超时应返回 IsError=true")
 	}
-	if !strings.Contains(res.ToolResult.Content, "超时") {
-		t.Errorf("超时错误信息应包含 '超时'，实际: %s", res.ToolResult.Content)
+	if !strings.Contains(res.ToolResults[0].Content, "超时") {
+		t.Errorf("超时错误信息应包含 '超时'，实际: %s", res.ToolResults[0].Content)
 	}
 	if endEvent.Status != ToolEventStatusError {
 		t.Errorf("OnEnd 事件 Status = %q，期望 error", endEvent.Status)
@@ -698,11 +701,7 @@ L2: world
 	p1 := &scriptedProvider{
 		scripts: [][]llm.StreamChunk{
 			{
-				{Done: true, ToolUse: &llm.ToolUseBlock{
-					ID:    "t1",
-					Name:  "bash",
-					Input: json.RawMessage(`{"command":"rm -rf /"}`),
-				}},
+				{Done: true, ToolUses: []llm.ToolUseBlock{{ID: "t1", Name: "bash", Input: json.RawMessage(`{"command":"rm -rf /"}`)}}},
 			},
 			{
 				{Content: "我已拒绝执行该命令。", Done: true},
@@ -715,22 +714,18 @@ L2: world
 	if res1.Error != nil {
 		t.Fatalf("第一次 RunTurn 出错: %v", res1.Error)
 	}
-	if !res1.ToolResult.IsError {
-		t.Errorf("`rm -rf /` 应被黑名单拦截, 实际 IsError=false, Content=%q", res1.ToolResult.Content)
+	if !res1.ToolResults[0].IsError {
+		t.Errorf("`rm -rf /` 应被黑名单拦截, 实际 IsError=false, Content=%q", res1.ToolResults[0].Content)
 	}
-	if !strings.Contains(res1.ToolResult.Content, "禁止") && !strings.Contains(res1.ToolResult.Content, "Dangerous") {
-		t.Errorf("错误信息应说明危险命令, 实际: %q", res1.ToolResult.Content)
+	if !strings.Contains(res1.ToolResults[0].Content, "禁止") && !strings.Contains(res1.ToolResults[0].Content, "Dangerous") {
+		t.Errorf("错误信息应说明危险命令, 实际: %q", res1.ToolResults[0].Content)
 	}
 
 	// 第二次 RunTurn：同一 Registry + ToolHandler，LLM 调 ReadFile 读 hello.txt
 	p2 := &scriptedProvider{
 		scripts: [][]llm.StreamChunk{
 			{
-				{Done: true, ToolUse: &llm.ToolUseBlock{
-					ID:    "t2",
-					Name:  "read_file",
-					Input: json.RawMessage(`{"file_path":"hello.txt"}`),
-				}},
+				{Done: true, ToolUses: []llm.ToolUseBlock{{ID: "t2", Name: "read_file", Input: json.RawMessage(`{"file_path":"hello.txt"}`)}}},
 			},
 			{
 				{Content: "hello.txt 内容如上。", Done: true},
@@ -743,10 +738,275 @@ L2: world
 	if res2.Error != nil {
 		t.Fatalf("第二次 RunTurn 出错: %v", res2.Error)
 	}
-	if res2.ToolResult.IsError {
-		t.Errorf("ReadFile 应正常执行, 实际 IsError=true, Content=%q", res2.ToolResult.Content)
+	if res2.ToolResults[0].IsError {
+		t.Errorf("ReadFile 应正常执行, 实际 IsError=true, Content=%q", res2.ToolResults[0].Content)
 	}
-	if !strings.Contains(res2.ToolResult.Content, "L1:") {
-		t.Errorf("ReadFile 输出应含行号标记, 实际: %q", res2.ToolResult.Content)
+	if !strings.Contains(res2.ToolResults[0].Content, "L1:") {
+		t.Errorf("ReadFile 输出应含行号标记, 实际: %q", res2.ToolResults[0].Content)
+	}
+}
+
+// ---- ExecuteBatch 测试 ----
+
+// writeTool 是一个简单的写入工具（PermWrite），用于测试串行执行策略。
+// 执行时将调用计数 +1 并记录执行顺序（通过全局序号）。
+type writeTool struct {
+	tool.BaseTool
+	calls   int
+	execSeq *[]int // 外部传入的序号记录切片，用于验证执行顺序
+	seqVal  int    // 本工具在序号中的标识值
+}
+
+func (w *writeTool) Execute(_ context.Context, input json.RawMessage) (string, error) {
+	w.calls++
+	if w.execSeq != nil {
+		*w.execSeq = append(*w.execSeq, w.seqVal)
+	}
+	return fmt.Sprintf("write_tool_%d:ok", w.seqVal), nil
+}
+
+// TestExecuteBatch_EmptyInput 空输入返回 nil。
+func TestExecuteBatch_EmptyInput(t *testing.T) {
+	reg := tool.NewRegistry()
+	th := NewToolHandler(reg, time.Second, "")
+	results := th.ExecuteBatch(context.Background(), nil)
+	if results != nil {
+		t.Errorf("空输入应返回 nil，实际: %v", results)
+	}
+}
+
+// TestExecuteBatch_SingleTool 单工具调用与 Execute 行为一致。
+func TestExecuteBatch_SingleTool(t *testing.T) {
+	reg := tool.NewRegistry()
+	_ = reg.Register(newEchoTool())
+	th := NewToolHandler(reg, time.Second, "")
+
+	results := th.ExecuteBatch(context.Background(), []llm.ToolUseBlock{
+		{ID: "t1", Name: "echo", Input: json.RawMessage(`{"msg":"hello"}`)},
+	})
+
+	if len(results) != 1 {
+		t.Fatalf("结果数 = %d，期望 1", len(results))
+	}
+	if results[0].ToolUseID != "t1" {
+		t.Errorf("ToolUseID = %q，期望 t1", results[0].ToolUseID)
+	}
+	if results[0].Content != "echo:hello" {
+		t.Errorf("Content = %q，期望 echo:hello", results[0].Content)
+	}
+	if results[0].IsError {
+		t.Error("不应为错误结果")
+	}
+}
+
+// TestExecuteBatch_ParallelReadOnly 只读工具并行执行。
+func TestExecuteBatch_ParallelReadOnly(t *testing.T) {
+	reg := tool.NewRegistry()
+	// 注册两个只读工具
+	_ = reg.Register(newEchoTool())
+
+	th := NewToolHandler(reg, time.Second, "")
+	results := th.ExecuteBatch(context.Background(), []llm.ToolUseBlock{
+		{ID: "t1", Name: "echo", Input: json.RawMessage(`{"msg":"a"}`)},
+		{ID: "t2", Name: "echo", Input: json.RawMessage(`{"msg":"b"}`)},
+	})
+
+	if len(results) != 2 {
+		t.Fatalf("结果数 = %d，期望 2", len(results))
+	}
+	// 验证结果按原始顺序排列（即使并行执行）
+	if results[0].ToolUseID != "t1" || results[0].Content != "echo:a" {
+		t.Errorf("results[0] 不正确: ToolUseID=%q Content=%q", results[0].ToolUseID, results[0].Content)
+	}
+	if results[1].ToolUseID != "t2" || results[1].Content != "echo:b" {
+		t.Errorf("results[1] 不正确: ToolUseID=%q Content=%q", results[1].ToolUseID, results[1].Content)
+	}
+}
+
+// TestExecuteBatch_SerialWriteTools 写入工具串行执行。
+func TestExecuteBatch_SerialWriteTools(t *testing.T) {
+	reg := tool.NewRegistry()
+
+	var execSeq []int
+	w1 := &writeTool{
+		BaseTool: tool.BaseTool{
+			ToolName:        "write_a",
+			ToolDescription: "write tool a",
+			ToolInputSchema: json.RawMessage(`{"type":"object"}`),
+			ToolPermission:  tool.PermWrite,
+		},
+		execSeq: &execSeq,
+		seqVal:  1,
+	}
+	w2 := &writeTool{
+		BaseTool: tool.BaseTool{
+			ToolName:        "write_b",
+			ToolDescription: "write tool b",
+			ToolInputSchema: json.RawMessage(`{"type":"object"}`),
+			ToolPermission:  tool.PermWrite,
+		},
+		execSeq: &execSeq,
+		seqVal:  2,
+	}
+	_ = reg.Register(w1)
+	_ = reg.Register(w2)
+
+	th := NewToolHandler(reg, time.Second, "")
+	results := th.ExecuteBatch(context.Background(), []llm.ToolUseBlock{
+		{ID: "t1", Name: "write_a", Input: json.RawMessage(`{}`)},
+		{ID: "t2", Name: "write_b", Input: json.RawMessage(`{}`)},
+	})
+
+	if len(results) != 2 {
+		t.Fatalf("结果数 = %d，期望 2", len(results))
+	}
+	// 验证串行执行顺序：write_a 先于 write_b
+	if len(execSeq) != 2 {
+		t.Fatalf("执行序号记录数 = %d，期望 2", len(execSeq))
+	}
+	if execSeq[0] != 1 || execSeq[1] != 2 {
+		t.Errorf("执行顺序不正确: %v，期望 [1, 2]", execSeq)
+	}
+	if results[0].Content != "write_tool_1:ok" || results[1].Content != "write_tool_2:ok" {
+		t.Errorf("结果内容不正确: %q, %q", results[0].Content, results[1].Content)
+	}
+}
+
+// TestExecuteBatch_MixedPermissions 混合权限：只读并行 + 写入串行。
+func TestExecuteBatch_MixedPermissions(t *testing.T) {
+	reg := tool.NewRegistry()
+
+	_ = reg.Register(newEchoTool()) // PermRead
+
+	var execSeq []int
+	w := &writeTool{
+		BaseTool: tool.BaseTool{
+			ToolName:        "write_tool",
+			ToolDescription: "write tool",
+			ToolInputSchema: json.RawMessage(`{"type":"object"}`),
+			ToolPermission:  tool.PermWrite,
+		},
+		execSeq: &execSeq,
+		seqVal:  100,
+	}
+	_ = reg.Register(w)
+
+	th := NewToolHandler(reg, time.Second, "")
+	results := th.ExecuteBatch(context.Background(), []llm.ToolUseBlock{
+		{ID: "t1", Name: "echo", Input: json.RawMessage(`{"msg":"read"}`)},
+		{ID: "t2", Name: "write_tool", Input: json.RawMessage(`{}`)},
+	})
+
+	if len(results) != 2 {
+		t.Fatalf("结果数 = %d，期望 2", len(results))
+	}
+	if results[0].ToolUseID != "t1" || results[0].Content != "echo:read" {
+		t.Errorf("results[0] 不正确: %+v", results[0])
+	}
+	if results[1].ToolUseID != "t2" || results[1].Content != "write_tool_100:ok" {
+		t.Errorf("results[1] 不正确: %+v", results[1])
+	}
+}
+
+// TestExecuteBatch_UnregisteredTool 未注册工具返回错误结果。
+func TestExecuteBatch_UnregisteredTool(t *testing.T) {
+	reg := tool.NewRegistry()
+	_ = reg.Register(newEchoTool())
+
+	th := NewToolHandler(reg, time.Second, "")
+	results := th.ExecuteBatch(context.Background(), []llm.ToolUseBlock{
+		{ID: "t1", Name: "echo", Input: json.RawMessage(`{"msg":"ok"}`)},
+		{ID: "t2", Name: "missing_tool", Input: json.RawMessage(`{}`)},
+	})
+
+	if len(results) != 2 {
+		t.Fatalf("结果数 = %d，期望 2", len(results))
+	}
+	// 已注册工具正常
+	if results[0].IsError {
+		t.Error("已注册工具不应为错误")
+	}
+	// 未注册工具返回错误
+	if !results[1].IsError {
+		t.Error("未注册工具应为 IsError=true")
+	}
+	if !strings.Contains(results[1].Content, "missing_tool") {
+		t.Errorf("错误信息应包含工具名，实际: %q", results[1].Content)
+	}
+}
+
+// TestExecuteBatch_ErrorIsolation 单个工具失败不影响其他工具。
+func TestExecuteBatch_ErrorIsolation(t *testing.T) {
+	reg := tool.NewRegistry()
+	_ = reg.Register(newEchoTool())
+	_ = reg.Register(newErrTool())
+
+	th := NewToolHandler(reg, time.Second, "")
+	results := th.ExecuteBatch(context.Background(), []llm.ToolUseBlock{
+		{ID: "t1", Name: "echo", Input: json.RawMessage(`{"msg":"ok"}`)},
+		{ID: "t2", Name: "always_err", Input: json.RawMessage(`{}`)},
+	})
+
+	if len(results) != 2 {
+		t.Fatalf("结果数 = %d，期望 2", len(results))
+	}
+	// echo 工具正常
+	if results[0].IsError {
+		t.Error("echo 工具不应失败")
+	}
+	if results[0].Content != "echo:ok" {
+		t.Errorf("echo 结果 = %q，期望 echo:ok", results[0].Content)
+	}
+	// err 工具失败
+	if !results[1].IsError {
+		t.Error("always_err 工具应为 IsError=true")
+	}
+}
+
+// TestExecuteBatch_OnStartOnEndCallbacks 每个工具的回调都正常触发。
+func TestExecuteBatch_OnStartOnEndCallbacks(t *testing.T) {
+	reg := tool.NewRegistry()
+	_ = reg.Register(newEchoTool())
+
+	th := NewToolHandler(reg, time.Second, "")
+
+	var mu sync.Mutex
+	var events []ToolExecutionEvent
+	th.SetOnStart(func(e ToolExecutionEvent) {
+		mu.Lock()
+		events = append(events, e)
+		mu.Unlock()
+	})
+	th.SetOnEnd(func(e ToolExecutionEvent) {
+		mu.Lock()
+		events = append(events, e)
+		mu.Unlock()
+	})
+
+	th.ExecuteBatch(context.Background(), []llm.ToolUseBlock{
+		{ID: "t1", Name: "echo", Input: json.RawMessage(`{"msg":"a"}`)},
+		{ID: "t2", Name: "echo", Input: json.RawMessage(`{"msg":"b"}`)},
+	})
+
+	// 每个 tool_use 产生 start + end 两个事件，共 4 个
+	if len(events) != 4 {
+		t.Fatalf("事件数 = %d，期望 4（2 start + 2 end）", len(events))
+	}
+
+	// 验证所有事件状态（不依赖严格顺序，因为并行执行时事件可能交叉）
+	startCount := 0
+	endCount := 0
+	for _, e := range events {
+		if e.Status == ToolEventStatusRunning {
+			startCount++
+		} else if e.Status == ToolEventStatusCompleted {
+			endCount++
+		}
+	}
+	if startCount != 2 {
+		t.Errorf("start 事件数 = %d，期望 2", startCount)
+	}
+	if endCount != 2 {
+		t.Errorf("end 事件数 = %d，期望 2", endCount)
 	}
 }

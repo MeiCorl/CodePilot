@@ -32,6 +32,12 @@ type Config struct {
 	ToolExecutionTimeoutSeconds int `json:"tool_execution_timeout_seconds,omitempty"`
 	// ToolWorkingDirectory 为工具系统的沙箱根目录；留空则取进程启动时的工作目录
 	ToolWorkingDirectory string `json:"tool_working_directory,omitempty"`
+	// MaxAgentLoopIterations 为 Agent Loop 最大迭代次数，默认 25。
+	// 一次迭代 = 一次 LLM 调用 + 可能的工具执行；达到上限后注入提示让模型优雅收尾。
+	MaxAgentLoopIterations int `json:"max_agent_loop_iterations,omitempty"`
+	// ContextSafetyMargin 为上下文安全余量（token 数），默认 4096。
+	// 当剩余 token 低于此值时，Agent Loop 注入提示让模型总结当前进展并回复用户。
+	ContextSafetyMargin int `json:"context_safety_margin,omitempty"`
 }
 
 // ToolsConfig 是工具系统的配置项。
@@ -53,6 +59,8 @@ const (
 	defaultTimeout                 = 60
 	defaultMaxRetries              = 2
 	defaultToolExecutionTimeoutSec = 30
+	defaultMaxAgentLoopIterations  = 25
+	defaultContextSafetyMargin     = 4096
 )
 
 // Load 从 ~/.codepilot/config.json 加载配置文件。
@@ -105,6 +113,12 @@ func (c *Config) setDefaults() {
 	if c.ToolExecutionTimeoutSeconds == 0 {
 		c.ToolExecutionTimeoutSeconds = defaultToolExecutionTimeoutSec
 	}
+	if c.MaxAgentLoopIterations == 0 {
+		c.MaxAgentLoopIterations = defaultMaxAgentLoopIterations
+	}
+	if c.ContextSafetyMargin == 0 {
+		c.ContextSafetyMargin = defaultContextSafetyMargin
+	}
 }
 
 // validate 校验配置项的合法性。
@@ -123,6 +137,12 @@ func (c *Config) validate() error {
 	}
 	if c.MaxTokens <= 0 {
 		return fmt.Errorf("配置校验失败: max_tokens 必须大于 0")
+	}
+	if c.MaxAgentLoopIterations < 0 {
+		return fmt.Errorf("配置校验失败: max_agent_loop_iterations 不能为负数")
+	}
+	if c.ContextSafetyMargin < 0 {
+		return fmt.Errorf("配置校验失败: context_safety_margin 不能为负数")
 	}
 	return nil
 }

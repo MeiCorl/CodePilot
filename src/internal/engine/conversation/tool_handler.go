@@ -259,3 +259,95 @@ func (h *ToolHandler) fireEnd(evt ToolExecutionEvent) {
 		fn(evt)
 	}
 }
+
+// ExecuteBatch 批量执行 LLM 发出的多个 tool_use，根据工具权限分级调度执行策略。
+//
+// 执行策略：
+//   - 只读工具（PermRead）：并行执行，用 WaitGroup 协调，全部完成后统一收集结果
+//   - 写入/执行工具（PermWrite / PermExec）：按原始顺序串行执行
+//   - 未注册工具：直接标记为 IsError=true 的 ToolResult，不影响其他工具
+//   - 单个工具失败：不影响同批次其他工具执行
+//
+// 返回值：与输入 toolUses 一一对应的 ToolResultBlock 切片，顺序保持一致。
+// 每个 tool_use 的 OnStart/OnEnd 回调正常触发（与 Execute 单工具行为一致）。
+func (h *ToolHandler) ExecuteBatch(ctx context.Context, toolUses []llm.ToolUseBlock) []llm.ToolResultBlock {
+	if len(toolUses) == 0 {
+		return nil
+	}
+
+	// 结果切片，按原始索引对齐
+	results := make([]llm.ToolResultBlock, len(toolUses))
+
+	// 第一步：对所有 tool_use 做预分类——查出对应的工具实例和权限
+	type indexedToolUse struct {
+		index     int
+		toolUse   llm.ToolUseBlock
+		tool      tool.Tool     // nil 表示未注册
+		permission tool.ToolPermission
+	}
+	items := make([]indexedToolUse, len(toolUses))
+	for i, tu := range toolUses {
+		t, ok := h.lookup(tu.Name)
+		perm := tool.PermRead // 默认当作只读（未注册工具不执行，权限无意义）
+		if ok {
+			perm = t.Permission()
+		}
+		items[i] = indexedToolUse{
+			index:      i,
+			toolUse:    tu,
+			tool:       t,
+			permission: perm,
+		}
+	}
+
+	// 第二步：分组——只读组（并行）和写入/执行组（串行）
+	var readOnlyGroup []indexedToolUse
+	var writeExecGroup []indexedToolUse
+	for _, item := range items {
+		if item.tool == nil {
+			// 未注册工具：直接生成错误结果，不加入任何组
+			results[item.index] = llm.ToolResultBlock{
+				ToolUseID: item.toolUse.ID,
+				Content:   (&ErrToolNotFound{Name: item.toolUse.Name}).Error(),
+				IsError:   true,
+			}
+			continue
+		}
+		if item.permission == tool.PermRead {
+			readOnlyGroup = append(readOnlyGroup, item)
+		} else {
+			writeExecGroup = append(writeExecGroup, item)
+		}
+	}
+
+	// 第三步：并行执行只读组
+	if len(readOnlyGroup) > 0 {
+		var wg sync.WaitGroup
+		for _, item := range readOnlyGroup {
+			wg.Add(1)
+			go func(it indexedToolUse) {
+				defer wg.Done()
+				result := h.Execute(ctx, it.toolUse)
+				results[it.index] = result
+			}(item)
+		}
+		wg.Wait()
+	}
+
+	// 第四步：串行执行写入/执行组
+	for _, item := range writeExecGroup {
+		// 每次执行前检查 ctx 是否已取消，避免在已取消状态下继续串行
+		if ctx.Err() != nil {
+			results[item.index] = llm.ToolResultBlock{
+				ToolUseID: item.toolUse.ID,
+				Content:   "工具执行被取消: 上下文已终止",
+				IsError:   true,
+			}
+			continue
+		}
+		result := h.Execute(ctx, item.toolUse)
+		results[item.index] = result
+	}
+
+	return results
+}

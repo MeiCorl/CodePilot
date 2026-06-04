@@ -8,6 +8,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -234,10 +235,8 @@ func (p *OpenAIProvider) streamWithRetry(ctx context.Context, systemPrompt strin
 //
 // 流式 tool_calls 解析策略：OpenAI 流式响应按 index 增量发送 tool_calls 片段，
 // 每个 tool_call 的 ID/Name/Arguments 可能跨多个 chunk 累积，doStream
-// 用 map[index]*toolCallAccum 维护；流结束时（Done chunk）取**第一个**累积完成的
-// tool_call 构造 ToolUseBlock 捎带出来。
-//
-// 本步骤（Step 2）只支持单 tool_use；并行 tool_call 在 Step 3 扩展。
+// 用 map[index]*toolCallAccum 维护；流结束时按 index 升序构造所有
+// ToolUseBlock，通过 StreamChunk.ToolUses 切片捎带出来。
 func (p *OpenAIProvider) doStream(ctx context.Context, params openai.ChatCompletionNewParams, ch chan<- StreamChunk) error {
 	ctx, cancel := context.WithTimeout(ctx, time.Duration(p.timeout)*time.Second)
 	defer cancel()
@@ -251,8 +250,6 @@ func (p *OpenAIProvider) doStream(ctx context.Context, params openai.ChatComplet
 		argsBuildr strings.Builder
 	}
 	pending := make(map[int64]*toolCallAccum)
-	// 本次流是否收到了 tool_call（决定结束时是否需要捎带 ToolUse）
-	var lastToolUse *ToolUseBlock
 
 	for stream.Next() {
 		evt := stream.Current()
@@ -266,8 +263,13 @@ func (p *OpenAIProvider) doStream(ctx context.Context, params openai.ChatComplet
 			select {
 			case ch <- StreamChunk{Content: delta.Content}:
 			case <-ctx.Done():
-				ch <- StreamChunk{Done: true, ToolUse: lastToolUse}
-				return nil
+				// 区分用户主动取消和超时
+				if ctx.Err() == context.Canceled {
+					ch <- StreamChunk{Done: true}
+					return nil
+				}
+				// DeadlineExceeded：超时，返回错误让上层感知
+				return fmt.Errorf("LLM 流式传输超时（%d秒）: %w", p.timeout, ctx.Err())
 			}
 		}
 
@@ -290,38 +292,46 @@ func (p *OpenAIProvider) doStream(ctx context.Context, params openai.ChatComplet
 		}
 	}
 
+	// 按 index 升序排列所有累积的 tool_call，构造 ToolUses 切片
+	var toolUses []ToolUseBlock
+	if len(pending) > 0 {
+		indices := make([]int64, 0, len(pending))
+		for idx := range pending {
+			indices = append(indices, idx)
+		}
+		sort.Slice(indices, func(i, j int) bool { return indices[i] < indices[j] })
+		toolUses = make([]ToolUseBlock, 0, len(indices))
+		for _, idx := range indices {
+			if acc, ok := pending[idx]; ok {
+				args := acc.argsBuildr.String()
+				if args == "" {
+					args = "{}"
+				}
+				toolUses = append(toolUses, ToolUseBlock{
+					ID:    acc.id,
+					Name:  acc.name,
+					Input: json.RawMessage(args),
+				})
+			}
+		}
+	}
+
 	// 检查流错误
 	if err := stream.Err(); err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			ch <- StreamChunk{Done: true, ToolUse: lastToolUse}
+		// 用户主动取消视为正常中断
+		if errors.Is(err, context.Canceled) {
+			ch <- StreamChunk{Done: true, ToolUses: toolUses}
 			return nil
+		}
+		// 超时视为错误，不应静默丢弃——用户看到的是"Thinking 后无输出"
+		if errors.Is(err, context.DeadlineExceeded) {
+			return fmt.Errorf("LLM 请求超时（%d秒），可能原因：上下文过长或模型推理耗时超出限制: %w", p.timeout, err)
 		}
 		return err
 	}
 
-	// 流正常结束 —— 若累积到 tool_call，构造 ToolUse 发出
-	if len(pending) > 0 {
-		// 取最小 index（OpenAI 通常只发一个；多 tool_call 并行场景下由 Step 3 扩展）
-		var pickIndex int64 = -1
-		for idx := range pending {
-			if pickIndex < 0 || idx < pickIndex {
-				pickIndex = idx
-			}
-		}
-		if acc, ok := pending[pickIndex]; ok {
-			args := acc.argsBuildr.String()
-			if args == "" {
-				args = "{}"
-			}
-			// 校验 JSON 合法性
-			if !json.Valid([]byte(args)) {
-				// 非法 JSON：保持原样（工具端参数校验会给出明确错误）
-			}
-			lastToolUse = NewToolUseBlock(acc.id, acc.name, json.RawMessage(args)).(*ToolUseBlock)
-		}
-	}
-
-	ch <- StreamChunk{Done: true, ToolUse: lastToolUse}
+	// 流正常结束，携带所有 tool_use 块
+	ch <- StreamChunk{Done: true, ToolUses: toolUses}
 	return nil
 }
 

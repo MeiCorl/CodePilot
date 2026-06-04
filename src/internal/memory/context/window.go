@@ -47,37 +47,53 @@ func (w *SlidingWindow) MaxRounds() int {
 	return w.maxRounds
 }
 
-// windowed 从完整历史尾部截取最近 maxRounds 轮消息。
-// 当历史轮数超出 maxRounds 时，按 FIFO 顺序丢弃最早的消息对（一轮 User+Assistant）。
-// 返回的是 history 的子切片（共享底层数组），调用方不应修改返回结果。
+// windowed 从完整历史中提取最近 maxRounds 轮消息，确保裁剪后的消息序列
+// 以 User 消息开头且保持 User/Assistant 交替结构。
+//
+// 在 Agent Loop 中，消息序列可能是：
+//
+//	User(text) → Assistant(text+tool_use) → User(tool_result) → Assistant(text) → ...
+//
+// 因此"一轮"被定义为：以 User 消息开头到下一个 User 消息之前的所有连续消息。
+// 例如上面序列中，第 1-2 条为第 1 轮，第 3-4 条为第 2 轮。
+//
+// 裁剪策略：先定位所有轮次边界，然后保留最后 maxRounds 轮，确保结构完整性。
 func (w *SlidingWindow) windowed(history []llm.Message) []llm.Message {
-	msgs := history
-	for countRounds(msgs) > w.maxRounds {
-		// 移除最早的一对消息（User + Assistant）
-		if len(msgs) >= 2 {
-			msgs = msgs[2:]
-		} else {
-			break
+	if len(history) == 0 {
+		return history
+	}
+
+	// 1. 定位所有 User 消息的索引（轮次边界）
+	roundStarts := make([]int, 0, len(history))
+	for i, msg := range history {
+		if msg.Role == llm.RoleUser {
+			roundStarts = append(roundStarts, i)
 		}
 	}
-	return msgs
+
+	// 如果轮数不超过 maxRounds，不需要裁剪
+	totalRounds := len(roundStarts)
+	if totalRounds <= w.maxRounds {
+		return history
+	}
+
+	// 2. 计算需要保留的起始轮次索引
+	keepFromRoundIdx := totalRounds - w.maxRounds
+	cutPos := roundStarts[keepFromRoundIdx]
+
+	// 3. 从 cutPos 开始截取，保证第一条消息是 User 角色
+	return history[cutPos:]
 }
 
 // countRounds 统计消息列表中的对话轮数。
-// 一轮对话由一条 User 消息和紧跟的一条 Assistant 消息组成。
+// 一轮以第一条 User 消息开始，到下一条 User 消息之前结束。
+// 这是兼容旧接口的辅助方法，新代码应优先使用 windowed 的轮次定位逻辑。
 func countRounds(messages []llm.Message) int {
 	count := 0
-	i := 0
-	for i < len(messages) {
-		if messages[i].Role == llm.RoleUser {
-			// 检查下一条是否为 Assistant 消息，构成完整一轮
-			if i+1 < len(messages) && messages[i+1].Role == llm.RoleAssistant {
-				count++
-				i += 2
-				continue
-			}
+	for _, msg := range messages {
+		if msg.Role == llm.RoleUser {
+			count++
 		}
-		i++
 	}
 	return count
 }

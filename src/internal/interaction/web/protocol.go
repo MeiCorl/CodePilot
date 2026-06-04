@@ -30,18 +30,21 @@ const (
 	MsgTypeContextUsage   = "context_usage"
 	MsgTypeToolCallStart  = "tool_call_start"
 	MsgTypeToolCallEnd    = "tool_call_end"
+	MsgTypeAgentIteration = "agent_iteration"
 )
 
 // 流式结束原因与 Agent 状态的取值常量。
 const (
-	StreamReasonCompleted = "completed"
-	StreamReasonAborted   = "aborted"
-	StreamReasonError     = "error"
+	StreamReasonCompleted       = "completed"
+	StreamReasonAborted         = "aborted"
+	StreamReasonError           = "error"
+	StreamReasonMaxIterations   = "max_iterations"
+	StreamReasonContextOverflow = "context_overflow"
 
-	StatusIdle       = "idle"
-	StatusThinking   = "thinking"
+	StatusIdle        = "idle"
+	StatusThinking    = "thinking"
 	StatusToolRunning = "tool_running"
-	StatusError      = "error"
+	StatusError       = "error"
 )
 
 // 工具执行结束事件的 status 取值。
@@ -189,6 +192,15 @@ type ContextUsagePayload struct {
 	Used        int `json:"used"`
 	Limit       int `json:"limit"`
 	PercentLeft int `json:"percent_left"`
+}
+
+// AgentIterationPayload Agent Loop 迭代进度事件。
+// 每轮迭代开始时推送，前端可据此展示"第 N 轮 / 共 M 轮"的进度指示。
+type AgentIterationPayload struct {
+	// Current 为当前迭代序号（从 1 开始）
+	Current int `json:"current"`
+	// Max 为最大迭代次数
+	Max int `json:"max"`
 }
 
 // Encode 编码消息为 JSON 字节。

@@ -133,8 +133,23 @@ type StreamChunk struct {
 	Done bool
 	// Err 非 nil 表示发生错误（网络错误、API 错误等）
 	Err error
-	// ToolUse 非 nil 表示本次 LLM 响应包含一个 tool_use 块。
+	// ToolUses 为本次 LLM 响应中包含的所有 tool_use 块。
 	// 仅在 Done=true 的最后一个 chunk 上携带；正常文本流保持 nil。
+	// 支持模型一次返回多个工具调用（并行工具调用场景）。
 	// 上层（conversation manager）据此判断是否进入工具执行阶段。
-	ToolUse *ToolUseBlock
+	ToolUses []ToolUseBlock
+}
+
+// HasToolUse 返回本次流式响应是否包含 tool_use 块。
+func (c StreamChunk) HasToolUse() bool {
+	return len(c.ToolUses) > 0
+}
+
+// FirstToolUse 返回第一个 tool_use 块（如无则返回 nil）。
+// 便捷方法，适用于单工具调用场景。
+func (c StreamChunk) FirstToolUse() *ToolUseBlock {
+	if len(c.ToolUses) == 0 {
+		return nil
+	}
+	return &c.ToolUses[0]
 }

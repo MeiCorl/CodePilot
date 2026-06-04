@@ -8,6 +8,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -209,8 +210,8 @@ func (p *AnthropicProvider) doStream(ctx context.Context, params anthropic.Messa
 		partialJSON strings.Builder
 	}
 	pendingToolUses := make(map[int64]*toolUseAccum)
-	// 本次流是否遇到了 tool_use（决定结束时是否需要捎带 ToolUse）
-	var lastToolUse *ToolUseBlock
+	// 已完成的 tool_use 块，按 block index 存储，最后按 index 升序排列
+	completedToolUses := make(map[int64]*ToolUseBlock)
 
 	for stream.Next() {
 		event := stream.Current()
@@ -232,8 +233,13 @@ func (p *AnthropicProvider) doStream(ctx context.Context, params anthropic.Messa
 					select {
 					case ch <- StreamChunk{Content: delta.Text}:
 					case <-ctx.Done():
-						ch <- StreamChunk{Done: true}
-						return nil
+						// 区分用户主动取消和超时
+						if ctx.Err() == context.Canceled {
+							ch <- StreamChunk{Done: true}
+							return nil
+						}
+						// DeadlineExceeded：超时，返回错误让上层感知
+						return fmt.Errorf("LLM 流式传输超时（%d秒）: %w", p.timeout, ctx.Err())
 					}
 				}
 			case anthropic.InputJSONDelta:
@@ -253,24 +259,31 @@ func (p *AnthropicProvider) doStream(ctx context.Context, params anthropic.Messa
 						input = json.RawMessage(acc.partialJSON.String())
 					}
 				}
-				lastToolUse = NewToolUseBlock(acc.id, acc.name, input).(*ToolUseBlock)
+				completedToolUses[evt.Index] = NewToolUseBlock(acc.id, acc.name, input).(*ToolUseBlock)
 				delete(pendingToolUses, evt.Index)
 			}
 		}
 	}
 
+	// 按 block index 升序排列所有已完成的 tool_use 块
+	toolUses := sortToolUsesByIndex(completedToolUses)
+
 	// 检查流错误
 	if err := stream.Err(); err != nil {
-		// ctx 取消视为正常中断
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			ch <- StreamChunk{Done: true, ToolUse: lastToolUse}
+		// 用户主动取消（点击停止按钮等）视为正常中断，不视为错误
+		if errors.Is(err, context.Canceled) {
+			ch <- StreamChunk{Done: true, ToolUses: toolUses}
 			return nil
+		}
+		// 超时视为错误，不应静默丢弃——用户看到的是"Thinking 后无输出"
+		if errors.Is(err, context.DeadlineExceeded) {
+			return fmt.Errorf("LLM 请求超时（%d秒），可能原因：上下文过长或模型推理耗时超出限制: %w", p.timeout, err)
 		}
 		return err
 	}
 
-	// 流正常结束
-	ch <- StreamChunk{Done: true, ToolUse: lastToolUse}
+	// 流正常结束，携带所有 tool_use 块
+	ch <- StreamChunk{Done: true, ToolUses: toolUses}
 	return nil
 }
 
@@ -305,4 +318,27 @@ func (p *AnthropicProvider) shouldRetry(err error) bool {
 
 	// 默认不重试
 	return false
+}
+
+// sortToolUsesByIndex 按 block index 升序排列已完成的 tool_use 块，
+// 返回有序的切片。用于在流结束时把并行累积的多个 tool_use
+// 按 Anthropic 协议的 content block 顺序输出。
+func sortToolUsesByIndex(completed map[int64]*ToolUseBlock) []ToolUseBlock {
+	if len(completed) == 0 {
+		return nil
+	}
+	// 收集所有 index 并排序
+	indices := make([]int64, 0, len(completed))
+	for idx := range completed {
+		indices = append(indices, idx)
+	}
+	sort.Slice(indices, func(i, j int) bool { return indices[i] < indices[j] })
+
+	result := make([]ToolUseBlock, 0, len(indices))
+	for _, idx := range indices {
+		if block, ok := completed[idx]; ok {
+			result = append(result, *block)
+		}
+	}
+	return result
 }
