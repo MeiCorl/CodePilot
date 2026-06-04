@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/MeiCorl/CodePilot/src/internal/config"
-	"github.com/MeiCorl/CodePilot/src/tool"
+	"github.com/MeiCorl/CodePilot/src/internal/tool"
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
 	"github.com/openai/openai-go/shared"

@@ -22,8 +22,8 @@ import (
 	"github.com/MeiCorl/CodePilot/src/internal/engine/conversation"
 	"github.com/MeiCorl/CodePilot/src/internal/memory/session"
 	"github.com/MeiCorl/CodePilot/src/llm"
-	"github.com/MeiCorl/CodePilot/src/tool"
-	"github.com/MeiCorl/CodePilot/src/tool/builtin"
+	"github.com/MeiCorl/CodePilot/src/internal/tool"
+	"github.com/MeiCorl/CodePilot/src/internal/tool/builtin"
 )
 
 // newE2ERig 构造一个端到端测试环境：读 ~/.codepilot/config.json 作为真实 provider 配置，

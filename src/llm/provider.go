@@ -5,7 +5,7 @@ import (
 	"fmt"
 
 	"github.com/MeiCorl/CodePilot/src/internal/config"
-	"github.com/MeiCorl/CodePilot/src/tool"
+	"github.com/MeiCorl/CodePilot/src/internal/tool"
 )
 
 // Provider 是 LLM 供应商的统一抽象接口。

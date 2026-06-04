@@ -37,11 +37,11 @@ import (
 	"github.com/MeiCorl/CodePilot/src/internal/memory/session"
 	"github.com/MeiCorl/CodePilot/src/internal/runtime/console"
 	"github.com/MeiCorl/CodePilot/src/llm"
-	"github.com/MeiCorl/CodePilot/src/tool"
+	"github.com/MeiCorl/CodePilot/src/internal/tool"
 	// import 触发 builtin 包的 init()，将 5 个内置工具以 cwd + 30s 兜底
 	// 注册到 tool.DefaultRegistry()；main 随后按 cfg 调
 	// builtin.RegisterWithOptions 用 cfg 中的工作目录/超时覆盖默认实例。
-	"github.com/MeiCorl/CodePilot/src/tool/builtin"
+	"github.com/MeiCorl/CodePilot/src/internal/tool/builtin"
 )
 
 const (

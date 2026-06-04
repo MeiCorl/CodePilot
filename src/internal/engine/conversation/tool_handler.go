@@ -13,7 +13,7 @@ import (
 
 	"github.com/MeiCorl/CodePilot/src/internal/logger"
 	"github.com/MeiCorl/CodePilot/src/llm"
-	"github.com/MeiCorl/CodePilot/src/tool"
+	"github.com/MeiCorl/CodePilot/src/internal/tool"
 )
 
 // ToolExecutionEvent 描述单次工具执行的完整生命周期事件。

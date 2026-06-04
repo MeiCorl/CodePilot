@@ -12,8 +12,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/MeiCorl/CodePilot/src/tool"
-	"github.com/MeiCorl/CodePilot/src/tool/safety"
+	"github.com/MeiCorl/CodePilot/src/internal/tool"
+	"github.com/MeiCorl/CodePilot/src/internal/tool/safety"
 	"github.com/bmatcuk/doublestar/v4"
 )
 

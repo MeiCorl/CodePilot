@@ -15,7 +15,7 @@ import (
 	"github.com/MeiCorl/CodePilot/src/internal/logger"
 	"github.com/MeiCorl/CodePilot/src/internal/memory/session"
 	"github.com/MeiCorl/CodePilot/src/llm"
-	"github.com/MeiCorl/CodePilot/src/tool"
+	"github.com/MeiCorl/CodePilot/src/internal/tool"
 )
 
 // DefaultContextWindowSize 模型上下文窗口默认大小（token 数）。

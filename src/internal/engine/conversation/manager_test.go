@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/MeiCorl/CodePilot/src/llm"
-	"github.com/MeiCorl/CodePilot/src/tool"
-	"github.com/MeiCorl/CodePilot/src/tool/builtin"
+	"github.com/MeiCorl/CodePilot/src/internal/tool"
+	"github.com/MeiCorl/CodePilot/src/internal/tool/builtin"
 )
 
 func TestConversationManager_AddUserMessage(t *testing.T) {

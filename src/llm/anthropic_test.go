@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/MeiCorl/CodePilot/src/internal/config"
-	"github.com/MeiCorl/CodePilot/src/tool"
+	"github.com/MeiCorl/CodePilot/src/internal/tool"
 )
 
 // newTestAnthropicProvider 创建测试用 AnthropicProvider（不调用真实 API）

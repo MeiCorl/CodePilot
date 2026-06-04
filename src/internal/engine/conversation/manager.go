@@ -15,7 +15,7 @@ import (
 
 	memctx "github.com/MeiCorl/CodePilot/src/internal/memory/context"
 	"github.com/MeiCorl/CodePilot/src/llm"
-	"github.com/MeiCorl/CodePilot/src/tool"
+	"github.com/MeiCorl/CodePilot/src/internal/tool"
 )
 
 // ConversationManager 管理多轮对话的消息历史。

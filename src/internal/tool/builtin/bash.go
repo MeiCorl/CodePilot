@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/MeiCorl/CodePilot/src/tool"
-	"github.com/MeiCorl/CodePilot/src/tool/safety"
+	"github.com/MeiCorl/CodePilot/src/internal/tool"
+	"github.com/MeiCorl/CodePilot/src/internal/tool/safety"
 )
 
 // BashName 是 Bash 工具的 snake_case 唯一标识。

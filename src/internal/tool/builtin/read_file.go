@@ -15,8 +15,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/MeiCorl/CodePilot/src/tool"
-	"github.com/MeiCorl/CodePilot/src/tool/safety"
+	"github.com/MeiCorl/CodePilot/src/internal/tool"
+	"github.com/MeiCorl/CodePilot/src/internal/tool/safety"
 )
 
 // ReadFileName 是 ReadFile 工具的 snake_case 唯一标识。

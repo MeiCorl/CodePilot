@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/MeiCorl/CodePilot/src/internal/config"
-	"github.com/MeiCorl/CodePilot/src/tool"
+	"github.com/MeiCorl/CodePilot/src/internal/tool"
 	anthropic "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 )

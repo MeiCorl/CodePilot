@@ -14,7 +14,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/MeiCorl/CodePilot/src/tool"
+	"github.com/MeiCorl/CodePilot/src/internal/tool"
 )
 
 // DefaultWorkingDirectory 是注册时使用的默认工作目录。

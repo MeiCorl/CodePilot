@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/MeiCorl/CodePilot/src/tool"
+	"github.com/MeiCorl/CodePilot/src/internal/tool"
 )
 
 // TestRegisterAllFive 验证 Register 把 5 个工具全部注册到 Registry。

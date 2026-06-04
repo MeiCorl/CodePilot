@@ -53,18 +53,17 @@ src/
 ├── internal/
 │   ├── config/
 │   │   └── config.go              # [修改] 新增 Agent Loop 配置字段
-│   └── engine/
-│       └── conversation/
-│           ├── manager.go         # [重构] RunTurn → AgentLoop，循环迭代逻辑
-│           ├── tool_handler.go    # [修改] 新增 ExecuteBatch 批量执行方法
-│           └── agent_loop.go      # [新建] Agent Loop 核心逻辑（循环控制、异常处理、策略）
-├── tool/
-│   └── tool.go                    # [不变] Permission 枚举已有，无需修改
-└── internal/
-    └── interaction/
-        └── web/
-            ├── handler.go         # [修改] runStream 适配 AgentLoop 新接口
-            └── protocol.go        # [修改] 新增迭代进度事件类型
+│   ├── engine/
+│   │   └── conversation/
+│   │       ├── manager.go         # [重构] RunTurn → AgentLoop，循环迭代逻辑
+│   │       ├── tool_handler.go    # [修改] 新增 ExecuteBatch 批量执行方法
+│   │       └── agent_loop.go      # [新建] Agent Loop 核心逻辑（循环控制、异常处理、策略）
+│   ├── tool/
+│   │   └── tool.go                # [不变] Permission 枚举已有，无需修改
+│   └── interaction/
+│       └── web/
+│           ├── handler.go         # [修改] runStream 适配 AgentLoop 新接口
+│           └── protocol.go        # [修改] 新增迭代进度事件类型
 ```
 
 ## Out of Scope（本步骤不做）

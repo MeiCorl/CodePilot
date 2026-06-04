@@ -17,7 +17,7 @@ import (
 	"github.com/MeiCorl/CodePilot/src/internal/engine/conversation"
 	"github.com/MeiCorl/CodePilot/src/internal/memory/session"
 	"github.com/MeiCorl/CodePilot/src/llm"
-	"github.com/MeiCorl/CodePilot/src/tool"
+	"github.com/MeiCorl/CodePilot/src/internal/tool"
 )
 
 // ---- Tool 端到端测试专用 mock provider ----
