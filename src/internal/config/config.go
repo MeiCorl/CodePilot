@@ -22,7 +22,7 @@ type Config struct {
 	APIKey string `json:"api_key"`
 	// MaxTokens 为单次最大输出 token 数
 	MaxTokens int `json:"max_tokens"`
-	// Timeout 为请求超时秒数，默认 60
+	// Timeout 为请求超时秒数，默认 180
 	Timeout int `json:"timeout,omitempty"`
 	// MaxRetries 为最大重试次数，默认 2
 	MaxRetries int `json:"max_retries,omitempty"`
@@ -56,7 +56,7 @@ var supportedProviders = map[string]bool{
 }
 
 const (
-	defaultTimeout                 = 60
+	defaultTimeout                 = 180
 	defaultMaxRetries              = 2
 	defaultToolExecutionTimeoutSec = 30
 	defaultMaxAgentLoopIterations  = 25

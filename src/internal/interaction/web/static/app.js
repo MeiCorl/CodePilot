@@ -273,7 +273,12 @@
         // 切到任意会话时收起表格视图（/new、/resume、点侧边栏、点击表格行）
         hideSessionsTable();
         state.sessionId = p.session_id || null;
-        state.messages = (p.messages || []).map(m => ({ role: m.role, content: m.content || '' }));
+        state.messages = (p.messages || []).map(m => ({
+            role: m.role,
+            content: m.content || '',
+            // 保留 tool_call 字段，否则历史会话中的工具调用记录会丢失
+            tool_call: m.tool_call || null,
+        }));
         renderAllMessages();
         updateSessionHeader(p.summary);
         // 同步模型名（后端在 session_loaded 中带回 model 字段）
@@ -319,6 +324,11 @@
         if (!p || !p.tool_use_id) return;
         // 若已存在同 id 的块（异常重发），跳过
         if (state._toolById[p.tool_use_id]) return;
+        // 关键：在插入工具块之前，先将当前流式助手消息固化为独立消息。
+        // 因为 stream_done 在 AgentLoop 全部迭代结束后才发送（不是每次迭代后），
+        // 如果不提前固化，所有迭代的文本会累积到同一个流式消息中，
+        // 导致"所有分析文本在前 → 所有工具调用在后"的非交替布局。
+        finalizeAssistantMessage();
         const node = appendToolStartNode(p.tool_use_id, p.name, p.input, p.started_at);
         state._toolById[p.tool_use_id] = node;
         scrollToBottomIfNeeded();
@@ -685,6 +695,48 @@
         try { return JSON.parse(input); } catch { return null; }
     }
 
+    // extractToolSummary 从工具参数中提取关键操作摘要，用于在头部行显示。
+    // 例如 Bash → 显示 command，ReadFile → 显示 path，Grep → 显示 pattern 等。
+    // 返回空字符串表示无摘要（头部不显示额外信息）。
+    function extractToolSummary(name, input) {
+        const obj = parseInputObject(input);
+        let text = '';
+        if (obj && typeof obj === 'object') {
+            switch (name) {
+                case 'Bash':
+                    text = obj.command || '';
+                    break;
+                case 'ReadFile':
+                    text = obj.path || obj.file_path || obj.filePath || '';
+                    break;
+                case 'WriteFile':
+                    text = obj.path || obj.file_path || obj.filePath || '';
+                    break;
+                case 'Grep':
+                    text = obj.pattern || obj.query || '';
+                    if (obj.path) text += ' in ' + obj.path;
+                    break;
+                case 'Glob':
+                    text = obj.pattern || '';
+                    break;
+                default:
+                    // 未知工具：取第一个有值的字符串字段作为摘要
+                    for (const k of Object.keys(obj)) {
+                        const v = obj[k];
+                        if (typeof v === 'string' && v.length > 0 && v.length < 200) {
+                            text = v;
+                            break;
+                        }
+                    }
+            }
+        } else if (typeof input === 'string' && input) {
+            text = input;
+        }
+        // 截断到 200 字符，CSS 会进一步按可用宽度省略
+        if (text.length > 200) text = text.substring(0, 200) + '…';
+        return text;
+    }
+
     // appendToolStartNode 插入"正在执行"占位块并返回 DOM 引用。
     // 参数 input 接受 string（已压缩 JSON）或 object；StartedAtIso 为 ISO 字符串
     // 或 null（null 时不显示开始时间，仅显示 running）。
@@ -716,6 +768,12 @@
         nameEl.textContent = name;
         header.appendChild(nameEl);
 
+        // 操作摘要：在头部行显示工具正在执行的具体命令/路径等关键信息
+        const summary = document.createElement('span');
+        summary.className = 'message-tool-summary';
+        summary.textContent = extractToolSummary(name, input);
+        header.appendChild(summary);
+
         const status = document.createElement('span');
         status.className = 'message-tool-status';
         status.textContent = TOOL_STATUS_LABEL.running;
@@ -731,7 +789,10 @@
         toggle.setAttribute('aria-hidden', 'true');
         header.appendChild(toggle);
 
-        wrap.appendChild(header);
+        // 内容包裹容器：将 header 和 details 纵向排列，避免 flex row 布局挤压
+        const content = document.createElement('div');
+        content.className = 'message-tool-content';
+        content.appendChild(header);
 
         // 折叠区：参数 + 输出（运行时仅参数填了；end 时再补输出）
         const details = document.createElement('div');
@@ -765,7 +826,8 @@
             details.appendChild(sec);
         }
 
-        wrap.appendChild(details);
+        content.appendChild(details);
+        wrap.appendChild(content);
         dom.messages.appendChild(wrap);
         return wrap;
     }
@@ -776,8 +838,8 @@
         if (!node) return;
         const status = endPayload.status || (endPayload.is_error ? 'error' : 'completed');
         node.dataset.status = status;
-        // 默认展开，方便用户看到工具结果
-        node.dataset.expanded = 'true';
+        // 保持折叠：参数和 output 默认不展开，用户可点击 header 手动查看详情
+        node.dataset.expanded = 'false';
 
         const statusEl = node.querySelector('.message-tool-status');
         if (statusEl) {

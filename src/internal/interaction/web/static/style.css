@@ -40,14 +40,14 @@
     --font-body:       'Geist', 'Switzer', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
     --font-mono:       'JetBrains Mono', 'SF Mono', 'Cascadia Code', Consolas, monospace;
 
-    /* —— 字号阶 —— */
-    --fs-xs:   11px;       /* 极小辅助文字 */
-    --fs-sm:   12px;       /* 状态栏 / 标签 */
-    --fs-base: 14px;       /* 正文 */
-    --fs-md:   15px;       /* 略大的正文 */
-    --fs-lg:   17px;       /* 消息 */
-    --fs-xl:   20px;       /* LOGO / 标题 */
-    --fs-2xl:  24px;       /* 大标题 */
+    /* —— 字号阶（整体偏大 2px，提升可读性） —— */
+    --fs-xs:   12px;       /* 极小辅助文字 */
+    --fs-sm:   13px;       /* 状态栏 / 标签 */
+    --fs-base: 15px;       /* 正文 */
+    --fs-md:   16px;       /* 略大的正文 */
+    --fs-lg:   18px;       /* 消息 */
+    --fs-xl:   22px;       /* LOGO / 标题 */
+    --fs-2xl:  26px;       /* 大标题 */
 
     /* —— 间距阶 —— */
     --sp-1:   4px;
@@ -804,7 +804,9 @@ body {
     background: var(--bg-elevated);
     border: 1px solid var(--border);
     border-radius: var(--r-md);
-    overflow: hidden;
+    /* 注意：不可设置 overflow:hidden，否则会阻止 flex 容器根据内容自动计算高度，
+       导致工具块高度塌陷为仅 header 高度，details 区域被裁剪不可见 */
+    overflow: visible;
     font-family: var(--font-mono);
     font-size: var(--fs-sm);
     line-height: 1.55;
@@ -816,6 +818,7 @@ body {
     flex-shrink: 0;
     width: 2px;
     background: var(--fg-faint);
+    border-radius: var(--r-md) 0 0 var(--r-md);
 }
 .message-tool[data-status="running"]::before    { background: var(--thinking); }
 .message-tool[data-status="completed"]::before  { background: var(--success); }
@@ -823,9 +826,17 @@ body {
 .message-tool[data-status="aborted"]::before    { background: var(--warning); }
 .message-tool[data-status="timeout"]::before    { background: var(--warning); }
 
+/* 内容包裹容器：将 header 和 details 纵向排列，避免 flex row 导致的宽度挤压 */
+.message-tool-content {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    overflow: hidden;
+}
+
 /* 头部行：点击整行可折叠/展开 */
 .message-tool-header {
-    flex: 1;
     display: flex;
     align-items: center;
     gap: var(--sp-3);
@@ -865,6 +876,17 @@ body {
     font-size: var(--fs-sm);
     letter-spacing: 0.02em;
     flex-shrink: 0;
+}
+
+/* 工具操作摘要：在头部行显示工具正在执行的具体命令/路径等关键信息 */
+.message-tool-summary {
+    color: var(--fg-dim);
+    font-size: var(--fs-xs);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+    min-width: 0;
 }
 
 /* 状态徽章：紧凑的圆角标签 */

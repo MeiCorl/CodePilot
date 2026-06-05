@@ -74,8 +74,8 @@ func TestLoadFromPathDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("加载失败: %v", err)
 	}
-	if cfg.Timeout != 60 {
-		t.Errorf("Timeout 默认值错误: 期望 60, 实际 %d", cfg.Timeout)
+	if cfg.Timeout != 180 {
+		t.Errorf("Timeout 默认值错误: 期望 180, 实际 %d", cfg.Timeout)
 	}
 	if cfg.MaxRetries != 2 {
 		t.Errorf("MaxRetries 默认值错误: 期望 2, 实际 %d", cfg.MaxRetries)
