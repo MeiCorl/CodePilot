@@ -18,9 +18,10 @@ import (
 	"github.com/MeiCorl/CodePilot/src/internal/tool"
 )
 
-// DefaultContextWindowSize 模型上下文窗口默认大小（token 数）。
-// 当 Config 未指定时使用该值，用于 context_usage 状态栏展示。
-const DefaultContextWindowSize = 200000
+// defaultContextWindowSize 为 Handler 层的兜底默认值。
+// 正常情况下 ContextWindowSize 由 Config 层（config.json）提供并通过 main.go 传入，
+// 此常量仅在传入值 <= 0 时作为安全回退。
+const defaultContextWindowSize = 200000
 
 // Handler 持有所有业务依赖并把 WebSocket 消息路由到具体业务能力。
 // 它维护"当前活跃会话"状态（current Session + ConversationManager），
@@ -72,7 +73,7 @@ func NewHandler(
 	toolHandler *conversation.ToolHandler,
 ) *Handler {
 	if contextWindowSize <= 0 {
-		contextWindowSize = DefaultContextWindowSize
+		contextWindowSize = defaultContextWindowSize
 	}
 	h := &Handler{
 		provider:          provider,
@@ -391,6 +392,9 @@ func (h *Handler) handleNewSession(conn *websocket.Conn, msg Message) error {
 	}
 	h.current = h.sessMgr.CreateNew()
 	h.conv.Reset(nil)
+	// 刷新前端 ctx left 显示：新会话无历史，remaining 应回到 ~100%
+	// 注意：此处已持有 h.mu，必须使用 Locked 版本避免死锁
+	_ = h.sendContextUsageLocked(conn, h.conv.GetContextUsage(h.contextWindowSize))
 	return h.sendSessionLoaded(conn, h.current)
 }
 
@@ -410,6 +414,9 @@ func (h *Handler) handleClearSession(conn *websocket.Conn, msg Message) error {
 	if err := h.sessMgr.Save(h.current); err != nil {
 		logger.Warn("保存清空后的会话失败", zap.Error(err))
 	}
+	// 刷新前端 ctx left 显示：清空后历史为空，remaining 应回到 ~100%
+	// 注意：此处已持有 h.mu，必须使用 Locked 版本避免死锁
+	_ = h.sendContextUsageLocked(conn, h.conv.GetContextUsage(h.contextWindowSize))
 	return h.sendSessionLoaded(conn, h.current)
 }
 
@@ -460,6 +467,8 @@ func (h *Handler) handleResumeSession(conn *websocket.Conn, msg Message) error {
 	h.conv.Reset(sess.Messages)
 	h.mu.Unlock()
 
+	// 刷新前端 ctx left 显示：恢复会话后上下文用量已变
+	_ = h.sendContextUsage(conn)
 	return h.sendSessionLoaded(conn, sess)
 }
 
@@ -514,6 +523,7 @@ func (h *Handler) handleDeleteSession(conn *websocket.Conn, msg Message) error {
 
 	// 若切换了当前会话，再推一条 session_loaded 让前端把消息区和高亮状态同步过来
 	if currentChanged && newCurrent != nil {
+		_ = h.sendContextUsage(conn)
 		return h.sendSessionLoaded(conn, newCurrent)
 	}
 	return nil
@@ -616,22 +626,22 @@ func (h *Handler) sendStatusUpdate(conn *websocket.Conn, status string) error {
 }
 
 // sendContextUsage 发送当前上下文使用情况。
+// 通过 ConversationManager.GetContextUsage 获取统一的用量计算结果，
+// 转换为前端协议格式（PercentLeft = 100 - PercentUsed）后推送。
+// sendContextUsage 推送上下文用量到前端（自动加锁版本，供未持锁的调用方使用）。
 func (h *Handler) sendContextUsage(conn *websocket.Conn) error {
 	h.mu.Lock()
-	used := h.conv.TokenEstimate()
+	usage := h.conv.GetContextUsage(h.contextWindowSize)
 	h.mu.Unlock()
-	limit := h.contextWindowSize
-	percentLeft := 0
-	if limit > 0 {
-		percentLeft = (limit - used) * 100 / limit
-		if percentLeft < 0 {
-			percentLeft = 0
-		}
-	}
+	return h.sendContextUsageLocked(conn, usage)
+}
+
+// sendContextUsageLocked 推送上下文用量到前端（无锁版本，供已持有 h.mu 的调用方使用）。
+func (h *Handler) sendContextUsageLocked(conn *websocket.Conn, usage conversation.ContextUsage) error {
 	return h.sendMessage(conn, MsgTypeContextUsage, ContextUsagePayload{
-		Used:        used,
-		Limit:       limit,
-		PercentLeft: percentLeft,
+		Used:        usage.Used,
+		Limit:       usage.Limit,
+		PercentLeft: 100 - usage.PercentUsed,
 	})
 }
 

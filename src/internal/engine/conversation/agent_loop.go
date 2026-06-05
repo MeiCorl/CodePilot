@@ -144,6 +144,11 @@ func (m *ConversationManager) AgentLoop(
 
 		// ---- 发起 LLM 调用 ----
 		turnResult := m.runOneLLM(ctx, provider, systemPrompt, toolSpecs, hooks.TurnHooks)
+
+		// 更新 token 用量（用于精确的上下文窗口剩余额度计算）
+		// 即使本次调用出错或被取消，usage 仍可能有值（部分 Provider 在中断前已返回）
+		m.UpdateUsage(turnResult.Usage)
+
 		if turnResult.Err != nil {
 			// LLM 调用失败，中断循环
 			logger.Error("AgentLoop LLM 调用失败",

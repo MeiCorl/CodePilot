@@ -6,13 +6,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os/exec"
 	"runtime"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/MeiCorl/CodePilot/src/internal/tool"
 	"github.com/MeiCorl/CodePilot/src/internal/tool/safety"
+	"golang.org/x/text/encoding/simplifiedchinese"
+	"golang.org/x/text/transform"
 )
 
 // BashName 是 Bash 工具的唯一标识（大驼峰格式）。
@@ -80,7 +84,9 @@ func (t *BashTool) Execute(parent context.Context, input json.RawMessage) (strin
 	// 根据平台选择 shell：Unix 用 sh -c，Windows 用 powershell -Command
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
-		cmd = exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", in.Command)
+		// 强制 PowerShell 输出 UTF-8 编码，避免中文 Windows 默认 GBK(CP936) 导致乱码
+		utf8Setup := "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
+		cmd = exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", utf8Setup+in.Command)
 	} else {
 		cmd = exec.CommandContext(ctx, "sh", "-c", in.Command)
 	}
@@ -95,8 +101,8 @@ func (t *BashTool) Execute(parent context.Context, input json.RawMessage) (strin
 	}
 	if err != nil {
 		// 退出码非零，但命令确实跑过——把 stdout/stderr 一起返回，标记为错误
-		out := stdout.String()
-		errOut := stderr.String()
+		out := decodeOutput(stdout.Bytes())
+		errOut := decodeOutput(stderr.Bytes())
 		if errOut != "" {
 			return formatBashOutput(out, errOut, -1) + "\n" + err.Error(), nil
 		}
@@ -107,7 +113,7 @@ func (t *BashTool) Execute(parent context.Context, input json.RawMessage) (strin
 		return "", fmt.Errorf("执行命令失败: %w", err)
 	}
 
-	return formatBashOutput(stdout.String(), stderr.String(), 0), nil
+	return formatBashOutput(decodeOutput(stdout.Bytes()), decodeOutput(stderr.Bytes()), 0), nil
 }
 
 // formatBashOutput 把 stdout/stderr/exit code 拼成 LLM 友好的文本。
@@ -160,4 +166,25 @@ func (l *limitedWriter) Write(p []byte) (int, error) {
 		written = len(p)
 	}
 	return written, err
+}
+
+// decodeOutput 将命令输出的原始字节流转为合法 UTF-8 字符串。
+// 优先直接按 UTF-8 解码；若检测到无效 UTF-8 序列（Windows 中文环境下常见 GBK 编码），
+// 则尝试 GBK → UTF-8 转换作为兜底。转换也失败时用替换字符替代无效字节。
+func decodeOutput(raw []byte) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	// 已是合法 UTF-8，直接返回
+	if utf8.Valid(raw) {
+		return string(raw)
+	}
+	// 尝试 GBK → UTF-8 转换（Windows 中文环境默认编码）
+	reader := transform.NewReader(bytes.NewReader(raw), simplifiedchinese.GBK.NewDecoder())
+	decoded, err := io.ReadAll(reader)
+	if err == nil {
+		return string(decoded)
+	}
+	// 转换也失败，用替换字符替代无效字节
+	return strings.ToValidUTF8(string(raw), "�")
 }

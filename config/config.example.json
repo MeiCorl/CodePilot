@@ -10,5 +10,8 @@
         "enabled": ["read_file", "write_file", "bash", "glob", "grep"]
     },
     "tool_execution_timeout_seconds": 30,
-    "tool_working_directory": ""
+    "tool_working_directory": "",
+    "context_window_size": 200000,
+    "max_agent_loop_iterations": 25,
+    "context_safety_margin": 4096
 }

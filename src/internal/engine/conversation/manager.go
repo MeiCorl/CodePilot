@@ -27,6 +27,10 @@ type ConversationManager struct {
 	window *memctx.SlidingWindow
 	// history 为完整对话历史，作为唯一真相源；持久化与窗口派生均以此为基础
 	history []llm.Message
+	// lastInputTokens 为最近一次 LLM 调用返回的 input_tokens（精确值）。
+	// 用于计算上下文窗口剩余额度：remaining = context_window_size - lastInputTokens。
+	// 为 0 时表示尚无 LLM 调用（首次调用前、会话恢复后），需降级到字符估算。
+	lastInputTokens int
 }
 
 // NewConversationManager 创建一个对话管理器。
@@ -67,9 +71,12 @@ func (m *ConversationManager) AddMessage(msg llm.Message) {
 // 用于恢复历史会话时把磁盘加载的消息注入到管理器；调用后
 // 后续 AddXxx / GetContext / AllMessages 均以新历史为基础。
 // 传入 nil 等价于清空历史。
+// 同时重置 lastInputTokens，因为历史变更后旧的 input_tokens 不再有效，
+// 需要等待下一次 LLM 调用获取新的精确值。
 func (m *ConversationManager) Reset(messages []llm.Message) {
 	m.history = make([]llm.Message, len(messages))
 	copy(m.history, messages)
+	m.lastInputTokens = 0
 }
 
 // GetContext 返回发送给 LLM 的上下文窗口视图。
@@ -132,13 +139,69 @@ func estimateToolDefinitionTokens() int {
 
 // RemainingTokens 返回在给定的最大 token 额度下，剩余可用的 token 数。
 // 如果已超出额度，返回 0。
+// 内部委托给 GetContextUsage 以消除重复计算逻辑。
 func (m *ConversationManager) RemainingTokens(maxTokens int) int {
-	used := m.TokenEstimate()
-	remaining := maxTokens - used
-	if remaining < 0 {
-		return 0
+	return m.GetContextUsage(maxTokens).Remaining
+}
+
+// UpdateUsage 从 LLM 响应中更新 token 用量统计。
+// 当 usage 非空且 InputTokens > 0 时，将 input_tokens 记录到 lastInputTokens，
+// 用于后续 GetContextUsage 的精确计算。
+func (m *ConversationManager) UpdateUsage(usage *llm.TokenUsage) {
+	if usage != nil && usage.InputTokens > 0 {
+		m.lastInputTokens = usage.InputTokens
 	}
-	return remaining
+}
+
+// ContextUsage 描述上下文窗口的使用情况，供上层（状态栏展示、溢出检查）统一使用。
+// 包含已用量、窗口总大小、剩余量和已使用百分比，避免上层各自拼装计算逻辑。
+type ContextUsage struct {
+	// Used 为已使用的 token 数（优先使用 API 返回的精确值，降级到字符估算）
+	Used int
+	// Limit 为上下文窗口总大小（token 数）
+	Limit int
+	// Remaining 为剩余可用 token 数（= Limit - Used），下界为 0
+	Remaining int
+	// PercentUsed 为已使用百分比（0~100），用于前端状态栏展示
+	PercentUsed int
+}
+
+// GetContextUsage 返回在给定的上下文窗口大小下的完整使用情况。
+//
+// 已用量（Used）计算策略：
+//   - 精确模式：当 lastInputTokens > 0 时，使用最近一次 LLM 调用返回的 input_tokens。
+//     该值是 API 对本次请求的精确计量，已包含 system_prompt、全部历史消息、
+//     工具定义等所有开销，无需额外估算。
+//   - 降级模式：当 lastInputTokens == 0 时（首次调用前、会话恢复后、流中断），
+//     使用字符粗估（TokenEstimate）作为兜底。
+//
+// windowSize 为上下文窗口总大小（token 数），通常来自 Config.ContextWindowSize。
+func (m *ConversationManager) GetContextUsage(windowSize int) ContextUsage {
+	var used int
+	if m.lastInputTokens > 0 {
+		// 精确模式：remaining = context_window_size - last_input_tokens
+		used = m.lastInputTokens
+	} else {
+		// 降级模式：字符粗估
+		used = m.TokenEstimate()
+	}
+	remaining := windowSize - used
+	if remaining < 0 {
+		remaining = 0
+	}
+	percentUsed := 0
+	if windowSize > 0 {
+		percentUsed = used * 100 / windowSize
+		if percentUsed > 100 {
+			percentUsed = 100
+		}
+	}
+	return ContextUsage{
+		Used:        used,
+		Limit:       windowSize,
+		Remaining:   remaining,
+		PercentUsed: percentUsed,
+	}
 }
 
 // MessageCount 返回完整对话历史中的消息数量。
@@ -328,6 +391,8 @@ type RunOneTurnResult struct {
 	Text string
 	// ToolUses 为流结束时累积的所有 tool_use 块（支持并行工具调用）
 	ToolUses []llm.ToolUseBlock
+	// Usage 为本次 LLM 调用的 token 用量（从 Done chunk 提取），可能为 nil
+	Usage *llm.TokenUsage
 	// Aborted 标识本次流是否被 ctx 取消
 	Aborted bool
 	// Err 为 StreamChat 初始化失败或 chunk.Err 携带的错误
@@ -371,6 +436,7 @@ func (m *ConversationManager) runOneLLM(
 	var (
 		textBuf    []byte
 		toolUses   []llm.ToolUseBlock
+		usage      *llm.TokenUsage
 		aborted    bool
 		streamDone bool
 	)
@@ -383,10 +449,10 @@ func (m *ConversationManager) runOneLLM(
 				select {
 				case _, ok := <-chunkCh:
 					if !ok {
-						return RunOneTurnResult{Text: string(textBuf), ToolUses: toolUses, Aborted: true}
+						return RunOneTurnResult{Text: string(textBuf), ToolUses: toolUses, Usage: usage, Aborted: true}
 					}
 				default:
-					return RunOneTurnResult{Text: string(textBuf), ToolUses: toolUses, Aborted: true}
+					return RunOneTurnResult{Text: string(textBuf), ToolUses: toolUses, Usage: usage, Aborted: true}
 				}
 			}
 		case chunk, ok := <-chunkCh:
@@ -398,17 +464,21 @@ func (m *ConversationManager) runOneLLM(
 						hooks.OnStreamChunk(llm.StreamChunk{Done: true})
 					}
 				}
-				return RunOneTurnResult{Text: string(textBuf), ToolUses: toolUses, Aborted: aborted}
+				return RunOneTurnResult{Text: string(textBuf), ToolUses: toolUses, Usage: usage, Aborted: aborted}
 			}
 			if chunk.Err != nil {
 				if hooks.OnError != nil {
 					hooks.OnError(chunk.Err)
 				}
-				return RunOneTurnResult{Text: string(textBuf), ToolUses: toolUses, Aborted: aborted, Err: chunk.Err}
+				return RunOneTurnResult{Text: string(textBuf), ToolUses: toolUses, Usage: usage, Aborted: aborted, Err: chunk.Err}
 			}
 			// 收集所有 tool_use 块（Done chunk 上携带）
 			if chunk.HasToolUse() {
 				toolUses = append(toolUses, chunk.ToolUses...)
+			}
+			// 提取 token 用量（Done chunk 上携带）
+			if chunk.Usage != nil {
+				usage = chunk.Usage
 			}
 			if chunk.Content != "" {
 				textBuf = append(textBuf, chunk.Content...)
@@ -418,7 +488,7 @@ func (m *ConversationManager) runOneLLM(
 			}
 			if chunk.Done {
 				streamDone = true
-				return RunOneTurnResult{Text: string(textBuf), ToolUses: toolUses, Aborted: aborted}
+				return RunOneTurnResult{Text: string(textBuf), ToolUses: toolUses, Usage: usage, Aborted: aborted}
 			}
 		}
 	}

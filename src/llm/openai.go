@@ -199,6 +199,11 @@ func (p *OpenAIProvider) streamWithRetry(ctx context.Context, systemPrompt strin
 		Messages: allMessages,
 		Model:    p.model,
 		MaxTokens: openai.Int(int64(p.maxTokens)),
+		// 启用流式 Usage 返回：OpenAI 仅在设置此选项后，才会在最后一个 chunk 中
+		// 携带完整的 token 用量统计（PromptTokens / CompletionTokens）
+		StreamOptions: openai.ChatCompletionStreamOptionsParam{
+			IncludeUsage: openai.Bool(true),
+		},
 	}
 	if len(toolSpecs) > 0 {
 		params.Tools = p.convertTools(toolSpecs)
@@ -251,8 +256,19 @@ func (p *OpenAIProvider) doStream(ctx context.Context, params openai.ChatComplet
 	}
 	pending := make(map[int64]*toolCallAccum)
 
+	// Token 用量：OpenAI 在设置了 StreamOptions.IncludeUsage 后，
+	// 仅在最后一个 chunk（len(evt.Choices)==0）中携带完整用量
+	var inputTokens, outputTokens int64
+
 	for stream.Next() {
 		evt := stream.Current()
+
+		// 提取 token 用量：最后一个 chunk 的 Choices 为空但 Usage 有值
+		if evt.Usage.PromptTokens > 0 || evt.Usage.CompletionTokens > 0 {
+			inputTokens = evt.Usage.PromptTokens
+			outputTokens = evt.Usage.CompletionTokens
+		}
+
 		if len(evt.Choices) == 0 {
 			continue
 		}
@@ -316,11 +332,17 @@ func (p *OpenAIProvider) doStream(ctx context.Context, params openai.ChatComplet
 		}
 	}
 
+	// 构造 token 用量
+	usage := &TokenUsage{
+		InputTokens:  int(inputTokens),
+		OutputTokens: int(outputTokens),
+	}
+
 	// 检查流错误
 	if err := stream.Err(); err != nil {
 		// 用户主动取消视为正常中断
 		if errors.Is(err, context.Canceled) {
-			ch <- StreamChunk{Done: true, ToolUses: toolUses}
+			ch <- StreamChunk{Done: true, ToolUses: toolUses, Usage: usage}
 			return nil
 		}
 		// 超时视为错误，不应静默丢弃——用户看到的是"Thinking 后无输出"
@@ -330,8 +352,8 @@ func (p *OpenAIProvider) doStream(ctx context.Context, params openai.ChatComplet
 		return err
 	}
 
-	// 流正常结束，携带所有 tool_use 块
-	ch <- StreamChunk{Done: true, ToolUses: toolUses}
+	// 流正常结束，携带所有 tool_use 块和 token 用量
+	ch <- StreamChunk{Done: true, ToolUses: toolUses, Usage: usage}
 	return nil
 }
 

@@ -35,6 +35,9 @@ type Config struct {
 	// MaxAgentLoopIterations 为 Agent Loop 最大迭代次数，默认 25。
 	// 一次迭代 = 一次 LLM 调用 + 可能的工具执行；达到上限后注入提示让模型优雅收尾。
 	MaxAgentLoopIterations int `json:"max_agent_loop_iterations,omitempty"`
+	// ContextWindowSize 为模型上下文窗口总大小（token 数），默认 200000。
+	// 用于 AgentLoop 溢出检查和前端状态栏展示。切换不同模型时可按需调整。
+	ContextWindowSize int `json:"context_window_size,omitempty"`
 	// ContextSafetyMargin 为上下文安全余量（token 数），默认 4096。
 	// 当剩余 token 低于此值时，Agent Loop 注入提示让模型总结当前进展并回复用户。
 	ContextSafetyMargin int `json:"context_safety_margin,omitempty"`
@@ -60,6 +63,7 @@ const (
 	defaultMaxRetries              = 2
 	defaultToolExecutionTimeoutSec = 30
 	defaultMaxAgentLoopIterations  = 25
+	defaultContextWindowSize       = 200000
 	defaultContextSafetyMargin     = 4096
 )
 
@@ -116,6 +120,9 @@ func (c *Config) setDefaults() {
 	if c.MaxAgentLoopIterations == 0 {
 		c.MaxAgentLoopIterations = defaultMaxAgentLoopIterations
 	}
+	if c.ContextWindowSize == 0 {
+		c.ContextWindowSize = defaultContextWindowSize
+	}
 	if c.ContextSafetyMargin == 0 {
 		c.ContextSafetyMargin = defaultContextSafetyMargin
 	}
@@ -140,6 +147,9 @@ func (c *Config) validate() error {
 	}
 	if c.MaxAgentLoopIterations < 0 {
 		return fmt.Errorf("配置校验失败: max_agent_loop_iterations 不能为负数")
+	}
+	if c.ContextWindowSize < 0 {
+		return fmt.Errorf("配置校验失败: context_window_size 不能为负数")
 	}
 	if c.ContextSafetyMargin < 0 {
 		return fmt.Errorf("配置校验失败: context_safety_margin 不能为负数")

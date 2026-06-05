@@ -123,6 +123,15 @@ type Message struct {
 	Content []ContentBlock `json:"content"`
 }
 
+// TokenUsage 表示单次 LLM 调用的 token 用量统计。
+// 在流式响应的最后一个 chunk（Done=true）上携带，供上层计算上下文窗口剩余额度。
+type TokenUsage struct {
+	// InputTokens 为输入 token 数（含 system_prompt + messages + tool_definitions）
+	InputTokens int `json:"input_tokens"`
+	// OutputTokens 为输出 token 数
+	OutputTokens int `json:"output_tokens"`
+}
+
 // StreamChunk 表示流式响应中的一个数据块。
 // Provider 的 StreamChat 方法通过 channel 传递此结构体，
 // 消费方据此实现逐字输出、错误处理和流结束判断。
@@ -138,6 +147,10 @@ type StreamChunk struct {
 	// 支持模型一次返回多个工具调用（并行工具调用场景）。
 	// 上层（conversation manager）据此判断是否进入工具执行阶段。
 	ToolUses []ToolUseBlock
+	// Usage 为本次 LLM 调用的 token 用量统计。
+	// 仅在 Done=true 的最后一个 chunk 上携带；可能为 nil（流中断等场景），
+	// 上层需判空后降级到字符估算。
+	Usage *TokenUsage
 }
 
 // HasToolUse 返回本次流式响应是否包含 tool_use 块。

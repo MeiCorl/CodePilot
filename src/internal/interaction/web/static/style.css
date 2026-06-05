@@ -40,14 +40,14 @@
     --font-body:       'Geist', 'Switzer', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
     --font-mono:       'JetBrains Mono', 'SF Mono', 'Cascadia Code', Consolas, monospace;
 
-    /* —— 字号阶（整体偏大 2px，提升可读性） —— */
-    --fs-xs:   12px;       /* 极小辅助文字 */
-    --fs-sm:   13px;       /* 状态栏 / 标签 */
-    --fs-base: 15px;       /* 正文 */
-    --fs-md:   16px;       /* 略大的正文 */
-    --fs-lg:   18px;       /* 消息 */
-    --fs-xl:   22px;       /* LOGO / 标题 */
-    --fs-2xl:  26px;       /* 大标题 */
+    /* —— 字号阶（整体偏大 4px，提升可读性） —— */
+    --fs-xs:   13px;       /* 极小辅助文字 */
+    --fs-sm:   14px;       /* 状态栏 / 标签 */
+    --fs-base: 16px;       /* 正文 */
+    --fs-md:   17px;       /* 略大的正文 */
+    --fs-lg:   19px;       /* 消息 */
+    --fs-xl:   24px;       /* LOGO / 标题 */
+    --fs-2xl:  28px;       /* 大标题 */
 
     /* —— 间距阶 —— */
     --sp-1:   4px;
@@ -173,7 +173,7 @@ body {
     color: var(--bg);
     border-radius: var(--r-sm);
     font-weight: 700;
-    font-size: 13px;
+    font-size: 15px;
     line-height: 1;
 }
 
@@ -488,8 +488,7 @@ body {
     border-radius: var(--r-lg);
     font-family: var(--font-display);
     font-weight: 700;
-    font-size: 24px;
-    margin-bottom: var(--sp-2);
+    font-size: 26px;
 }
 
 .messages-empty-title {
@@ -515,7 +514,7 @@ body {
     background: var(--bg-elevated);
     color: var(--fg-muted);
     font-family: var(--font-mono);
-    font-size: 11px;
+    font-size: 13px;
     margin: 0 2px;
 }
 
@@ -570,7 +569,7 @@ body {
     justify-content: center;
     font-family: var(--font-display);
     font-weight: 700;
-    font-size: 11px;
+    font-size: 13px;
     line-height: 1;
     user-select: none;
 }
@@ -859,7 +858,7 @@ body {
     border: 1px solid var(--border-strong);
     border-radius: var(--r-sm);
     color: var(--fg-muted);
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 700;
     line-height: 1;
     letter-spacing: 0;
@@ -960,7 +959,7 @@ body {
 }
 .message-tool-toggle::before {
     content: "▶";
-    font-size: 9px;
+    font-size: 11px;
     line-height: 1;
 }
 
@@ -1097,7 +1096,7 @@ body {
     border-radius: 3px;
     background: var(--bg-elevated);
     color: var(--fg-muted);
-    font-size: 10px;
+    font-size: 12px;
     margin: 0 1px;
 }
 
@@ -1259,7 +1258,7 @@ body {
     border: 1px solid var(--border-strong);
     border-radius: var(--r-sm);
     color: var(--fg-muted);
-    font-size: 18px;
+    font-size: 20px;
     line-height: 1;
     cursor: pointer;
     transition: all var(--dur-fast) var(--ease-out);
@@ -1386,7 +1385,7 @@ body {
     border-radius: 3px;
     background: var(--bg-elevated);
     color: var(--fg-muted);
-    font-size: 10px;
+    font-size: 12px;
     margin: 0 1px;
 }
 

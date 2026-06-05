@@ -213,10 +213,19 @@ func (p *AnthropicProvider) doStream(ctx context.Context, params anthropic.Messa
 	// 已完成的 tool_use 块，按 block index 存储，最后按 index 升序排列
 	completedToolUses := make(map[int64]*ToolUseBlock)
 
+	// Token 用量：从 MessageStartEvent 获取 input_tokens，从 MessageDeltaEvent 获取 output_tokens
+	var inputTokens, outputTokens int64
+
 	for stream.Next() {
 		event := stream.Current()
 
 		switch evt := event.AsAny().(type) {
+		case anthropic.MessageStartEvent:
+			// 流开始时获取 input_tokens（本轮发送给模型的总输入 token 数）
+			inputTokens = evt.Message.Usage.InputTokens
+		case anthropic.MessageDeltaEvent:
+			// 流结束时获取累计的 output_tokens
+			outputTokens = evt.Usage.OutputTokens
 		case anthropic.ContentBlockStartEvent:
 			// ContentBlockStartEvent.ContentBlock 可能是 text 或 tool_use，
 			// 通过 Type 字段判别
@@ -268,11 +277,17 @@ func (p *AnthropicProvider) doStream(ctx context.Context, params anthropic.Messa
 	// 按 block index 升序排列所有已完成的 tool_use 块
 	toolUses := sortToolUsesByIndex(completedToolUses)
 
+	// 构造 token 用量
+	usage := &TokenUsage{
+		InputTokens:  int(inputTokens),
+		OutputTokens: int(outputTokens),
+	}
+
 	// 检查流错误
 	if err := stream.Err(); err != nil {
 		// 用户主动取消（点击停止按钮等）视为正常中断，不视为错误
 		if errors.Is(err, context.Canceled) {
-			ch <- StreamChunk{Done: true, ToolUses: toolUses}
+			ch <- StreamChunk{Done: true, ToolUses: toolUses, Usage: usage}
 			return nil
 		}
 		// 超时视为错误，不应静默丢弃——用户看到的是"Thinking 后无输出"
@@ -282,8 +297,8 @@ func (p *AnthropicProvider) doStream(ctx context.Context, params anthropic.Messa
 		return err
 	}
 
-	// 流正常结束，携带所有 tool_use 块
-	ch <- StreamChunk{Done: true, ToolUses: toolUses}
+	// 流正常结束，携带所有 tool_use 块和 token 用量
+	ch <- StreamChunk{Done: true, ToolUses: toolUses, Usage: usage}
 	return nil
 }
 

@@ -147,6 +147,152 @@ func TestConversationManager_RemainingTokensZero(t *testing.T) {
 	}
 }
 
+// TestConversationManager_GetContextUsage_Empty 验证空对话时的上下文用量。
+// 空对话无文本消息，仅包含工具定义开销（5工具×80=400）。
+func TestConversationManager_GetContextUsage_Empty(t *testing.T) {
+	m := NewConversationManager(5)
+	usage := m.GetContextUsage(200000)
+
+	// 空对话：Used 仅含工具定义开销（约 400），应接近 0
+	if usage.Used <= 0 {
+		t.Fatalf("Used 应 > 0（含工具定义开销），实际为 %d", usage.Used)
+	}
+	if usage.Limit != 200000 {
+		t.Fatalf("Limit 应为 200000，实际为 %d", usage.Limit)
+	}
+	if usage.Remaining <= 0 {
+		t.Fatalf("Remaining 应远大于 0，实际为 %d", usage.Remaining)
+	}
+	// 百分比应接近 0%（仅工具定义开销）
+	if usage.PercentUsed > 1 {
+		t.Fatalf("空对话 PercentUsed 应接近 0%%，实际为 %d%%", usage.PercentUsed)
+	}
+}
+
+// TestConversationManager_GetContextUsage_WithMessages 验证多轮对话后的上下文用量。
+func TestConversationManager_GetContextUsage_WithMessages(t *testing.T) {
+	m := NewConversationManager(50)
+	// 添加 10 轮对话
+	for i := 0; i < 10; i++ {
+		m.AddUserMessage("这是一段测试文本用于验证上下文用量计算")
+		m.AddAssistantMessage("这是助手的回复文本，同样用于验证上下文用量计算")
+	}
+
+	usage := m.GetContextUsage(200000)
+
+	if usage.Used <= 0 {
+		t.Fatalf("Used 应 > 0，实际为 %d", usage.Used)
+	}
+	if usage.Limit != 200000 {
+		t.Fatalf("Limit 应为 200000，实际为 %d", usage.Limit)
+	}
+	if usage.Remaining <= 0 {
+		t.Fatalf("10 轮对话不应耗尽 200K 窗口，Remaining 应 > 0，实际为 %d", usage.Remaining)
+	}
+	// 10 轮短对话 + 工具开销，占比应远低于 50%
+	if usage.PercentUsed > 50 {
+		t.Fatalf("10 轮短对话 PercentUsed 应远低于 50%%，实际为 %d%%", usage.PercentUsed)
+	}
+	// PercentUsed + PercentLeft 应等于 100（此处 PercentLeft = Remaining*100/Limit）
+	invariant := usage.Used*100 + usage.Remaining*100
+	// 允许整数除法带来的 ±1 误差
+	if invariant < (usage.Limit-1)*100 || invariant > (usage.Limit+1)*100 {
+		t.Fatalf("Used+Remaining 应约等于 Limit，实际 Used=%d Remaining=%d Limit=%d",
+			usage.Used, usage.Remaining, usage.Limit)
+	}
+}
+
+// TestConversationManager_GetContextUsage_Overflow 验证超出窗口大小时的用量。
+func TestConversationManager_GetContextUsage_Overflow(t *testing.T) {
+	m := NewConversationManager(50)
+	// 添加大量消息使 token 超出窗口
+	for i := 0; i < 1000; i++ {
+		m.AddUserMessage("这是一段测试文本用于验证token估算")
+	}
+
+	usage := m.GetContextUsage(10)
+
+	if usage.Remaining != 0 {
+		t.Fatalf("超出额度时 Remaining 应为 0，实际为 %d", usage.Remaining)
+	}
+	if usage.PercentUsed != 100 {
+		t.Fatalf("超出额度时 PercentUsed 应为 100，实际为 %d", usage.PercentUsed)
+	}
+}
+
+// TestConversationManager_UpdateUsage_PreciseMode 验证 UpdateUsage 后 GetContextUsage 使用精确 input_tokens。
+func TestConversationManager_UpdateUsage_PreciseMode(t *testing.T) {
+	m := NewConversationManager(50)
+
+	// 初始状态：无 usage 数据，应降级到字符估算
+	usageBefore := m.GetContextUsage(200000)
+	if usageBefore.Used <= 0 {
+		t.Fatalf("降级模式下 Used 应 > 0（工具定义开销），实际为 %d", usageBefore.Used)
+	}
+
+	// 模拟 LLM 返回 input_tokens=50000
+	m.UpdateUsage(&llm.TokenUsage{InputTokens: 50000, OutputTokens: 200})
+
+	usageAfter := m.GetContextUsage(200000)
+	if usageAfter.Used != 50000 {
+		t.Fatalf("精确模式下 Used 应为 50000，实际为 %d", usageAfter.Used)
+	}
+	if usageAfter.Limit != 200000 {
+		t.Fatalf("Limit 应为 200000，实际为 %d", usageAfter.Limit)
+	}
+	if usageAfter.Remaining != 150000 {
+		t.Fatalf("Remaining 应为 150000，实际为 %d", usageAfter.Remaining)
+	}
+	// 50000 * 100 / 200000 = 25%
+	if usageAfter.PercentUsed != 25 {
+		t.Fatalf("PercentUsed 应为 25%%，实际为 %d%%", usageAfter.PercentUsed)
+	}
+}
+
+// TestConversationManager_UpdateUsage_IgnoresNilAndZero 验证 UpdateUsage 对无效输入的安全处理。
+func TestConversationManager_UpdateUsage_IgnoresNilAndZero(t *testing.T) {
+	m := NewConversationManager(50)
+
+	// 先设置一个有效值
+	m.UpdateUsage(&llm.TokenUsage{InputTokens: 30000})
+
+	// nil 不应覆盖已有值
+	m.UpdateUsage(nil)
+	usage := m.GetContextUsage(200000)
+	if usage.Used != 30000 {
+		t.Fatalf("nil 不应覆盖已有 usage，Used 应为 30000，实际为 %d", usage.Used)
+	}
+
+	// InputTokens=0 不应覆盖已有值
+	m.UpdateUsage(&llm.TokenUsage{InputTokens: 0, OutputTokens: 100})
+	usage = m.GetContextUsage(200000)
+	if usage.Used != 30000 {
+		t.Fatalf("InputTokens=0 不应覆盖已有 usage，Used 应为 30000，实际为 %d", usage.Used)
+	}
+}
+
+// TestConversationManager_GetContextUsage_UpdatesAcrossIterations 验证多次 UpdateUsage 后值正确更新。
+func TestConversationManager_GetContextUsage_UpdatesAcrossIterations(t *testing.T) {
+	m := NewConversationManager(50)
+
+	// 模拟第 1 轮：input_tokens=10000
+	m.UpdateUsage(&llm.TokenUsage{InputTokens: 10000, OutputTokens: 50})
+	usage1 := m.GetContextUsage(200000)
+	if usage1.Remaining != 190000 {
+		t.Fatalf("第 1 轮后 Remaining 应为 190000，实际为 %d", usage1.Remaining)
+	}
+
+	// 模拟第 2 轮：input_tokens=30000（历史增长，input_tokens 反映总量）
+	m.UpdateUsage(&llm.TokenUsage{InputTokens: 30000, OutputTokens: 100})
+	usage2 := m.GetContextUsage(200000)
+	if usage2.Used != 30000 {
+		t.Fatalf("第 2 轮后 Used 应为 30000，实际为 %d", usage2.Used)
+	}
+	if usage2.Remaining != 170000 {
+		t.Fatalf("第 2 轮后 Remaining 应为 170000，实际为 %d", usage2.Remaining)
+	}
+}
+
 func TestConversationManager_MessageCount(t *testing.T) {
 	m := NewConversationManager(5)
 	if m.MessageCount() != 0 {

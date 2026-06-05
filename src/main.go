@@ -123,7 +123,7 @@ func run() error {
 	// 7. 构造 Handler / Server
 	// 使用 DefaultAddr（127.0.0.1:0）让 OS 自动分配端口，
 	// 这样多个项目下可同时启动多个 CodePilot 进程互不冲突。
-	handler := web.NewHandler(provider, sessMgr, cfg, defaultMaxRounds, "", 0, workdir, toolRegistry, toolHandler)
+	handler := web.NewHandler(provider, sessMgr, cfg, defaultMaxRounds, "", cfg.ContextWindowSize, workdir, toolRegistry, toolHandler)
 	server := web.NewServer(web.DefaultAddr)
 	handler.Register(server.Router())
 
