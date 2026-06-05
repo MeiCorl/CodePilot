@@ -631,6 +631,14 @@ body {
 .message-assistant .message-bubble h2 { font-size: var(--fs-xl); }
 .message-assistant .message-bubble h3 { font-size: var(--fs-lg); }
 
+/* 用户主动取消的回复消息：灰色斜体 + 左侧橙色竖条 */
+.message-aborted {
+    font-style: italic;
+    color: var(--fg-muted);
+    border-left: 3px solid var(--warning);
+    padding-left: var(--sp-3) !important;
+}
+
 .message-assistant .message-bubble code {
     font-family: var(--font-mono);
     font-size: 0.9em;

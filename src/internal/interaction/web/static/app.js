@@ -183,6 +183,10 @@
         ToolCallEnd:       'tool_call_end',
     };
 
+    // abortMarker 与后端 agent_loop.go 中的 abortMarker 常量保持一致，
+    // 用于用户主动取消回复时的视觉标记文本
+    const abortMarker = '[用户取消了回复]';
+
     // ---- 工具名 → 短缩写（图标方块字符）。未知工具回退到 '⚙' ----
     const TOOL_ICON = {
         read_file:    '📖',
@@ -242,6 +246,19 @@
         state.streaming = false;
         hideThinking();
         finalizeAssistantMessage();
+        // 用户主动取消时，为最后一条 assistant 消息添加取消视觉标记
+        if (p?.reason === 'aborted') {
+            const lastMsg = state.messages[state.messages.length - 1];
+            if (lastMsg && lastMsg.role === 'assistant') {
+                const chatArea = document.getElementById('chat-area');
+                const lastBubble = chatArea?.querySelector('.message-wrap:last-child .message-bubble');
+                if (lastBubble) {
+                    lastBubble.innerHTML = renderMarkdown(abortMarker);
+                    lastBubble.classList.add('message-aborted');
+                    enhanceCodeBlocks(lastBubble);
+                }
+            }
+        }
         // 完成后 Send 按钮恢复
         renderSendButton();
         // 流结束：刷新会话列表（保证左侧条目的预览/时间同步）

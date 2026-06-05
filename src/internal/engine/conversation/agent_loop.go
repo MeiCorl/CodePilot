@@ -44,6 +44,11 @@ const (
 	StopReasonError StopReason = "error"
 )
 
+// abortMarker 是用户主动取消回复时写入 history 的标记文本。
+// 当用户中断 LLM 流式输出后，后续发送新问题时，LLM 在上下文中看到此标记，
+// 便知道前一个问题已被用户主动取消，无需再关注，只需回答最新的用户问题。
+const abortMarker = "[用户取消了回复]"
+
 // AgentLoopResult 是 AgentLoop 的返回值，描述整个循环执行的最终结果。
 type AgentLoopResult struct {
 	// FinalText 为最终回复文本（可能是正常回复，也可能是收尾提示后的总结）
@@ -169,6 +174,9 @@ func (m *ConversationManager) AgentLoop(
 
 		if turnResult.Aborted {
 			logger.Info("AgentLoop 在 LLM 调用中被取消", zap.Int("iteration", iteration))
+			// 将取消标记写入 history，保持对话结构完整，
+			// 使后续用户发新问题时 LLM 知道前一个问题已被取消，只需关注最新问题
+			m.persistAbortedTurn(turnResult)
 			result := AgentLoopResult{
 				FinalText:      finalText,
 				Iterations:     iteration,
@@ -339,4 +347,40 @@ func (h *AgentLoopHooks) fireLoopDone(result AgentLoopResult) {
 	if h.OnLoopDone != nil {
 		h.OnLoopDone(result)
 	}
+}
+
+// persistAbortedTurn 在用户主动取消时，将取消标记写入 history，
+// 保持对话 User/Assistant 交替结构完整，使后续 LLM 调用上下文语义正确。
+//
+// 处理三种场景：
+//   - 部分文本 + 无 tool_use：写入一条带取消标记的 assistant 消息
+//   - 有 tool_use 块：写入 assistant 消息（含 tool_use）+ 合成 error tool_result 消息
+//   - 空轮（未收到任何内容）：写入一条仅含取消标记的 assistant 消息
+func (m *ConversationManager) persistAbortedTurn(turnResult RunOneTurnResult) {
+	// 有 tool_use 块：需要同时写入 assistant 和合成 error tool_result，
+	// 保持 tool_use / tool_result 配对结构完整
+	if len(turnResult.ToolUses) > 0 {
+		// 构造 assistant 消息：取消标记 + tool_use 块
+		content := make([]llm.ContentBlock, 0, 1+len(turnResult.ToolUses))
+		content = append(content, llm.NewTextBlock(abortMarker))
+		for i := range turnResult.ToolUses {
+			content = append(content, &turnResult.ToolUses[i])
+		}
+		m.AddMessage(llm.Message{Role: llm.RoleAssistant, Content: content})
+
+		// 为每个 tool_use 写入合成 error tool_result，保持 history 结构完整
+		resultContent := make([]llm.ContentBlock, 0, len(turnResult.ToolUses))
+		for _, tu := range turnResult.ToolUses {
+			resultContent = append(resultContent, llm.NewToolResultBlock(
+				tu.ID,
+				"工具执行已取消：用户中断了回复",
+				true, // isError
+			))
+		}
+		m.AddMessage(llm.Message{Role: llm.RoleUser, Content: resultContent})
+		return
+	}
+
+	// 无 tool_use（部分文本或空轮）：仅写入取消标记
+	m.AddAssistantMessage(abortMarker)
 }
