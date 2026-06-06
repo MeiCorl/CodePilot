@@ -123,7 +123,7 @@ func TestOldSessionBackwardCompatible(t *testing.T) {
 	cfg := &config.Config{Provider: "anthropic", Model: "test", APIKey: "k", MaxTokens: 1024}
 	mp := &scriptedProvider{}
 	registry := tool.NewRegistry()
-	h := NewHandler(mp, sm, cfg, 10, "", 100000, dir, registry, conversation.NewToolHandler(registry, 5*time.Second, dir))
+	h := NewHandler(mp, sm, cfg, 10, nil, 100000, dir, registry, conversation.NewToolHandler(registry, 5*time.Second, dir))
 	s := NewServer("127.0.0.1:0")
 	h.Register(s.Router())
 	ts := httptest.NewServer(http.HandlerFunc(s.ConnectionManager().HandleWS))

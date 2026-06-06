@@ -32,6 +32,8 @@ import (
 
 	"github.com/MeiCorl/CodePilot/src/internal/config"
 	"github.com/MeiCorl/CodePilot/src/internal/engine/conversation"
+	"github.com/MeiCorl/CodePilot/src/internal/engine/prompt"
+	"github.com/MeiCorl/CodePilot/src/internal/engine/prompt/sources"
 	"github.com/MeiCorl/CodePilot/src/internal/interaction/web"
 	"github.com/MeiCorl/CodePilot/src/internal/logger"
 	"github.com/MeiCorl/CodePilot/src/internal/memory/session"
@@ -120,14 +122,27 @@ func run() error {
 		zap.Duration("execution_timeout", bashTimeout),
 	)
 
-	// 7. 构造 Handler / Server
+	// 7. 构造 System Prompt Builder（Step 4：分层 SP 体系）。
+	// 4 个 Source 按注册顺序产出内容：
+	//   - static:       5 个硬编码子模块（角色/行为/代码质量/工具/安全）
+	//   - environment:  OS + CWD + Git 状态
+	//   - agents_md:    全局 + 项目级 AGENTS.md 合并
+	//   - memory:       自动记忆（Step 8 接入；当前为 NoopMemoryProvider）
+	promptBuilder := prompt.NewBuilder(
+		sources.NewStaticSource(),
+		sources.NewEnvironmentSource(),
+		sources.NewAgentsMDSource(),
+		sources.NewMemorySource(sources.NewNoopMemoryProvider(), nil),
+	)
+
+	// 8. 构造 Handler / Server
 	// 使用 DefaultAddr（127.0.0.1:0）让 OS 自动分配端口，
 	// 这样多个项目下可同时启动多个 CodePilot 进程互不冲突。
-	handler := web.NewHandler(provider, sessMgr, cfg, defaultMaxRounds, "", cfg.ContextWindowSize, workdir, toolRegistry, toolHandler)
+	handler := web.NewHandler(provider, sessMgr, cfg, defaultMaxRounds, promptBuilder, cfg.ContextWindowSize, workdir, toolRegistry, toolHandler)
 	server := web.NewServer(web.DefaultAddr)
 	handler.Register(server.Router())
 
-	// 7. 异步启动 Web 服务
+	// 9. 异步启动 Web 服务
 	runCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -139,7 +154,7 @@ func run() error {
 		close(serverErrCh)
 	}()
 
-	// 8. 等待 server 真正完成 listen 后，再用真实端口打开浏览器。
+	// 10. 等待 server 真正完成 listen 后，再用真实端口打开浏览器。
 	// Ready 与 serverErrCh 同时监听：listen 失败时不会一直阻塞。
 	select {
 	case <-server.Ready():
@@ -159,7 +174,7 @@ func run() error {
 		return nil
 	}
 
-	// 9. 浏览器已弹出，隐藏 Windows 终端窗口，让 CodePilot 在后台静默运行。
+	// 11. 浏览器已弹出，隐藏 Windows 终端窗口，让 CodePilot 在后台静默运行。
 	// 非 Windows 平台 / 进程无控制台时该调用为 no-op，不会报错。
 	// 若有需要查看日志，用户可在启动后通过任务管理器打开控制台或查看文件日志。
 	if console.Visible() {
@@ -167,7 +182,7 @@ func run() error {
 		logger.Info("已隐藏终端窗口，CodePilot 在后台运行")
 	}
 
-	// 10. 启动后台 goroutine 监听"浏览器关闭"事件：所有 WebSocket
+	// 12. 启动后台 goroutine 监听"浏览器关闭"事件：所有 WebSocket
 	// 断开后等一个宽限期，期间若有新连接恢复则重置 timer；
 	// 宽限期到仍无新连接则向主 select 发送 trigger 触发退出。
 	// 这样既能容忍浏览器刷新/暂时断网，也能在用户真正关闭窗口时自动退出。
@@ -193,7 +208,7 @@ func run() error {
 		}
 	}()
 
-	// 11. 等待信号或服务异常
+	// 13. 等待信号或服务异常
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(sigCh)
@@ -213,7 +228,7 @@ func run() error {
 		)
 	}
 
-	// 12. 触发 server 关闭并等待 goroutine 退出
+	// 14. 触发 server 关闭并等待 goroutine 退出
 	cancel()
 	if err := <-serverErrCh; err != nil {
 		logger.Warn("Web 服务退出时返回错误", zap.Error(err))

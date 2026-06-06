@@ -16,6 +16,9 @@ const (
 	MsgTypeGetCurrentSession = "get_current_session"
 	MsgTypeClearSession      = "clear_session"
 	MsgTypeDeleteSession     = "delete_session"
+	// MsgTypeDevExportSP 由前端的「开发者模式 → Export SP」按钮触发。
+	// 服务端响应同类型消息，payload 包含完整 SP 结构。
+	MsgTypeDevExportSP = "dev_export_sp"
 )
 
 // 服务端 → 客户端 消息类型常量。
@@ -188,10 +191,37 @@ type ToolCallDisplay struct {
 }
 
 // ContextUsagePayload 上下文窗口使用情况，PercentLeft 范围 0~100。
+//
+// Step 4 起新增可观测性字段：
+//   - SPTotalTokens: 当前 System Prompt 的 token 估算总和
+//   - SPBreakdown: 按 Source 拆分的小计（顺序与 Builder 注册顺序一致）
+//
+// 前端「状态栏 SP 区域」直接渲染这两个字段；鼠标悬停展示各 Source 小计。
 type ContextUsagePayload struct {
-	Used        int `json:"used"`
-	Limit       int `json:"limit"`
-	PercentLeft int `json:"percent_left"`
+	Used           int            `json:"used"`
+	Limit          int            `json:"limit"`
+	PercentLeft    int            `json:"percent_left"`
+	SPTotalTokens  int            `json:"sp_total_tokens,omitempty"`
+	SPBreakdown    []SPSourceStat `json:"sp_breakdown,omitempty"`
+}
+
+// SPSourceStat 描述单个 Source 在 System Prompt 中的 token 开销。
+// 与 llm.SourceStat 同构；放 web 包独立类型以避免 llm 包依赖传导到前端协议。
+type SPSourceStat struct {
+	Name   string `json:"name"`
+	Tokens int    `json:"tokens"`
+}
+
+// DevExportSPPayload 响应前端「Export SP」请求的完整 System Prompt 快照。
+// SystemBlocks 为多段 system 文本（顺序与 Source 注册顺序一致）；
+// LeadUserMessage 为合并后的首条 user 消息；
+// Stats / TotalTokens 与 context_usage 中携带的 SP 信息一致，
+// 仅 TotalTokens 是精确累加值（与 Stats 求和一致）。
+type DevExportSPPayload struct {
+	SystemBlocks    []string `json:"system_blocks"`
+	LeadUserMessage string   `json:"lead_user_message"`
+	Stats           []SPSourceStat `json:"stats"`
+	TotalTokens     int      `json:"total_tokens"`
 }
 
 // AgentIterationPayload Agent Loop 迭代进度事件。

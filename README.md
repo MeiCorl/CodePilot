@@ -35,6 +35,10 @@ CodePilot 是一个从零构建的终端 AI Coding Agent（类似 Claude Code / 
 | **内置工具集**            | `ReadFile`（读文件）、`WriteFile`（写文件）、`EditFile`（编辑文件）、`Bash`（命令执行）、`Glob`（文件查找）、`Grep`（内容搜索） |
 | **迭代上限保护**           | 默认最大 25 次迭代，达到上限后注入提示让模型优雅收尾                                                             |
 | **上下文窗口管理**          | Token 溢出保护，空间不足时自动提示模型总结当前进展                                                             |
+| **分层 System Prompt**  | `Builder` 模式组装 4 个 Source（static / environment / agents_md / memory），行为规约、环境上下文、AGENTS.md 合并、自动记忆接入位 |
+| **Anthropic Prompt Caching** | SystemBlocks 多段带 `cache_control: ephemeral, ttl=5m` 标记，第二轮起命中服务端缓存降低成本与延迟            |
+| **SP 可观测性**           | WebUI 状态栏显示 SP 总 token 估算 + 4 层 Source 小计 tooltip，开发者模式一键导出完整 SP 快照                       |
+| **AGENTS.md 双层合并**    | 全局 `~/.codepilot/AGENTS.md` + 项目级 `<cwd>/AGENTS.md` 按 H2 段解析，项目级同名段完全覆盖全局                       |
 | **安全机制**             | 路径沙箱、Bash 危险命令黑名单、工具执行超时                                                                 |
 | **会话持久化**            | 多会话管理 + JSON 持久化，支持会话恢复与历史回放                                                             |
 | **优雅中断**             | 用户中断时保留已完成迭代的消息，支持后续恢复                                                                   |
@@ -47,11 +51,10 @@ CodePilot 是一个从零构建的终端 AI Coding Agent（类似 Claude Code / 
 
 | 功能                   | 所属阶段    | 说明                                    |
 | -------------------- | ------- | ------------------------------------- |
-| **System Prompt 设计** | Step 4  | 完整的系统提示词管理，支持模板渲染、动态注入                |
 | **权限系统**             | Step 5  | 工具调用白/黑名单、危险操作确认机制、HITL 人工干预          |
 | **MCP 协议**           | Step 6  | Model Context Protocol，动态发现与调用外部工具服务器 |
 | **高级上下文管理**          | Step 7  | 上下文压缩（摘要）、缓存策略，优化 token 利用率           |
-| **记忆系统**             | Step 8  | 自动记忆用户偏好与项目约定，跨会话持久化                  |
+| **记忆系统**             | Step 8  | 自动记忆用户偏好与项目约定，跨会话持久化（System Prompt 已留接入位） |
 | **快捷命令系统**           | Step 9  | `/help`、`/clear`、`/init` 等斜杠命令，快速触发操作 |
 | **Skill 系统**         | Step 10 | 可插拔技能模块，封装复杂工作流为可复用技能                 |
 | **Hook 系统**          | Step 11 | 工具执行前后的钩子机制，支持日志、拦截、过滤                |
@@ -106,8 +109,17 @@ CodePilot/
 │   │   │   │   ├── manager.go           #   对话管理器，协调 LLM 调用与消息流
 │   │   │   │   ├── agent_loop.go        #   ReAct 循环引擎，多轮推理迭代
 │   │   │   │   └── tool_handler.go      #   工具调用处理器，执行与结果回传
-│   │   │   └── prompt/
-│   │   │       └── system.go            #   System Prompt 构建
+│   │   │   └── prompt/                  #   System Prompt 组装管线
+│   │   │       ├── builder.go           #     顶层 Builder：按 Source 注册顺序组装 SystemPrompt
+│   │   │       ├── README.md            #     模块设计说明与扩展指南
+│   │   │       ├── sources/             #     Source 实现（每个 Source 产出一段内容）
+│   │   │       │   ├── source.go        #       Source 接口与 SystemPrompt 结构
+│   │   │       │   ├── static.go        #       静态 5 子模块（角色/行为/代码质量/工具/安全）
+│   │   │       │   ├── environment.go   #       OS / CWD / Git 状态采集
+│   │   │       │   ├── agents_md.go     #       全局 + 项目级 AGENTS.md 合并
+│   │   │       │   └── memory.go        #       自动记忆接入位（Step 8 接入）
+│   │   │       ├── template/            #     模板变量（{{OS}} / {{CWD}} 等）渲染
+│   │   │       └── tokens/              #     token 估算（用于状态栏展示）
 │   │   ├── interaction/                 # 交互层（第 1 层）
 │   │   │   └── web/
 │   │   │       ├── server.go            #   HTTP 服务器与生命周期管理
@@ -279,8 +291,11 @@ cp config/config.example.openai.json ~/.codepilot/config.json
 
 ## 📊 项目进度
 
+> 当前最新版本 **V1.0.6** · 最近更新 **2026-06-06** · 下一步骤 **Step 5 — 权限系统设计**
+> 详细进度见 [.harness/PROGRESS.md](.harness/PROGRESS.md)
+
 ```
-[█████████████░░░░░░░░░░░░░░░░] 50% 完成
+[█████████████████░░░░░░░░░░░] 58% 完成（7/12）
 
 ✅ Step 1   — LLM 打通
 ✅ Step 1.1 — UI 界面重构（TUI → WebUI）
@@ -288,7 +303,7 @@ cp config/config.example.openai.json ~/.codepilot/config.json
 ✅ Step 1.3 — WebUI 流式渲染
 ✅ Step 2   — 工具系统集成
 ✅ Step 3   — ReAct 与 Agent Loop 实现
-⏳ Step 4   — System Prompt 设计
+✅ Step 4   — System Prompt 设计
 ⏳ Step 5   — 权限系统设计
 ⏳ Step 6   — MCP 协议实现
 ⏳ Step 7   — 上下文管理

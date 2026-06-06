@@ -32,7 +32,7 @@
             <div class="topbar-brand">
                 <span class="topbar-logo" aria-hidden="true">CP</span>
                 <span>CodePilot</span>
-                <span class="topbar-version" id="version-badge" title="当前版本">v1.1.0</span>
+                <span class="topbar-version" id="version-badge" title="当前版本">v1.2.0</span>
             </div>
 
             <span class="topbar-divider" aria-hidden="true"></span>
@@ -109,6 +109,11 @@
                         <span class="inputbar-stat-label">model</span>
                         <span class="inputbar-stat-value" id="model-name">--</span>
                     </div>
+                    <div class="inputbar-stat" id="sp-stat" title="System Prompt token 估算（悬停查看各 Source 小计）">
+                        <span class="inputbar-stat-label">system prompt</span>
+                        <span class="inputbar-stat-value" id="sp-tokens">--</span>
+                        <div class="sp-breakdown" id="sp-breakdown" hidden></div>
+                    </div>
                     <div class="inputbar-stat">
                         <span class="inputbar-stat-label">ctx left</span>
                         <span class="inputbar-stat-value" id="ctx-percent">100%</span>
@@ -119,6 +124,45 @@
                 </div>
             </div>
         </main>
+
+        <!-- 开发者模式 + Export SP 模态框（Step 4 可观测性） -->
+        <div id="dev-panel" class="dev-panel" hidden>
+            <div class="dev-panel-header">
+                <span class="dev-panel-title">开发者模式</span>
+                <button id="dev-panel-close" class="dev-panel-close" type="button" title="关闭">×</button>
+            </div>
+            <div class="dev-panel-body">
+                <button id="dev-export-sp-btn" class="dev-panel-btn" type="button" title="导出当前 System Prompt">
+                    Export SP
+                </button>
+            </div>
+        </div>
+
+        <!-- SP 导出结果模态框 -->
+        <div id="sp-modal" class="sp-modal" hidden>
+            <div class="sp-modal-backdrop" data-sp-modal-close></div>
+            <div class="sp-modal-inner">
+                <div class="sp-modal-header">
+                    <span class="sp-modal-title">System Prompt 导出</span>
+                    <button class="sp-modal-close" data-sp-modal-close type="button">×</button>
+                </div>
+                <div class="sp-modal-body">
+                    <div class="sp-modal-summary" id="sp-modal-summary">--</div>
+                    <details class="sp-modal-section" open>
+                        <summary>System Blocks（系统字段）</summary>
+                        <pre class="sp-modal-text" id="sp-modal-system">--</pre>
+                    </details>
+                    <details class="sp-modal-section">
+                        <summary>Lead User Message（首条 user 消息）</summary>
+                        <pre class="sp-modal-text" id="sp-modal-lead">--</pre>
+                    </details>
+                    <details class="sp-modal-section">
+                        <summary>Source 统计</summary>
+                        <pre class="sp-modal-text" id="sp-modal-stats">--</pre>
+                    </details>
+                </div>
+            </div>
+        </div>
 
     </div>
 

@@ -171,12 +171,19 @@ func (p *OpenAIProvider) convertMessages(messages []Message) []openai.ChatComple
 // StreamChat 发起一次 OpenAI 流式对话请求。
 // toolSpecs 非空时随请求发送 tools 数组，LLM 可在响应中发出
 // finish_reason="tool_calls" 的流式片段，由 doStream 解析为 ToolUseBlock。
-func (p *OpenAIProvider) StreamChat(ctx context.Context, systemPrompt string, messages []Message, toolSpecs []tool.ToolSpec) (<-chan StreamChunk, error) {
+//
+// SystemPrompt 处理（Step 4 新增）：
+//   - sp.SystemBlocks 按顺序拼接为单条 system-role 消息（OpenAI 协议无
+//     多段 system 概念，Cacheable 字段被忽略——OpenAI 自动启用服务端
+//     缓存，前 1024 token 命中可享受折扣）
+//   - sp.LeadUserMessage 作为首条 user-role 消息插入 messages 最前，
+//     语义与 Anthropic Provider 保持一致
+func (p *OpenAIProvider) StreamChat(ctx context.Context, sp SystemPrompt, messages []Message, toolSpecs []tool.ToolSpec) (<-chan StreamChunk, error) {
 	ch := make(chan StreamChunk, 64)
 
 	go func() {
 		defer close(ch)
-		p.streamWithRetry(ctx, systemPrompt, messages, toolSpecs, ch)
+		p.streamWithRetry(ctx, sp, messages, toolSpecs, ch)
 	}()
 
 	return ch, nil
@@ -185,13 +192,15 @@ func (p *OpenAIProvider) StreamChat(ctx context.Context, systemPrompt string, me
 // streamWithRetry 实现带重试的流式请求。
 // 仅对网络错误和 HTTP 5xx 重试，采用指数退避策略。
 // HTTP 401（认证错误）和 429（限流）不重试，直接通过 channel 返回错误。
-func (p *OpenAIProvider) streamWithRetry(ctx context.Context, systemPrompt string, messages []Message, toolSpecs []tool.ToolSpec, ch chan<- StreamChunk) {
-	msgParams := p.convertMessages(messages)
+func (p *OpenAIProvider) streamWithRetry(ctx context.Context, sp SystemPrompt, messages []Message, toolSpecs []tool.ToolSpec, ch chan<- StreamChunk) {
+	// 1. 把 LeadUserMessage 拼接到 messages 最前（语义与 Anthropic 一致）
+	allInternalMessages := prependLeadUserMessage(messages, sp.LeadUserMessage)
+	msgParams := p.convertMessages(allInternalMessages)
 
-	// 如果有 System Prompt，作为第一条消息插入
+	// 2. SystemBlocks 拼接为单条 system-role 消息，插入到 messages 最前
 	allMessages := make([]openai.ChatCompletionMessageParamUnion, 0, len(msgParams)+1)
-	if systemPrompt != "" {
-		allMessages = append(allMessages, openai.SystemMessage(systemPrompt))
+	if sysText := buildOpenAISystemText(sp.SystemBlocks); sysText != "" {
+		allMessages = append(allMessages, openai.SystemMessage(sysText))
 	}
 	allMessages = append(allMessages, msgParams...)
 
@@ -385,4 +394,29 @@ func (p *OpenAIProvider) shouldRetry(err error) bool {
 	}
 
 	return false
+}
+
+// buildOpenAISystemText 把 SystemBlocks 拼接为 OpenAI 协议的单条 system 文本。
+//
+// OpenAI 协议不区分 system 与 user 的"分块"概念——所有 system 内容必须
+// 合并为单条 system-role 消息。段与段之间用 "\n\n" 分隔（与 LLM 通常
+// 习惯的"段落分隔"一致）。
+//
+// 空 SP 或全部空段时返回空字符串：调用方据此跳过 openai.SystemMessage 调用，
+// 避免构造空 system 消息导致部分模型（如 gpt-4o）报错。
+//
+// 注：OpenAI 服务端对前 1024 token 启用自动缓存；本函数不传 cache_control，
+// 由 OpenAI 自行决定命中区——这是 OpenAI 协议约束，与 Anthropic 不同。
+func buildOpenAISystemText(blocks []SystemBlock) string {
+	if len(blocks) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(blocks))
+	for _, blk := range blocks {
+		if blk.Text == "" {
+			continue
+		}
+		parts = append(parts, blk.Text)
+	}
+	return strings.Join(parts, "\n\n")
 }

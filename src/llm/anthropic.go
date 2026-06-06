@@ -125,12 +125,21 @@ func (p *AnthropicProvider) convertMessages(messages []Message) []anthropic.Mess
 // toolSpecs 为空时按"无工具"模式请求；非空时随请求发送 tools 数组，
 // LLM 可在响应中返回 tool_use 内容块，doStream 会在流结束时通过
 // StreamChunk.ToolUse 字段捎带出来。
-func (p *AnthropicProvider) StreamChat(ctx context.Context, systemPrompt string, messages []Message, toolSpecs []tool.ToolSpec) (<-chan StreamChunk, error) {
+//
+// SystemPrompt 处理（Step 4 新增）：
+//   - sp.SystemBlocks 转换为多段 system TextBlockParam；
+//     前 N-1 段带 cache_control 标记（ephemeral, TTL=5m），最后一段不标记。
+//     标记全部在最后一段之前形成"断点"，让 Anthropic 服务端把整段
+//     静态 SP + 环境上下文作为可复用缓存。第二轮起 LLM 命中缓存，
+//     显著降低延迟与费用。
+//   - sp.LeadUserMessage 作为首条 user-role 消息插入 messages 最前，
+//     使 AGENTS.md 等内容不进 system 字段，避免注意力稀释。
+func (p *AnthropicProvider) StreamChat(ctx context.Context, sp SystemPrompt, messages []Message, toolSpecs []tool.ToolSpec) (<-chan StreamChunk, error) {
 	ch := make(chan StreamChunk, 64)
 
 	go func() {
 		defer close(ch)
-		p.streamWithRetry(ctx, systemPrompt, messages, toolSpecs, ch)
+		p.streamWithRetry(ctx, sp, messages, toolSpecs, ch)
 	}()
 
 	return ch, nil
@@ -139,18 +148,19 @@ func (p *AnthropicProvider) StreamChat(ctx context.Context, systemPrompt string,
 // streamWithRetry 实现带重试的流式请求。
 // 仅对网络错误和 HTTP 5xx 重试，采用指数退避策略。
 // HTTP 401（认证错误）和 429（限流）不重试，直接通过 channel 返回错误。
-func (p *AnthropicProvider) streamWithRetry(ctx context.Context, systemPrompt string, messages []Message, toolSpecs []tool.ToolSpec, ch chan<- StreamChunk) {
-	msgParams := p.convertMessages(messages)
+func (p *AnthropicProvider) streamWithRetry(ctx context.Context, sp SystemPrompt, messages []Message, toolSpecs []tool.ToolSpec, ch chan<- StreamChunk) {
+	// 1. 把 LeadUserMessage 拼接到 messages 最前
+	allMessages := prependLeadUserMessage(messages, sp.LeadUserMessage)
+	msgParams := p.convertMessages(allMessages)
 
 	params := anthropic.MessageNewParams{
 		MaxTokens: int64(p.maxTokens),
 		Messages:  msgParams,
 		Model:     p.model,
 	}
-	if systemPrompt != "" {
-		params.System = []anthropic.TextBlockParam{
-			{Text: systemPrompt},
-		}
+	// 2. 把 SystemBlocks 转换为带 cache_control 标记的多段 system 内容
+	if sysBlocks := buildAnthropicSystemBlocks(sp.SystemBlocks); len(sysBlocks) > 0 {
+		params.System = sysBlocks
 	}
 	if len(toolSpecs) > 0 {
 		params.Tools = p.convertTools(toolSpecs)
@@ -356,4 +366,60 @@ func sortToolUsesByIndex(completed map[int64]*ToolUseBlock) []ToolUseBlock {
 		}
 	}
 	return result
+}
+
+// buildAnthropicSystemBlocks 把 SystemPrompt.SystemBlocks 转换为 Anthropic SDK
+// 的 TextBlockParam 列表，并对前 N-1 段（可缓存的）打上 cache_control 标记。
+//
+// Anthropic Prompt Caching 规则：
+//  1. 每个请求最多 4 个 cache_control 断点；本函数产出的断点数 = 段数 - 1
+//     （最后一段不打标记，作为"边界"），符合约束
+//  2. 断点标记的字段含义："此位置之前的所有内容可缓存"——所以只对
+//     N-1 段标记，让缓存覆盖到第二段之前
+//  3. TTL=5m（默认），与官方推荐一致；未来如需 1h 长缓存，可在 cfg 加配置项
+//  4. Cacheable=false 的段不打标记：用于每次都变的动态内容，
+//     避免污染静态缓存
+//
+// 空 SP 或全部 Cacheable=false 的边界情况：返回 nil，调用方据此跳过
+// params.System 赋值，Anthropic 协议允许 system 为空。
+func buildAnthropicSystemBlocks(blocks []SystemBlock) []anthropic.TextBlockParam {
+	if len(blocks) == 0 {
+		return nil
+	}
+	out := make([]anthropic.TextBlockParam, 0, len(blocks))
+	cacheMarker := anthropic.CacheControlEphemeralParam{
+		TTL: anthropic.CacheControlEphemeralTTLTTL5m,
+	}
+	for i, blk := range blocks {
+		param := anthropic.TextBlockParam{Text: blk.Text}
+		// 仅对前 N-1 段的可缓存内容打 cache_control 标记；
+		// 最后一段不标记（作为断点边界）
+		if i < len(blocks)-1 && blk.Cacheable {
+			param.CacheControl = cacheMarker
+		}
+		out = append(out, param)
+	}
+	return out
+}
+
+// prependLeadUserMessage 把 LeadUserMessage 作为首条 user-role 消息
+// 拼接到 messages 最前部，返回新的切片（不修改入参）。
+//
+// 设计动机：AGENTS.md 等「项目级指令」内容很长且会动态变化，
+// 不适合塞进 system 字段（会稀释 LLM 对核心 system 的注意力），
+// 也不适合混入普通 user 历史（会破坏多轮对话语义）。
+// 作为独立的"首条 user 消息"既保证了语义清晰，又天然处于滑动窗口保护之外。
+//
+// lead 为空字符串时返回原 messages（不构造空消息）。
+func prependLeadUserMessage(messages []Message, lead string) []Message {
+	if lead == "" {
+		return messages
+	}
+	out := make([]Message, 0, len(messages)+1)
+	out = append(out, Message{
+		Role:    RoleUser,
+		Content: []ContentBlock{NewTextBlock(lead)},
+	})
+	out = append(out, messages...)
+	return out
 }

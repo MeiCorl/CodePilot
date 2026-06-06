@@ -104,7 +104,7 @@ func TestAnthropicCtxCancel(t *testing.T) {
 		{Role: RoleUser, Content: []ContentBlock{NewTextBlock("test")}},
 	}
 
-	ch, err := p.StreamChat(ctx, "system prompt", messages, nil)
+	ch, err := p.StreamChat(ctx, NewSystemPromptFromText("system prompt"), messages, nil)
 	if err != nil {
 		t.Fatalf("StreamChat 返回错误: %v", err)
 	}

@@ -67,3 +67,51 @@ func TestRoleConstants(t *testing.T) {
 		t.Errorf("RoleAssistant 错误: 期望 assistant, 实际 %s", RoleAssistant)
 	}
 }
+
+// ---- Step 4: SystemPrompt 相关测试 ----
+
+// TestSystemPromptIsEmpty 验证空 SP 判定。
+func TestSystemPromptIsEmpty(t *testing.T) {
+	tests := []struct {
+		name string
+		sp   SystemPrompt
+		want bool
+	}{
+		{"全空", SystemPrompt{}, true},
+		{"只有 SystemBlocks 但空 slice", SystemPrompt{SystemBlocks: nil}, true},
+		{"只有 LeadUserMessage 但空字符串", SystemPrompt{LeadUserMessage: ""}, true},
+		{"有 SystemBlocks", SystemPrompt{SystemBlocks: []SystemBlock{{Text: "x"}}}, false},
+		{"有 LeadUserMessage", SystemPrompt{LeadUserMessage: "y"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.sp.IsEmpty(); got != tt.want {
+				t.Errorf("IsEmpty() = %v, 期望 %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestNewSystemPromptFromText 验证便捷构造函数。
+func TestNewSystemPromptFromText(t *testing.T) {
+	// 空字符串返回零值
+	sp := NewSystemPromptFromText("")
+	if !sp.IsEmpty() {
+		t.Errorf("空字符串应返回 IsEmpty=true 的 SP，实际: %+v", sp)
+	}
+
+	// 非空字符串构造单段可缓存 SP
+	sp = NewSystemPromptFromText("you are an assistant")
+	if sp.IsEmpty() {
+		t.Fatal("非空字符串应返回非空 SP")
+	}
+	if len(sp.SystemBlocks) != 1 {
+		t.Fatalf("应构造 1 段 SystemBlock，实际 %d 段", len(sp.SystemBlocks))
+	}
+	if sp.SystemBlocks[0].Text != "you are an assistant" {
+		t.Errorf("Text = %q, 期望 %q", sp.SystemBlocks[0].Text, "you are an assistant")
+	}
+	if !sp.SystemBlocks[0].Cacheable {
+		t.Error("默认 Cacheable 应为 true")
+	}
+}

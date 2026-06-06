@@ -2,7 +2,7 @@
 
 > 本文档记录 CodePilot 项目的整体实现进度，每完成一步功能开发后须同步更新本文档。
 >
-> - 计划全景与系统架构见 [HARNESS.md](./HARNESS.md)
+> - 计划全景与系统架构见 [PROJECT.md](./PROJECT.md)
 > - 各步骤详细 spec / tasks / checklist 见 `docs/{step_n-idea_name}/` 目录
 > - **维护规约**：每次 `sdd-run` 或 `specs` 技能完成一个步骤的全部 Task 后，必须在 [📊 总览](#-总览)、[✅ 已完成步骤](#-已完成步骤) 与 [🕓 待完成步骤](#-待完成步骤) 三处同步更新
 
@@ -14,16 +14,16 @@
 | 指标     | 数值                                                    |
 | ------ | ----------------------------------------------------- |
 | 计划总步骤数 | 12（含子步骤后实际更多）                                         |
-| 已完成步骤数 | 6（Step 1 / Step 1.1 / Step 1.2 / Step 1.3 / Step 2 / Step 3）    |
-| 当前最新版本 | V1.0.5                                                |
-| 下一步骤   | Step 4 — System Prompt 设计                             |
-| 最近更新   | 2026-06-04                                            |
+| 已完成步骤数 | 7（Step 1 / Step 1.1 / Step 1.2 / Step 1.3 / Step 2 / Step 3 / Step 4）    |
+| 当前最新版本 | V1.0.6                                                |
+| 下一步骤   | Step 5 — 权限系统设计                             |
+| 最近更新   | 2026-06-06                                            |
 
 
 进度条：
 
 ```
-[█████████████░░░░░░░░░░░░░░░░] 6/12 步骤完成（50%）
+[█████████████████░░░░░░░░░░░] 7/12 步骤完成（58%）
 ```
 
 ---
@@ -119,16 +119,35 @@
   6. DOMPurify 安全防护持续有效：流式过程中每次 `innerHTML` 更新均经过 DOMPurify 过滤
   7. 完整的边界场景处理：工具调用兼容、中断内容保留、会话切换状态清理、空响应安全跳过
 
+### Step 4 — System Prompt 设计（V1.0.6）
+
+- **完成时间**：2026-06-06
+- **完成 commit**：`c0df351` `Step 4 Task 6: 接入主流程 + WebUI 可观测性`
+- **设计文档**：[docs/step4-System Prompt设计/](../docs/step4-System%20Prompt%E8%AE%BE%E8%AE%A1/)
+- **Task 完成数**：6 / 6
+- **核心交付能力**：
+  1. **分层 System Prompt 体系**：`prompt` 模块 + `Builder` 模式，按注册顺序调用 4 个 Source（static / environment / agents_md / memory），按 Placement 分组为 `SystemBlocks`（进 system 字段）与 `LeadUserMessage`（进首条 user 消息）
+  2. **静态 SP 5 子模块**（XML 风格 `<system_role>` / `<behavior_principles>` / `<code_quality>` / `<tool_usage>` / `<safety_boundary>`）：硬编码规约「先说再做」「引用 `file_path:line_number`」「不顺手越权优化」「用 ReadFile 代替 Bash cat」「破坏性操作前确认」「不绕过 git hook」「防注入」
+  3. **环境上下文自动注入**：会话启动时一次性采集 OS（`runtime.GOOS`）+ CWD（resolve 真实路径）+ Git 状态（branch / dirty / 最近 commit），单条 `<environment>` XML 段拼入 system
+  4. **AGENTS.md 双层合并**：全局 `~/.codepilot/AGENTS.md` + 项目级 `<cwd>/AGENTS.md` 按 H2 段解析，项目级同名段**完全覆盖**全局，单文件超 64KB 截断 + warning 日志；合并结果外层包 `<project_instructions>` 标签，以 LeadUserMessage 形式注入 messages 首部
+  5. **模板变量插值**：`{{OS}}` / `{{CWD}}` / `{{GIT_BRANCH}}` / `{{GIT_DIRTY}}` / `{{DATE}}` / `{{VERSION}}` 在 Source 内部按需替换，未识别变量原样保留
+  6. **Anthropic Prompt Caching**：`AnthropicProvider` 把 `sp.SystemBlocks` 拆为多段带 `cache_control: ephemeral, ttl=5m` 标记的 system 内容（前 N-1 段打标记，最后一段作为断点边界），第二轮起命中服务端缓存降低成本与延迟
+  7. **OpenAI 协议适配**：`OpenAIProvider` 把 `SystemBlocks` 拼为单条 system-role 消息，`LeadUserMessage` 拼到 messages 首部
+  8. **LeadUserMessage 不被滑动窗口裁剪**：`ConversationManager.SetLeadUserMessage` 把首条 user 消息放到 history 之外，`GetContext` 在窗口派生结果前拼接，天然处于窗口保护之外
+  9. **WebUI 可观测性**：状态栏新增 `sp` 区域显示总 token 估算（紧凑格式 1.5k / 15k）+ 鼠标悬停 tooltip 显示 4 层 Source 小计；`context_usage` WebSocket 消息新增 `sp_total_tokens` / `sp_breakdown` 字段
+  10. **开发者模式 Export SP**：双击 SP 区域唤出开发者面板 → 点击「Export SP」触发 `dev_export_sp` WebSocket 消息 → 后端回推完整 SP 快照（`SystemBlocks` 文本数组 + `LeadUserMessage` + `Stats` + `TotalTokens`）→ 前端模态框分 3 段折叠展示
+  11. **配置可关闭**：`prompt.Builder.SetEnabled(false)` 短路所有 Source，返回空 SystemPrompt（保持与早期会话兼容）
+  12. **会话恢复兼容**：System Prompt 不持久化到 session JSON，每次启动重新 assemble；旧 session（Step 3 时代含 tool_use/tool_result）正常加载与渲染（`TestStep4_LoadLegacySessionCompat` 覆盖）
+
 ---
 
 ## 🕓 待完成步骤
 
-> 下列步骤按 [HARNESS.md](./HARNESS.md) 计划顺序排列，开始下一步前请先用 `/specs` 触发需求澄清并生成 spec / tasks / checklist 三文档。
+> 下列步骤按 [PROJECT.md](./PROJECT.md) 计划顺序排列，开始下一步前请先用 `/specs` 触发需求澄清并生成 spec / tasks / checklist 三文档。
 
 
 | 编号  | 步骤名                   | 所属架构层 | 状态    | 计划目录                             |
 | --- | --------------------- | ----- | ----- | -------------------------------- |
-| 4   | System Prompt 设计      | 引擎层   | ⏳ 待开始 | `docs/step4-System Prompt设计/`    |
 | 5   | 权限系统设计                | 安全层   | ⏳ 待开始 | `docs/step5-权限系统设计/`             |
 | 6   | MCP 协议实现              | 工具层   | ⏳ 待开始 | `docs/step6-MCP协议实现/`            |
 | 7   | 上下文管理                 | 记忆层   | ⏳ 待开始 | `docs/step7-上下文管理/`              |
@@ -143,13 +162,13 @@
 
 ## 🧭 架构层覆盖度
 
-按 [HARNESS.md](./HARNESS.md) 5 层架构统计各层当前已落地组件：
+按 [PROJECT.md](./PROJECT.md) 5 层架构统计各层当前已落地组件：
 
 
 | 架构层       | 已落地                                                    | 待落地                                         |
 | --------- | ----------------------------------------------------- | ------------------------------------------- |
-| 第 1 层：交互层 | WebUI（HTTP + WebSocket + 富文本渲染 + 流式 Markdown 实时渲染）                      | 完整命令系统（Step 9）、Skill 系统（Step 10）            |
-| 第 2 层：引擎层 | 对话管理 + Agent Loop（ReAct 循环迭代 + 多工具并行 + 迭代上限 + 溢出保护）、System Prompt 雏形 | 完整 System Prompt（Step 4）                    |
+| 第 1 层：交互层 | WebUI（HTTP + WebSocket + 富文本渲染 + 流式 Markdown 实时渲染 + SP 可观测性 + 开发者模式 Export） | 完整命令系统（Step 9）、Skill 系统（Step 10）            |
+| 第 2 层：引擎层 | 对话管理 + Agent Loop（ReAct 循环迭代 + 多工具并行 + 迭代上限 + 溢出保护）、完整 System Prompt（Builder + 4 Source + 模板变量 + Anthropic 缓存切片） | —                                            |
 | 第 3 层：工具层 | 工具抽象 + Registry + 5 内置工具 + 路径沙箱 + Bash 黑名单 + 批量执行 | MCP（Step 6）、Hook（Step 11）、SubAgent（Step 12） |
 | 第 4 层：记忆层 | 会话持久化、上下文滑动窗口                                        | 高级上下文管理（Step 7）、自动记忆（Step 8）                |
 | 第 5 层：安全层 | 路径沙箱、Bash 危险命令黑名单                                    | 完整权限系统（Step 5，含 HITL 确认）                    |

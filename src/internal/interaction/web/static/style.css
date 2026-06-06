@@ -1108,25 +1108,54 @@ body {
     margin: 0 1px;
 }
 
+/* 右侧栏：3 个 stat（model / system prompt / ctx left）在左列纵向堆叠，
+ * 发送按钮在右列跨 3 行与 stat 列等高。
+ *
+ * 为什么用 grid 而不是 column flex：
+ * 原 column flex 布局在 Step 4 新增 sp stat 后变成 4 个子项，
+ * 而 inputbar 高度只够放下 3 个 stat，发送按钮被压缩并挤出 inputbar
+ * 底部（视口外不可见）。改 grid 让按钮天然占满右列整高，
+ * 不再受 4 子项堆叠影响。 */
 .inputbar-side {
-    width: 220px;
+    /* 加宽 40px：让 model 名称（如 "MiniMax-M3"）不溢出，
+     * 同时容纳 "system prompt" 全称标签 + value。 */
+    width: 260px;
     flex-shrink: 0;
-    display: flex;
-    flex-direction: column;
+    display: grid;
+    grid-template-columns: 1fr 80px;
+    grid-template-rows: repeat(3, minmax(0, 1fr));
     gap: var(--sp-2);
+    min-height: 0;
+}
+
+/* 3 个 stat 全部落在第 1 列（grid-column 默认是 auto，会被布局成 col1..col3 错列） */
+.inputbar-side > .inputbar-stat {
+    grid-column: 1;
+    min-width: 0;          /* 允许 stat 在窄空间下内部 flex 子项收缩 */
+}
+
+.inputbar-stat-label,
+.inputbar-stat-value {
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;   /* 极端窄屏下用省略号兜底，不破坏布局 */
 }
 
 .inputbar-stat {
     background: var(--bg-elevated);
     border: 1px solid var(--border);
     border-radius: var(--r-md);
-    padding: var(--sp-2) var(--sp-3);
+    /* 紧凑 padding（4 垂直 / 8 水平）+ 小 gap：容纳 model 名 + "system prompt" 全称标签，
+     * 同时给右列跨行 send-btn 留空间。 */
+    padding: var(--sp-1) var(--sp-2);
     font-family: var(--font-mono);
     font-size: var(--fs-xs);
     color: var(--fg-muted);
     display: flex;
     align-items: center;
     justify-content: space-between;
+    gap: var(--sp-1);
     letter-spacing: 0.04em;
 }
 .inputbar-stat-label { color: var(--fg-dim); }
@@ -1152,7 +1181,11 @@ body {
 .ctx-bar-fill[data-warning="true"] { background: var(--error); }
 
 .send-btn, .abort-btn {
-    flex: 1;
+    /* grid item 跨 3 行：覆盖旧 flex 行为，让按钮高度 = 3 个 stat + 2 个 gap */
+    flex: none;
+    grid-column: 2;
+    grid-row: 1 / -1;
+    width: 100%;
     border: 1px solid var(--border-strong);
     border-radius: var(--r-md);
     background: var(--bg-elevated);
@@ -1444,19 +1477,259 @@ body {
  * ========================================================================== */
 
 @media (max-width: 1024px) {
-    :root { --sidebar-w: 240px; --inputbar-h: 120px; }
+    /* Step 4: inputbar-h 仍保持 150px（不再压到 120），
+     * 因为侧栏现在 3 stat + 1 send-btn 跨行布局，最低需要 ~130px 内容区。 */
+    :root { --sidebar-w: 240px; --inputbar-h: 150px; }
     .messages { padding: var(--sp-4) var(--sp-5); }
     .inputbar { padding: var(--sp-3) var(--sp-4) var(--sp-3); }
-    .inputbar-side { width: 180px; }
+    .inputbar-side { width: 240px; grid-template-columns: 1fr 64px; }
     .sessions-table { padding: var(--sp-4) var(--sp-5) var(--sp-3); }
     .sessions-table-tbl .col-count { display: none; }
 }
 
 @media (max-width: 768px) {
-    :root { --sidebar-w: 200px; }
+    :root { --sidebar-w: 200px; --inputbar-h: 140px; }
     .topbar-meta { display: none; }
-    .inputbar-side { width: 140px; }
+    .inputbar-side { width: 200px; grid-template-columns: 1fr 56px; }
     .inputbar-hint { display: none; }
+    .inputbar-stat { font-size: 12px; gap: 0; padding: var(--sp-1) var(--sp-1); }
     .sessions-table-tbl .col-time { width: 110px; }
     .sessions-table-tbl .col-name { font-size: var(--fs-xs); }
+}
+
+/* ---- Step 4: System Prompt 可观测性样式 ---- */
+
+/* SP 状态栏 stat：与 inputbar-stat 风格一致，但带 hover tooltip */
+#sp-stat {
+    position: relative;
+    cursor: help;
+}
+
+#sp-tokens {
+    font-variant-numeric: tabular-nums;
+}
+
+/* SP 4 层 token 小计 tooltip：默认 hidden，悬停时显示 */
+#sp-stat:hover .sp-breakdown,
+#sp-stat:focus-within .sp-breakdown {
+    display: block;
+}
+
+.sp-breakdown {
+    display: none;
+    position: absolute;
+    bottom: calc(100% + 8px);
+    right: 0;
+    min-width: 200px;
+    padding: 10px 12px;
+    background: var(--bg-elevated, #1a1a1c);
+    border: 1px solid var(--border, #2a2a2e);
+    border-radius: 6px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+    font-size: var(--fs-xs, 11px);
+    color: var(--fg, #e5e5e7);
+    z-index: 100;
+    pointer-events: none;
+    white-space: nowrap;
+}
+
+.sp-breakdown-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+    line-height: 1.6;
+}
+
+.sp-breakdown-name {
+    color: var(--fg-dim, #8a8a92);
+}
+
+.sp-breakdown-tokens {
+    color: var(--accent, #C8A96A);
+    font-variant-numeric: tabular-nums;
+}
+
+.sp-breakdown-total {
+    margin-top: 6px;
+    padding-top: 6px;
+    border-top: 1px solid var(--border, #2a2a2e);
+    font-weight: 600;
+}
+
+/* 开发者模式面板（隐藏在右下角的小入口，本步骤先做固定入口） */
+.dev-panel {
+    position: fixed;
+    right: 20px;
+    bottom: 20px;
+    background: var(--bg-elevated, #1a1a1c);
+    border: 1px solid var(--border, #2a2a2e);
+    border-radius: 8px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+    z-index: 90;
+    min-width: 220px;
+    font-size: var(--fs-xs, 12px);
+}
+
+.dev-panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border, #2a2a2e);
+}
+
+.dev-panel-title {
+    font-weight: 600;
+    color: var(--fg, #e5e5e7);
+}
+
+.dev-panel-close {
+    background: transparent;
+    border: none;
+    color: var(--fg-dim, #8a8a92);
+    cursor: pointer;
+    font-size: 18px;
+    line-height: 1;
+    padding: 0 4px;
+}
+
+.dev-panel-close:hover {
+    color: var(--fg, #e5e5e7);
+}
+
+.dev-panel-body {
+    padding: 12px 14px;
+}
+
+.dev-panel-btn {
+    width: 100%;
+    padding: 8px 12px;
+    background: var(--accent, #C8A96A);
+    color: var(--bg, #0a0a0b);
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: var(--fs-xs, 12px);
+    font-weight: 600;
+    transition: opacity 0.15s ease;
+}
+
+.dev-panel-btn:hover {
+    opacity: 0.85;
+}
+
+/* SP 导出模态框 */
+.sp-modal {
+    position: fixed;
+    inset: 0;
+    z-index: 200;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+/* 修复:display:flex 会覆盖 HTML hidden 属性的默认 display:none,
+   需用更高特异性的 [hidden] 选择器让 hidden 属性真正生效。
+   根因:不写这条规则时,即使 JS 设置 dom.spModal.hidden = true,
+   模态框仍以 display:flex 状态可见,导致"打开UI就弹窗+关闭按钮无效"。 */
+.sp-modal[hidden] {
+    display: none;
+}
+
+.sp-modal-backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.6);
+    backdrop-filter: blur(2px);
+}
+
+.sp-modal-inner {
+    position: relative;
+    background: var(--bg-elevated, #1a1a1c);
+    border: 1px solid var(--border, #2a2a2e);
+    border-radius: 10px;
+    max-width: 720px;
+    width: calc(100vw - 40px);
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+}
+
+.sp-modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border, #2a2a2e);
+}
+
+.sp-modal-title {
+    font-weight: 600;
+    font-size: var(--fs-sm, 13px);
+    color: var(--fg, #e5e5e7);
+}
+
+.sp-modal-close {
+    background: transparent;
+    border: none;
+    color: var(--fg-dim, #8a8a92);
+    cursor: pointer;
+    font-size: 20px;
+    line-height: 1;
+}
+
+.sp-modal-close:hover {
+    color: var(--fg, #e5e5e7);
+}
+
+.sp-modal-body {
+    padding: 16px 18px;
+    overflow-y: auto;
+    flex: 1;
+}
+
+.sp-modal-summary {
+    color: var(--fg-dim, #8a8a92);
+    font-size: var(--fs-xs, 11px);
+    margin-bottom: 12px;
+}
+
+.sp-modal-summary strong {
+    color: var(--accent, #C8A96A);
+}
+
+.sp-modal-section {
+    margin-bottom: 10px;
+    border: 1px solid var(--border, #2a2a2e);
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+.sp-modal-section summary {
+    padding: 8px 12px;
+    background: var(--bg, #0a0a0b);
+    cursor: pointer;
+    font-weight: 500;
+    font-size: var(--fs-xs, 12px);
+    color: var(--fg, #e5e5e7);
+    user-select: none;
+}
+
+.sp-modal-section summary:hover {
+    background: var(--bg-hover, #15151a);
+}
+
+.sp-modal-text {
+    margin: 0;
+    padding: 12px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--fg-dim, #a0a0a8);
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 320px;
+    overflow-y: auto;
+    background: var(--bg, #0a0a0b);
 }

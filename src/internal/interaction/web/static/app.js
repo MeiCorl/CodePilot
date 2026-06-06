@@ -26,6 +26,19 @@
         ctxPercent:     $('ctx-percent'),
         ctxBar:         null,            // 渲染时按需创建
         sendBtn:        $('send-btn'),
+        // Step 4：System Prompt 可观测性
+        spTokens:       $('sp-tokens'),
+        spBreakdown:    $('sp-breakdown'),
+        // Step 4：开发者模式面板
+        devPanel:       $('dev-panel'),
+        devExportBtn:   $('dev-export-sp-btn'),
+        devPanelClose:  $('dev-panel-close'),
+        // Step 4：SP 导出模态框
+        spModal:        $('sp-modal'),
+        spModalSummary: $('sp-modal-summary'),
+        spModalSystem:  $('sp-modal-system'),
+        spModalLead:    $('sp-modal-lead'),
+        spModalStats:   $('sp-modal-stats'),
     };
 
     // ---- 全局状态 ----
@@ -181,11 +194,23 @@
         ContextUsage:      'context_usage',
         ToolCallStart:     'tool_call_start',
         ToolCallEnd:       'tool_call_end',
+        DevExportSP:       'dev_export_sp',
     };
 
     // abortMarker 与后端 agent_loop.go 中的 abortMarker 常量保持一致，
     // 用于用户主动取消回复时的视觉标记文本
     const abortMarker = '[用户取消了回复]';
+
+    // escapeHtml 把字符串中的 & < > " ' 转义为 HTML 实体，避免
+    // 把后端返回的 Source 名称当作 HTML 解释（XSS 防护）。
+    function escapeHtml(s) {
+        return String(s)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
 
     // ---- 工具名 → 短缩写（图标方块字符）。未知工具回退到 '⚙' ----
     const TOOL_ICON = {
@@ -222,6 +247,7 @@
             case MsgType.ContextUsage:    return onContextUsage(msg.payload);
             case MsgType.ToolCallStart:   return onToolCallStart(msg.payload);
             case MsgType.ToolCallEnd:     return onToolCallEnd(msg.payload);
+            case MsgType.DevExportSP:     return onDevExportSP(msg.payload);
             default: console.warn('未知消息类型:', msg.type, msg.payload);
         }
     }
@@ -330,6 +356,87 @@
         state.ctx.limit = p.limit || 100;
         state.ctx.percentLeft = p.percent_left ?? 100;
         renderCtxBar();
+        // Step 4：System Prompt token 可观测性
+        renderSPInfo(p);
+    }
+
+    // ---- Step 4: System Prompt 可观测性 ----
+
+    // renderSPInfo 渲染状态栏 SP 区域 + 4 层小计 tooltip。
+    //
+    // 行为：
+    //   1. 显示 SP 总 token 数（sp_total_tokens），0 时显示 "--"
+    //   2. 鼠标悬停时弹出 4 行小计（按 Source 顺序展示）
+    function renderSPInfo(p) {
+        if (!dom.spTokens) return;
+        const total = p.sp_total_tokens || 0;
+        dom.spTokens.textContent = total > 0 ? formatTokenCount(total) : '--';
+
+        if (!dom.spBreakdown) return;
+        const breakdown = Array.isArray(p.sp_breakdown) ? p.sp_breakdown : [];
+        if (breakdown.length === 0) {
+            dom.spBreakdown.innerHTML = '<div class="sp-breakdown-row"><span class="sp-breakdown-name">（无）</span></div>';
+            return;
+        }
+        const rows = breakdown.map(s => {
+            const name = escapeHtml(s.name || '');
+            const tokens = s.tokens || 0;
+            return `<div class="sp-breakdown-row"><span class="sp-breakdown-name">${name}</span><span class="sp-breakdown-tokens">${formatTokenCount(tokens)}</span></div>`;
+        }).join('');
+        dom.spBreakdown.innerHTML = rows +
+            `<div class="sp-breakdown-row sp-breakdown-total"><span class="sp-breakdown-name">total</span><span class="sp-breakdown-tokens">${formatTokenCount(total)}</span></div>`;
+    }
+
+    // formatTokenCount 把 1500 显示为 "1.5k"，15000 显示为 "15k"；
+    // 1000 以下原样输出。状态栏空间有限，需要紧凑表示。
+    function formatTokenCount(n) {
+        if (typeof n !== 'number' || n <= 0) return '0';
+        if (n < 1000) return String(n);
+        if (n < 10000) return (n / 1000).toFixed(1) + 'k';
+        return Math.round(n / 1000) + 'k';
+    }
+
+    // onDevExportSP 处理后端推送的 dev_export_sp 响应，渲染到模态框中。
+    function onDevExportSP(p) {
+        if (!p) return;
+        const total = p.total_tokens || 0;
+        const blocks = Array.isArray(p.system_blocks) ? p.system_blocks : [];
+        const stats = Array.isArray(p.stats) ? p.stats : [];
+        const lead = p.lead_user_message || '';
+
+        if (dom.spModalSummary) {
+            dom.spModalSummary.innerHTML = `共 <strong>${blocks.length}</strong> 段 system 字段 · <strong>${total}</strong> tokens${lead ? ' · 含首条 user 消息' : ''}`;
+        }
+        if (dom.spModalSystem) {
+            dom.spModalSystem.textContent = blocks.length > 0
+                ? blocks.map((b, i) => `--- [${i + 1}] ---\n${b}`).join('\n\n')
+                : '（空）';
+        }
+        if (dom.spModalLead) {
+            dom.spModalLead.textContent = lead || '（空）';
+        }
+        if (dom.spModalStats) {
+            dom.spModalStats.textContent = stats.length > 0
+                ? stats.map(s => `${s.name}: ${s.tokens}`).join('\n')
+                : '（空）';
+        }
+        if (dom.spModal) {
+            dom.spModal.hidden = false;
+        }
+    }
+
+    // 关闭 SP 模态框（点击 backdrop 或关闭按钮触发）
+    function closeSPModal() {
+        if (dom.spModal) {
+            dom.spModal.hidden = true;
+        }
+    }
+
+    // toggleDevPanel 切换开发者面板显示。
+    function toggleDevPanel(force) {
+        if (!dom.devPanel) return;
+        const next = (force === undefined) ? !dom.devPanel.hidden : force;
+        dom.devPanel.hidden = !next;
     }
 
     // ---- 工具消息：开始 / 结束事件 ----
@@ -1557,6 +1664,36 @@
         });
     }
 
+    // bindDevPanel 绑定开发者面板按钮事件。
+    //
+    // 触发方式：
+    //   1. SP 状态栏双击（dblclick）→ 切换 dev 面板
+    //   2. dev 面板内「Export SP」→ 发送 dev_export_sp 请求
+    //   3. dev 面板关闭按钮 → 隐藏面板
+    //   4. SP 模态框 backdrop / 关闭按钮 → 关闭模态
+    function bindDevPanel() {
+        // 双击 SP 区域打开/关闭开发者面板
+        if (dom.spTokens && dom.spTokens.parentElement) {
+            dom.spTokens.parentElement.addEventListener('dblclick', () => {
+                toggleDevPanel();
+            });
+        }
+        if (dom.devPanelClose) {
+            dom.devPanelClose.addEventListener('click', () => toggleDevPanel(false));
+        }
+        if (dom.devExportBtn) {
+            dom.devExportBtn.addEventListener('click', () => {
+                // 触发服务端导出；响应通过 onDevExportSP 接收
+                sendWS(MsgType.DevExportSP, {});
+            });
+        }
+        if (dom.spModal) {
+            dom.spModal.querySelectorAll('[data-sp-modal-close]').forEach(el => {
+                el.addEventListener('click', closeSPModal);
+            });
+        }
+    }
+
     function showLoading(text) {
         const t = dom.loading.querySelector('.loading-text');
         if (t && text) t.textContent = text;
@@ -1580,6 +1717,7 @@
         bindGlobalKeys();
         bindNewSessionBtn();
         bindScrollWatcher();
+        bindDevPanel();
         // 初始状态
         renderSendButton();
         renderEmptyState();

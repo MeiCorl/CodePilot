@@ -22,6 +22,11 @@ import (
 // 它持有完整对话历史（history，唯一真相源），并通过 SlidingWindow 派生出
 // 发送给 LLM 的窗口视图。完整历史可通过 AllMessages 获取用于持久化归档，
 // 不受窗口裁剪影响，从而避免持久化时丢失超窗的早期消息。
+//
+// Step 4 新增：leadUserMessage 字段用于保存「首条 user 消息」内容（通常
+// 来自 prompt.Builder 的 AGENTS.md 合并结果）。它在 history 之外单独持有，
+// 由 GetContext 在窗口派生后、对外暴露前拼接到 messages 最前，从而天然
+// 处于滑动窗口裁剪的保护区之外（窗口只对 history 起作用）。
 type ConversationManager struct {
 	// window 为滑动窗口策略，基于完整历史派生 LLM 上下文视图（无状态，不持有消息）
 	window *memctx.SlidingWindow
@@ -31,6 +36,10 @@ type ConversationManager struct {
 	// 用于计算上下文窗口剩余额度：remaining = context_window_size - lastInputTokens。
 	// 为 0 时表示尚无 LLM 调用（首次调用前、会话恢复后），需降级到字符估算。
 	lastInputTokens int
+	// leadUserMessage 为会话级「首条 user 消息」内容。
+	// 通常由 prompt.Builder 的 AGENTS.md Source 注入；空字符串时 GetContext
+	// 不构造空消息。
+	leadUserMessage string
 }
 
 // NewConversationManager 创建一个对话管理器。
@@ -40,6 +49,44 @@ func NewConversationManager(maxRounds int) *ConversationManager {
 		window:  memctx.NewSlidingWindow(maxRounds),
 		history: make([]llm.Message, 0),
 	}
+}
+
+// SetLeadUserMessage 设置会话级「首条 user 消息」内容。
+// 应在会话启动时调用一次（典型时机：handler.NewSession / ResumeSession 内部
+// 从 prompt.Builder 拿到组装结果后调用）；同会话内多次调用以最后一次为准。
+//
+// lead 非空时，GetContext 会在窗口派生结果的最前追加一条 Role=User 的消息，
+// 该消息同时会被 runOneLLM 透传给 Provider.StreamChat 作为 LeadUserMessage。
+// lead 为空字符串时清除已设置的内容（下次 GetContext 不再追加）。
+func (m *ConversationManager) SetLeadUserMessage(text string) {
+	m.leadUserMessage = text
+}
+
+// LeadUserMessage 返回当前设置的「首条 user 消息」内容。
+// 用于 WebUI 可观测性展示（状态栏 tooltip、开发者模式导出）。
+func (m *ConversationManager) LeadUserMessage() string {
+	return m.leadUserMessage
+}
+
+// IsLeadUserMessage 判断 GetContext 返回的 messages 切片中索引 idx
+// 处的消息是否为「首条 user 消息」。
+//
+// 返回 true 的条件（同时满足）：
+//  1. leadUserMessage 非空
+//  2. idx == 0（首条）
+//  3. idx 在切片范围内
+//
+// 返回 false 的场景：
+//   - lead 未设置
+//   - idx 越界
+//   - idx == 0 但切片为空（防御性）
+//
+// 该方法主要用于单元测试断言与外部代码做语义判定；不参与流式逻辑。
+func (m *ConversationManager) IsLeadUserMessage(idx int) bool {
+	if m.leadUserMessage == "" {
+		return false
+	}
+	return idx == 0
 }
 
 // AddUserMessage 添加一条用户消息到完整对话历史。
@@ -80,10 +127,32 @@ func (m *ConversationManager) Reset(messages []llm.Message) {
 }
 
 // GetContext 返回发送给 LLM 的上下文窗口视图。
-// systemPrompt 作为第一条 System 消息固定在最前，其余为滑动窗口派生的最近 N 轮对话。
+//
+// 视图组成（Step 4 起）：
+//  1. 可选的首条 user 消息（leadUserMessage），来自 SetLeadUserMessage；
+//     通常包含 AGENTS.md 合并结果 + Step 8 自动记忆
+//  2. 滑动窗口派生的最近 N 轮对话（基于完整 history）
+//
+// 重要：返回结果**不**包含 system 字段消息——system 字段已迁移到
+// llm.SystemPrompt（由 StreamChat 的 sp 参数携带），不在 messages 内。
+//
 // 注意：返回结果是经过窗口裁剪的视图，不一定是完整历史；持久化请使用 AllMessages。
-func (m *ConversationManager) GetContext(systemPrompt string) []llm.Message {
-	return m.window.View(m.history, systemPrompt)
+// leadUserMessage 也不会出现在 AllMessages 中（它由 SetLeadUserMessage 单独管理）。
+func (m *ConversationManager) GetContext() []llm.Message {
+	// 1. 滑动窗口派生（不传 systemPrompt，让 View 不构造 system 消息）
+	windowed := m.window.View(m.history, "")
+
+	// 2. 拼接 lead user message（如果存在）到最前
+	if m.leadUserMessage == "" {
+		return windowed
+	}
+	out := make([]llm.Message, 0, len(windowed)+1)
+	out = append(out, llm.Message{
+		Role:    llm.RoleUser,
+		Content: []llm.ContentBlock{llm.NewTextBlock(m.leadUserMessage)},
+	})
+	out = append(out, windowed...)
+	return out
 }
 
 // AllMessages 返回完整对话历史的副本，用于会话持久化归档。
@@ -99,8 +168,9 @@ func (m *ConversationManager) AllMessages() []llm.Message {
 // 采用粗估策略：文本按字符类型估算 + 每条消息固定结构开销 + 工具定义开销。
 // 不需要精确，仅用于状态栏展示和溢出保护参考，但需要比纯文本估算更接近真实值。
 // 注意：此处基于窗口视图（而非完整历史）估算，反映的是实际发送给 LLM 的上下文量。
+// Step 4 起：会把 leadUserMessage 计入（它也是发送给 LLM 的实际内容之一）。
 func (m *ConversationManager) TokenEstimate() int {
-	messages := m.GetContext("")
+	messages := m.GetContext()
 	totalTokens := 0
 
 	// 1. 每条消息的基础结构开销（role 标签、JSON 格式化、消息边界标记等）
@@ -320,10 +390,13 @@ type TurnResult struct {
 // 当 AgentLoopConfig 未指定时，默认使用 MaxIterations=25 的循环配置。
 // 并发约束：RunTurn 直接读写 history，调用方需保证同一时刻只有一个
 // RunTurn 活跃（实际由 web/handler 的 streamState 状态机串行化）。
+//
+// Step 4 起：systemPrompt 升级为 llm.SystemPrompt，调用方传 nil 时回退到
+// buildSystemPromptFromString 构造的空 SP（保持旧版调用兼容）。
 func (m *ConversationManager) RunTurn(
 	ctx context.Context,
 	provider llm.Provider,
-	systemPrompt string,
+	sp llm.SystemPrompt,
 	toolSpecs []tool.ToolSpec,
 	toolHandler *ToolHandler,
 	hooks TurnHooks,
@@ -332,7 +405,7 @@ func (m *ConversationManager) RunTurn(
 	historyBefore := len(m.history)
 
 	// 委托给 AgentLoop，使用默认配置
-	loopResult := m.AgentLoop(ctx, provider, systemPrompt, toolSpecs, toolHandler,
+	loopResult := m.AgentLoop(ctx, provider, sp, toolSpecs, toolHandler,
 		AgentLoopConfig{
 			MaxIterations: 25,
 		},
@@ -373,16 +446,18 @@ func (m *ConversationManager) RunTurn(
 //   - 支持配置 MaxIterations、ContextSafetyMargin、ContextWindowSize
 //   - 支持 OnIterationStart / OnLoopDone 回调
 //   - 返回 AgentLoopResult（含 Iterations、TotalToolCalls、StopReason）
+//
+// Step 4 起：systemPrompt 升级为 llm.SystemPrompt 结构体。
 func (m *ConversationManager) RunAgentLoop(
 	ctx context.Context,
 	provider llm.Provider,
-	systemPrompt string,
+	sp llm.SystemPrompt,
 	toolSpecs []tool.ToolSpec,
 	toolHandler *ToolHandler,
 	cfg AgentLoopConfig,
 	hooks AgentLoopHooks,
 ) AgentLoopResult {
-	return m.AgentLoop(ctx, provider, systemPrompt, toolSpecs, toolHandler, cfg, hooks)
+	return m.AgentLoop(ctx, provider, sp, toolSpecs, toolHandler, cfg, hooks)
 }
 
 // RunOneTurnResult 是 runOneLLM 的内部返回值，描述单次 LLM 流式调用的结果。
@@ -417,15 +492,19 @@ func (r RunOneTurnResult) FirstToolUse() *llm.ToolUseBlock {
 //
 // 不修改 history；返回累积的文本与 ToolUses 供上层决策下一步。
 // 通过 hooks.OnStreamChunk 把每个 chunk 推给上层（含 Done=true 的结束 chunk）。
+//
+// Step 4 起：sp 已经是结构化的 llm.SystemPrompt，Provider 据此构造 system
+// 字段与首条 user 消息；LeadUserMessage 由 ConversationManager 内部管理
+// （SetLeadUserMessage 设置后由 GetContext 自动拼到 messages 最前）。
 func (m *ConversationManager) runOneLLM(
 	ctx context.Context,
 	provider llm.Provider,
-	systemPrompt string,
+	sp llm.SystemPrompt,
 	toolSpecs []tool.ToolSpec,
 	hooks TurnHooks,
 ) RunOneTurnResult {
-	messages := m.GetContext(systemPrompt)
-	chunkCh, err := provider.StreamChat(ctx, systemPrompt, messages, toolSpecs)
+	messages := m.GetContext()
+	chunkCh, err := provider.StreamChat(ctx, sp, messages, toolSpecs)
 	if err != nil {
 		if hooks.OnError != nil {
 			hooks.OnError(err)
@@ -491,5 +570,29 @@ func (m *ConversationManager) runOneLLM(
 				return RunOneTurnResult{Text: string(textBuf), ToolUses: toolUses, Usage: usage, Aborted: aborted}
 			}
 		}
+	}
+}
+
+// ---- Step 4 辅助：把字符串形式的 system prompt 封装为 SystemPrompt ----
+
+// buildSystemPromptFromString 把 string 形式的 system prompt 封装为 llm.SystemPrompt。
+//
+// 这是 Step 4 改造期的过渡辅助：AgentLoop / RunTurn 等 API 表面仍接受
+// systemPrompt string（避免大幅签名改动），runOneLLM 内部用本函数把字符串
+// 转成单段可缓存的 SystemPrompt 结构。
+//
+// 未来 Task 6 接入主流程时，会改为接收 prompt.Builder.Assemble 的产物，
+// 该函数将被废弃（保留作为兜底兼容路径）。
+//
+// 为空字符串时返回零值 SystemPrompt（IsEmpty=true），Provider 据此跳过
+// system 字段构造。
+func buildSystemPromptFromString(systemPrompt string) llm.SystemPrompt {
+	if systemPrompt == "" {
+		return llm.SystemPrompt{}
+	}
+	return llm.SystemPrompt{
+		SystemBlocks: []llm.SystemBlock{
+			{Text: systemPrompt, Cacheable: true},
+		},
 	}
 }

@@ -3,15 +3,19 @@ package web
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"runtime/debug"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 	"go.uber.org/zap"
 
 	"github.com/MeiCorl/CodePilot/src/internal/config"
 	"github.com/MeiCorl/CodePilot/src/internal/engine/conversation"
+	"github.com/MeiCorl/CodePilot/src/internal/engine/prompt"
+	"github.com/MeiCorl/CodePilot/src/internal/engine/prompt/sources"
 	"github.com/MeiCorl/CodePilot/src/internal/logger"
 	"github.com/MeiCorl/CodePilot/src/internal/memory/session"
 	"github.com/MeiCorl/CodePilot/src/llm"
@@ -33,16 +37,22 @@ const defaultContextWindowSize = 200000
 //     过滤后转 []tool.ToolSpec 注入 Provider；
 //   - toolHandler 负责 LLM 触发的 tool_use 实际执行，并通过 OnStart/OnEnd
 //     把开始/结束事件外推为 tool_call_start / tool_call_end WebSocket 消息。
+//
+// Step 4 在此基础上接入 prompt.Builder：
+//   - sp 字段缓存当前活跃会话对应的 llm.SystemPrompt 组装结果（同一会话内不变）
+//   - promptBuilder 持有 Builder 实例；assembleSP 每次「切换会话」时调用一次并刷新缓存
+//   - runStream 透传 sp 给 Provider.streamChat，Anthropic 协议据此打 cache_control
 type Handler struct {
-	provider           llm.Provider
-	sessMgr            *session.SessionManager
-	cfg                *config.Config
-	conv               *conversation.ConversationManager
-	systemPrompt       string
-	contextWindowSize  int
-	workdir            string
-	registry           *tool.Registry
-	toolHandler        *conversation.ToolHandler
+	provider          llm.Provider
+	sessMgr           *session.SessionManager
+	cfg               *config.Config
+	conv              *conversation.ConversationManager
+	promptBuilder     *prompt.Builder
+	sp                llm.SystemPrompt
+	contextWindowSize int
+	workdir           string
+	registry          *tool.Registry
+	toolHandler       *conversation.ToolHandler
 
 	mu      sync.Mutex
 	current *session.Session
@@ -61,12 +71,13 @@ type Handler struct {
 // workdir 启动时获取，会随 session_loaded 透传给前端。
 // registry 为 nil 时 RunTurn 不会携带任何工具描述（与未启用工具等价）；
 // toolHandler 为 nil 时 RunTurn 仍可工作（无 tool_use 分发能力，LLM 不会调工具）。
+// promptBuilder 负责 System Prompt 的组装；为 nil 时降级为空 SP（不构造 system、首条 user 消息）。
 func NewHandler(
 	provider llm.Provider,
 	sessMgr *session.SessionManager,
 	cfg *config.Config,
 	maxRounds int,
-	systemPrompt string,
+	promptBuilder *prompt.Builder,
 	contextWindowSize int,
 	workdir string,
 	registry *tool.Registry,
@@ -80,7 +91,7 @@ func NewHandler(
 		sessMgr:           sessMgr,
 		cfg:               cfg,
 		conv:              conversation.NewConversationManager(maxRounds),
-		systemPrompt:      systemPrompt,
+		promptBuilder:     promptBuilder,
 		contextWindowSize: contextWindowSize,
 		workdir:           workdir,
 		registry:          registry,
@@ -97,7 +108,44 @@ func NewHandler(
 	} else {
 		h.current = sessMgr.CreateNew()
 	}
+	// 初次组装 System Prompt（同一会话内复用，避免每次 LLM 调用都重新 assemble）
+	h.assembleSP()
 	return h
+}
+
+// assembleSP 重新调用 prompt.Builder.Assemble 并把结果缓存到 h.sp。
+//
+// 调用时机：
+//  1. NewHandler 构造时
+//  2. handleNewSession 创建新会话后
+//  3. handleResumeSession 恢复历史会话后
+//  4. handleClearSession 清空当前会话后
+//  5. handleDeleteSession 切换当前会话后
+//
+// 失败时降级为零值 SystemPrompt（不向上抛，避免阻塞会话流程）。
+// 同时把 LeadUserMessage 注入到 ConversationManager，确保 runStream 透传。
+func (h *Handler) assembleSP() {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	env := buildSPEnv(h.cfg, h.workdir)
+	if h.promptBuilder == nil {
+		// 无 builder：清空 SP 与 lead
+		h.sp = llm.SystemPrompt{}
+		h.conv.SetLeadUserMessage("")
+		return
+	}
+	sp, err := h.promptBuilder.Assemble(ctx, env)
+	if err != nil {
+		logger.Warn("System Prompt 组装失败，使用空 SP 降级", zap.Error(err))
+		h.sp = llm.SystemPrompt{}
+		h.conv.SetLeadUserMessage("")
+		return
+	}
+	// 转换为 llm.SystemPrompt 并缓存
+	h.sp = convertToLLMSystemPrompt(sp)
+	// 把 LeadUserMessage 注入 ConversationManager，让 GetContext 拼到 messages 最前
+	h.conv.SetLeadUserMessage(sp.LeadUserMessage)
 }
 
 // Register 把所有业务 handler 注册到给定 router。
@@ -110,6 +158,7 @@ func (h *Handler) Register(router *Router) {
 	router.Register(MsgTypeGetCurrentSession, h.handleGetCurrentSession)
 	router.Register(MsgTypeClearSession, h.handleClearSession)
 	router.Register(MsgTypeDeleteSession, h.handleDeleteSession)
+	router.Register(MsgTypeDevExportSP, h.handleDevExportSP)
 }
 
 // ModelName 返回当前配置中的模型名，供状态栏展示。
@@ -296,7 +345,7 @@ func (h *Handler) runStream(ctx context.Context, conn *websocket.Conn) {
 		}
 	}
 
-	result := h.conv.RunAgentLoop(ctx, h.provider, h.systemPrompt, toolSpecs, h.toolHandler, loopCfg, loopHooks)
+	result := h.conv.RunAgentLoop(ctx, h.provider, h.sp, toolSpecs, h.toolHandler, loopCfg, loopHooks)
 
 	// 将 AgentLoopResult.StopReason 映射为前端 stream_done 的 reason 字符串
 	reason := mapStopReason(result.StopReason)
@@ -392,9 +441,12 @@ func (h *Handler) handleNewSession(conn *websocket.Conn, msg Message) error {
 	}
 	h.current = h.sessMgr.CreateNew()
 	h.conv.Reset(nil)
+	// 新会话触发 SP 重新组装（虽然 result 通常一致，但保持与切换路径一致的处理）
+	h.assembleSP()
 	// 刷新前端 ctx left 显示：新会话无历史，remaining 应回到 ~100%
 	// 注意：此处已持有 h.mu，必须使用 Locked 版本避免死锁
-	_ = h.sendContextUsageLocked(conn, h.conv.GetContextUsage(h.contextWindowSize))
+	usage := h.conv.GetContextUsage(h.contextWindowSize)
+	_ = h.sendContextUsageLocked(conn, usage, h.sp)
 	return h.sendSessionLoaded(conn, h.current)
 }
 
@@ -410,13 +462,16 @@ func (h *Handler) handleClearSession(conn *websocket.Conn, msg Message) error {
 	}
 	h.current.Messages = nil
 	h.conv.Reset(nil)
+	// 清空也触发 SP 重新组装（与切换会话路径保持一致语义）
+	h.assembleSP()
 	// 覆盖写一份空会话，让历史列表预览/计数也同步清零
 	if err := h.sessMgr.Save(h.current); err != nil {
 		logger.Warn("保存清空后的会话失败", zap.Error(err))
 	}
 	// 刷新前端 ctx left 显示：清空后历史为空，remaining 应回到 ~100%
 	// 注意：此处已持有 h.mu，必须使用 Locked 版本避免死锁
-	_ = h.sendContextUsageLocked(conn, h.conv.GetContextUsage(h.contextWindowSize))
+	usage := h.conv.GetContextUsage(h.contextWindowSize)
+	_ = h.sendContextUsageLocked(conn, usage, h.sp)
 	return h.sendSessionLoaded(conn, h.current)
 }
 
@@ -465,6 +520,8 @@ func (h *Handler) handleResumeSession(conn *websocket.Conn, msg Message) error {
 	}
 	h.current = sess
 	h.conv.Reset(sess.Messages)
+	// 切换会话后重新组装 SP（确保与新会话上下文一致）
+	h.assembleSP()
 	h.mu.Unlock()
 
 	// 刷新前端 ctx left 显示：恢复会话后上下文用量已变
@@ -510,6 +567,8 @@ func (h *Handler) handleDeleteSession(conn *websocket.Conn, msg Message) error {
 		}
 		h.current = newCurrent
 		h.conv.Reset(newCurrent.Messages)
+		// 切换会话后重新组装 SP
+		h.assembleSP()
 	}
 	h.mu.Unlock()
 
@@ -530,6 +589,74 @@ func (h *Handler) handleDeleteSession(conn *websocket.Conn, msg Message) error {
 }
 
 // ---- 内部 send helper ----
+
+// handleDevExportSP 响应前端「导出 System Prompt」按钮（开发者模式）：
+// 把当前缓存的 sp 的完整结构（SystemBlocks 文本 + LeadUserMessage +
+// Stats + TotalTokens）以 dev_export_sp 消息回推，便于用户在浏览器
+// 检视/调试 SP 的组装结果。
+func (h *Handler) handleDevExportSP(conn *websocket.Conn, msg Message) error {
+	h.mu.Lock()
+	sp := h.sp
+	h.mu.Unlock()
+
+	// SystemBlocks 转 string 数组
+	systemTexts := make([]string, 0, len(sp.SystemBlocks))
+	for _, b := range sp.SystemBlocks {
+		systemTexts = append(systemTexts, b.Text)
+	}
+	// Stats 转结构体数组
+	stats := make([]SPSourceStat, 0, len(sp.Stats))
+	for _, s := range sp.Stats {
+		stats = append(stats, SPSourceStat{Name: s.Name, Tokens: s.Tokens})
+	}
+	return h.sendMessage(conn, MsgTypeDevExportSP, DevExportSPPayload{
+		SystemBlocks:   systemTexts,
+		LeadUserMessage: sp.LeadUserMessage,
+		Stats:          stats,
+		TotalTokens:    sp.TotalTokens,
+	})
+}
+
+// buildSPEnv 构造 prompt.Builder.Assemble 所需的 Env 输入。
+// 数据源：cfg + workdir + 进程启动时间 + VERSION。
+//
+// 注意：此函数内不做任何文件 / git 命令调用——所有「现场采集」由各 Source
+// 内部按需进行，handler 仅负责传最基础的静态字段。
+func buildSPEnv(cfg *config.Config, workdir string) sources.Env {
+	env := sources.Env{
+		OS:     runtime.GOOS,
+		CWD:    workdir,
+		Date:   time.Now().Format("2006-01-02"),
+		StaticOverrides: nil,
+	}
+	// 预留：未来 cfg 中可加 SystemPromptConfig.StaticOverrides 注入
+	return env
+}
+
+// convertToLLMSystemPrompt 把 prompt/sources 包产出的 SystemPrompt
+// 转换为 llm.SystemPrompt（Provider 接收的形态）。
+//
+// 两者结构体字段一致，浅拷贝即可；保留独立类型是为避免 prompt → llm 的
+// 循环依赖。
+func convertToLLMSystemPrompt(in sources.SystemPrompt) llm.SystemPrompt {
+	out := llm.SystemPrompt{
+		LeadUserMessage: in.LeadUserMessage,
+		TotalTokens:     in.TotalTokens,
+	}
+	if len(in.SystemBlocks) > 0 {
+		out.SystemBlocks = make([]llm.SystemBlock, len(in.SystemBlocks))
+		for i, b := range in.SystemBlocks {
+			out.SystemBlocks[i] = llm.SystemBlock{Text: b.Text, Cacheable: b.Cacheable}
+		}
+	}
+	if len(in.Stats) > 0 {
+		out.Stats = make([]llm.SourceStat, len(in.Stats))
+		for i, s := range in.Stats {
+			out.Stats[i] = llm.SourceStat{Name: s.Name, Tokens: s.Tokens}
+		}
+	}
+	return out
+}
 
 // sendMessage 编码并发送一条带 payload 的消息。
 // 内部通过 writeMu 串行化 WebSocket 写操作，防止多个 goroutine 并发写入
@@ -628,21 +755,37 @@ func (h *Handler) sendStatusUpdate(conn *websocket.Conn, status string) error {
 // sendContextUsage 发送当前上下文使用情况。
 // 通过 ConversationManager.GetContextUsage 获取统一的用量计算结果，
 // 转换为前端协议格式（PercentLeft = 100 - PercentUsed）后推送。
+// 同时携带 System Prompt 的总 token 数与各 Source 小计（Step 4 可观测性）。
 // sendContextUsage 推送上下文用量到前端（自动加锁版本，供未持锁的调用方使用）。
 func (h *Handler) sendContextUsage(conn *websocket.Conn) error {
 	h.mu.Lock()
 	usage := h.conv.GetContextUsage(h.contextWindowSize)
+	spSnapshot := h.sp
 	h.mu.Unlock()
-	return h.sendContextUsageLocked(conn, usage)
+	return h.sendContextUsageLocked(conn, usage, spSnapshot)
 }
 
 // sendContextUsageLocked 推送上下文用量到前端（无锁版本，供已持有 h.mu 的调用方使用）。
-func (h *Handler) sendContextUsageLocked(conn *websocket.Conn, usage conversation.ContextUsage) error {
-	return h.sendMessage(conn, MsgTypeContextUsage, ContextUsagePayload{
+// sp 为 System Prompt 快照，由调用方在持锁状态下从 h.sp 复制后传入，
+// 避免持锁状态下再访问 h.sp 引发竞态。
+func (h *Handler) sendContextUsageLocked(conn *websocket.Conn, usage conversation.ContextUsage, sp llm.SystemPrompt) error {
+	payload := ContextUsagePayload{
 		Used:        usage.Used,
 		Limit:       usage.Limit,
 		PercentLeft: 100 - usage.PercentUsed,
-	})
+	}
+	// Step 4 可观测性：携带 SP 总 token 与各 Source 小计
+	payload.SPTotalTokens = sp.TotalTokens
+	if len(sp.Stats) > 0 {
+		payload.SPBreakdown = make([]SPSourceStat, 0, len(sp.Stats))
+		for _, s := range sp.Stats {
+			payload.SPBreakdown = append(payload.SPBreakdown, SPSourceStat{
+				Name:   s.Name,
+				Tokens: s.Tokens,
+			})
+		}
+	}
+	return h.sendMessage(conn, MsgTypeContextUsage, payload)
 }
 
 // sendSessionLoaded 发送 session_loaded 消息（Step 2: 支持工具消息回放）。

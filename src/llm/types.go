@@ -166,3 +166,77 @@ func (c StreamChunk) FirstToolUse() *ToolUseBlock {
 	}
 	return &c.ToolUses[0]
 }
+
+// ---- Step 4: System Prompt 结构化 ----
+
+// SystemBlock 是进入 LLM 请求 system 字段的一段内容。
+//
+// Anthropic 协议下 SystemBlocks 会被进一步切片为多段带 cache_control 的内容：
+// Cacheable=true 的段会被打上 cache 标记，Cacheable=false 的段不会。
+// OpenAI 协议下所有 SystemBlock 会按顺序拼成单条 system-role 消息内容，
+// Cacheable 字段被忽略（OpenAI 不支持显式缓存控制，由服务端自动判定）。
+//
+// 顺序：SystemBlocks 内的元素顺序应与「来源注册顺序」一致——LLM 会按此顺序
+// 解析各段语义（角色设定 → 行为准则 → ...）。
+type SystemBlock struct {
+	// Text 为该段 system 内容的原文。
+	Text string
+	// Cacheable 表示该段是否可被 Anthropic 协议层标记为 cache 命中区。
+	// 几乎所有静态内容都应保持 true；只有每次请求都变的内容才设为 false。
+	Cacheable bool
+}
+
+// SourceStat 记录单个 Source 产出的内容在最终 System Prompt 中的
+// token 开销，用于 WebUI 状态栏展示与可观测性。
+type SourceStat struct {
+	// Name 对应 Source 标识（"static" / "environment" / "agents_md" / "memory"）。
+	Name string
+	// Tokens 为该 Source 贡献的 token 估算值。
+	Tokens int
+}
+
+// SystemPrompt 是 LLM Provider 接收的 System Prompt 结构化形态。
+//
+// 它是连接 prompt 模块（src/internal/engine/prompt）与 LLM Provider 之间的
+// 契约类型。prompt.Builder 的产物会经过简单的字段拷贝转换为本结构传给
+// Provider；定义在 llm 包中可避免「prompt → llm」反向依赖。
+//
+// 三类内容布局：
+//   - SystemBlocks: 进入 Anthropic `system` 字段的多段内容（可缓存）；
+//     OpenAI 协议下拼成单条 system-role 消息
+//   - LeadUserMessage: 作为首条 user-role 消息注入 messages（适合可能很长、
+//     动态更新的内容，如 AGENTS.md 合并结果、Step 8 自动记忆）
+//   - Stats / TotalTokens: 仅供 WebUI 可观测性展示，不影响 LLM 行为
+//
+// IsEmpty 在 Provider 收到空 SP 时用于跳过 system 字段构造的特殊场景。
+type SystemPrompt struct {
+	// SystemBlocks 为进入 LLM 请求 system 字段的内容段。
+	SystemBlocks []SystemBlock
+	// LeadUserMessage 为合并后的首条 user 消息。
+	// 当为空字符串时，Provider 不会创建空 user 消息。
+	LeadUserMessage string
+	// Stats 记录每个 Source 贡献的 token 数（WebUI 状态栏展示用）。
+	Stats []SourceStat
+	// TotalTokens 为所有 Source 产出 token 的累加值。
+	TotalTokens int
+}
+
+// IsEmpty 判定本 SystemPrompt 是否完全无内容。
+// 用于 Provider 在收到空 SP 时跳过 system 字段构造、首条 user 消息注入等操作。
+func (sp SystemPrompt) IsEmpty() bool {
+	return len(sp.SystemBlocks) == 0 && sp.LeadUserMessage == ""
+}
+
+// NewSystemPromptFromText 便捷构造函数：把单个字符串视为一段可缓存 system 内容。
+// 主要用于 Step 5 之前的过渡期调用点，以及测试中需要快速构造 SystemPrompt 的场景。
+// 真实使用应通过 prompt.Builder 产生完整结构。
+func NewSystemPromptFromText(text string) SystemPrompt {
+	if text == "" {
+		return SystemPrompt{}
+	}
+	return SystemPrompt{
+		SystemBlocks: []SystemBlock{
+			{Text: text, Cacheable: true},
+		},
+	}
+}

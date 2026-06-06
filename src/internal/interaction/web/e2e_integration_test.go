@@ -70,7 +70,7 @@ func newE2ERig(t *testing.T) (*websocket.Conn, func()) {
 	builtin.RegisterWithOptions(toolReg, workdir, bashTimeout)
 	toolHandler := conversation.NewToolHandler(toolReg, bashTimeout, workdir)
 
-	h := NewHandler(provider, sm, cfg, 10, "", 100000, workdir, toolReg, toolHandler)
+	h := NewHandler(provider, sm, cfg, 10, nil, 100000, workdir, toolReg, toolHandler)
 	s := NewServer("127.0.0.1:0")
 	h.Register(s.Router())
 	ts := httptest.NewServer(http.HandlerFunc(s.ConnectionManager().HandleWS))

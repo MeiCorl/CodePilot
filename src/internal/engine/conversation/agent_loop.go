@@ -87,10 +87,14 @@ type AgentLoopHooks struct {
 //  4. 达到上限或溢出时，注入提示消息后再调一次 LLM 获取最终回复
 //
 // 并发约束：与 RunTurn 一致，调用方需保证同一时刻只有一个 AgentLoop 活跃。
+//
+// Step 4 起：systemPrompt 升级为 llm.SystemPrompt（结构化形态），内含
+// SystemBlocks（Anthropic 可打 cache_control）与 LeadUserMessage（首条 user 消息）。
+// 调用方（web handler）应通过 prompt.Builder.Assemble 一次性构建并复用。
 func (m *ConversationManager) AgentLoop(
 	ctx context.Context,
 	provider llm.Provider,
-	systemPrompt string,
+	sp llm.SystemPrompt,
 	toolSpecs []tool.ToolSpec,
 	toolHandler *ToolHandler,
 	cfg AgentLoopConfig,
@@ -133,9 +137,9 @@ func (m *ConversationManager) AgentLoop(
 					zap.Int("safety_margin", cfg.ContextSafetyMargin),
 					zap.Int("iteration", iteration),
 				)
-				finalText = m.injectTerminationPrompt(ctx, provider, systemPrompt, toolSpecs, hooks,
+				finalText = m.injectTerminationPrompt(ctx, provider, sp, toolSpecs, hooks,
 					"上下文空间即将耗尽，请立即总结当前进展并用简洁的语言回复用户。不要再调用任何工具。")
-				finalText = m.ensureNonEmptyReply(ctx, provider, systemPrompt, toolSpecs, hooks, finalText)
+				finalText = m.ensureNonEmptyReply(ctx, provider, sp, toolSpecs, hooks, finalText)
 				result := AgentLoopResult{
 					FinalText:      finalText,
 					Iterations:     iteration,
@@ -148,7 +152,7 @@ func (m *ConversationManager) AgentLoop(
 		}
 
 		// ---- 发起 LLM 调用 ----
-		turnResult := m.runOneLLM(ctx, provider, systemPrompt, toolSpecs, hooks.TurnHooks)
+		turnResult := m.runOneLLM(ctx, provider, sp, toolSpecs, hooks.TurnHooks)
 
 		// 更新 token 用量（用于精确的上下文窗口剩余额度计算）
 		// 即使本次调用出错或被取消，usage 仍可能有值（部分 Provider 在中断前已返回）
@@ -199,7 +203,7 @@ func (m *ConversationManager) AgentLoop(
 					zap.Int("iteration", iteration),
 					zap.Int("total_tool_calls", totalToolCalls),
 				)
-				finalText = m.ensureNonEmptyReply(ctx, provider, systemPrompt, toolSpecs, hooks, finalText)
+				finalText = m.ensureNonEmptyReply(ctx, provider, sp, toolSpecs, hooks, finalText)
 			}
 			result := AgentLoopResult{
 				FinalText:      finalText,
@@ -249,9 +253,9 @@ func (m *ConversationManager) AgentLoop(
 		zap.Int("max_iterations", maxIter),
 		zap.Int("total_tool_calls", totalToolCalls),
 	)
-	finalText = m.injectTerminationPrompt(ctx, provider, systemPrompt, toolSpecs, hooks,
+	finalText = m.injectTerminationPrompt(ctx, provider, sp, toolSpecs, hooks,
 		fmt.Sprintf("已达到最大迭代次数限制（%d 次），请立即总结当前进展并回复用户。不要再调用任何工具。", maxIter))
-	finalText = m.ensureNonEmptyReply(ctx, provider, systemPrompt, toolSpecs, hooks, finalText)
+	finalText = m.ensureNonEmptyReply(ctx, provider, sp, toolSpecs, hooks, finalText)
 
 	result := AgentLoopResult{
 		FinalText:      finalText,
@@ -272,7 +276,7 @@ func (m *ConversationManager) AgentLoop(
 func (m *ConversationManager) injectTerminationPrompt(
 	ctx context.Context,
 	provider llm.Provider,
-	systemPrompt string,
+	sp llm.SystemPrompt,
 	toolSpecs []tool.ToolSpec,
 	hooks AgentLoopHooks,
 	promptText string,
@@ -281,7 +285,7 @@ func (m *ConversationManager) injectTerminationPrompt(
 	m.AddUserMessage(promptText)
 
 	// 不传工具描述，让模型只回复文本
-	finalTurn := m.runOneLLM(ctx, provider, systemPrompt, nil, hooks.TurnHooks)
+	finalTurn := m.runOneLLM(ctx, provider, sp, nil, hooks.TurnHooks)
 	if finalTurn.Err != nil {
 		logger.Error("终止提示 LLM 调用失败", zap.Error(finalTurn.Err))
 		return ""
@@ -301,7 +305,7 @@ func (m *ConversationManager) injectTerminationPrompt(
 func (m *ConversationManager) ensureNonEmptyReply(
 	ctx context.Context,
 	provider llm.Provider,
-	systemPrompt string,
+	sp llm.SystemPrompt,
 	toolSpecs []tool.ToolSpec,
 	hooks AgentLoopHooks,
 	currentFinalText string,
@@ -315,7 +319,7 @@ func (m *ConversationManager) ensureNonEmptyReply(
 	m.AddUserMessage("请总结你刚才完成的工作，用简洁的语言回复用户。")
 
 	// 不传工具，强制模型只回复文本
-	summarizeTurn := m.runOneLLM(ctx, provider, systemPrompt, nil, hooks.TurnHooks)
+	summarizeTurn := m.runOneLLM(ctx, provider, sp, nil, hooks.TurnHooks)
 	if summarizeTurn.Err != nil {
 		logger.Error("补充总结回复失败，使用兜底消息", zap.Error(summarizeTurn.Err))
 		fallback := "（任务已执行完成，但生成回复时遇到问题）"

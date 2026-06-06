@@ -19,7 +19,7 @@ import (
 func TestConversationManager_AddUserMessage(t *testing.T) {
 	m := NewConversationManager(5)
 	m.AddUserMessage("你好")
-	ctx := m.GetContext("")
+	ctx := m.GetContext()
 	if len(ctx) != 1 {
 		t.Fatalf("期望 1 条消息，实际 %d 条", len(ctx))
 	}
@@ -34,7 +34,7 @@ func TestConversationManager_AddUserMessage(t *testing.T) {
 func TestConversationManager_AddAssistantMessage(t *testing.T) {
 	m := NewConversationManager(5)
 	m.AddAssistantMessage("你好！有什么可以帮你的？")
-	ctx := m.GetContext("")
+	ctx := m.GetContext()
 	if len(ctx) != 1 {
 		t.Fatalf("期望 1 条消息，实际 %d 条", len(ctx))
 	}
@@ -47,7 +47,7 @@ func TestConversationManager_ContentBlockArray(t *testing.T) {
 	// 验证 AddUserMessage 构造的消息 Content 字段为 []ContentBlock
 	m := NewConversationManager(5)
 	m.AddUserMessage("hello")
-	ctx := m.GetContext("")
+	ctx := m.GetContext()
 	if len(ctx) != 1 {
 		t.Fatalf("期望 1 条消息")
 	}
@@ -63,17 +63,175 @@ func TestConversationManager_ContentBlockArray(t *testing.T) {
 	}
 }
 
-func TestConversationManager_GetContextWithSystemPrompt(t *testing.T) {
+// TestConversationManager_GetContextExcludesSystemPrompt 验证 GetContext 返回
+// 的消息序列不再包含 system 消息——system 字段在 Step 4 起被迁移到
+// llm.SystemPrompt（由 Provider.StreamChat 单独携带），不在 messages 内。
+// 这是行为变更：原 GetContext(systemPrompt) 会把 system 拼到 messages[0]，
+// 新版本 GetContext() 不再拼接；调用方应使用 SystemPrompt 传递 system 内容。
+func TestConversationManager_GetContextExcludesSystemPrompt(t *testing.T) {
 	m := NewConversationManager(5)
 	m.AddUserMessage("hello")
 	m.AddAssistantMessage("hi")
 
-	ctx := m.GetContext("你是一个助手")
-	if len(ctx) != 3 {
-		t.Fatalf("期望 3 条消息（system + 2），实际 %d 条", len(ctx))
+	ctx := m.GetContext()
+	// 仅 2 条 user/assistant 消息，不应包含 system 消息
+	if len(ctx) != 2 {
+		t.Fatalf("期望 2 条消息（user+assistant），实际 %d 条", len(ctx))
 	}
-	if ctx[0].Role != "system" {
-		t.Fatalf("第一条应为 system 角色")
+	if ctx[0].Role != "user" {
+		t.Fatalf("第一条应为 user 角色，实际为 %s", ctx[0].Role)
+	}
+}
+
+// ---- Step 4 — LeadUserMessage 保护测试 ----
+
+// TestConversationManager_LeadUserMessage_DefaultEmpty 验证新构造的 manager
+// 默认无 lead（GetContext 不构造空消息）。
+func TestConversationManager_LeadUserMessage_DefaultEmpty(t *testing.T) {
+	m := NewConversationManager(5)
+	m.AddUserMessage("hi")
+
+	if m.LeadUserMessage() != "" {
+		t.Errorf("默认 LeadUserMessage 应为空，实际: %q", m.LeadUserMessage())
+	}
+	if m.IsLeadUserMessage(0) {
+		t.Error("未设置 lead 时，IsLeadUserMessage(0) 应返回 false")
+	}
+
+	ctx := m.GetContext()
+	if len(ctx) != 1 {
+		t.Fatalf("无 lead 时应只有 1 条消息，实际 %d 条", len(ctx))
+	}
+}
+
+// TestConversationManager_LeadUserMessage_SetAndPrepend 验证 SetLeadUserMessage
+// 后 GetContext 在 messages 最前追加一条 user 消息，IsLeadUserMessage(0) 返回 true。
+func TestConversationManager_LeadUserMessage_SetAndPrepend(t *testing.T) {
+	m := NewConversationManager(5)
+	m.AddUserMessage("user1")
+	m.AddAssistantMessage("asst1")
+	m.SetLeadUserMessage("<project>AGENTS.md</project>")
+
+	if m.LeadUserMessage() != "<project>AGENTS.md</project>" {
+		t.Errorf("LeadUserMessage() = %q, 期望 lead 文本", m.LeadUserMessage())
+	}
+
+	ctx := m.GetContext()
+	if len(ctx) != 3 {
+		t.Fatalf("应有 3 条（lead + 2），实际 %d 条", len(ctx))
+	}
+	if !m.IsLeadUserMessage(0) {
+		t.Error("设置 lead 后，IsLeadUserMessage(0) 应返回 true")
+	}
+	if ctx[0].Role != "user" {
+		t.Errorf("lead 角色应为 user，实际: %s", ctx[0].Role)
+	}
+	if ctx[0].Content[0].ToText() != "<project>AGENTS.md</project>" {
+		t.Errorf("lead 内容不符: %q", ctx[0].Content[0].ToText())
+	}
+	// 后续消息保持原序
+	if ctx[1].Content[0].ToText() != "user1" {
+		t.Errorf("ctx[1] = %q, 期望 user1", ctx[1].Content[0].ToText())
+	}
+	if ctx[2].Content[0].ToText() != "asst1" {
+		t.Errorf("ctx[2] = %q, 期望 asst1", ctx[2].Content[0].ToText())
+	}
+}
+
+// TestConversationManager_LeadUserMessage_Clear 验证 SetLeadUserMessage("")
+// 可清除已设置的 lead，下次 GetContext 不再追加。
+func TestConversationManager_LeadUserMessage_Clear(t *testing.T) {
+	m := NewConversationManager(5)
+	m.AddUserMessage("hi")
+	m.SetLeadUserMessage("first lead")
+	m.SetLeadUserMessage("") // 清除
+
+	if m.LeadUserMessage() != "" {
+		t.Error("清空后 LeadUserMessage() 应返回空字符串")
+	}
+	if m.IsLeadUserMessage(0) {
+		t.Error("清空后 IsLeadUserMessage(0) 应返回 false")
+	}
+	ctx := m.GetContext()
+	if len(ctx) != 1 {
+		t.Fatalf("清空后应只有 1 条消息，实际 %d 条", len(ctx))
+	}
+}
+
+// TestConversationManager_LeadUserMessage_IsLeadBoundary 验证 IsLeadUserMessage
+// 的越界与多索引场景。
+func TestConversationManager_LeadUserMessage_IsLeadBoundary(t *testing.T) {
+	m := NewConversationManager(5)
+	m.AddUserMessage("u1")
+	m.AddAssistantMessage("a1")
+	m.AddUserMessage("u2")
+	m.SetLeadUserMessage("L")
+
+	// idx 0 是 lead
+	if !m.IsLeadUserMessage(0) {
+		t.Error("IsLeadUserMessage(0) 应为 true（lead 位置）")
+	}
+	// idx >= 1 不是 lead
+	if m.IsLeadUserMessage(1) {
+		t.Error("IsLeadUserMessage(1) 应为 false（user 消息，不是 lead）")
+	}
+	if m.IsLeadUserMessage(2) {
+		t.Error("IsLeadUserMessage(2) 应为 false（assistant 消息）")
+	}
+	// 越界
+	if m.IsLeadUserMessage(99) {
+		t.Error("越界索引应返回 false")
+	}
+}
+
+// TestConversationManager_LeadUserMessage_SurvivesSlidingWindow 验证 lead
+// 不受滑动窗口裁剪影响——即使 history 远超 maxRounds，lead 仍在 ctx[0]。
+//
+// 这是 Task 5 关键验收：AGENTS.md 等"首条 user 消息"必须在多轮对话中
+// 始终被发送给 LLM，否则模型会逐渐"遗忘"项目约定。
+func TestConversationManager_LeadUserMessage_SurvivesSlidingWindow(t *testing.T) {
+	const maxRounds = 3
+	const totalRounds = 20 // 远超 maxRounds，触发窗口裁剪
+	m := NewConversationManager(maxRounds)
+	m.SetLeadUserMessage("PROJECT_RULES: use spaces")
+
+	for i := 0; i < totalRounds; i++ {
+		m.AddUserMessage("u")
+		m.AddAssistantMessage("a")
+	}
+
+	ctx := m.GetContext()
+	// 期望：1 条 lead + maxRounds*2 条窗口内历史 = 7 条
+	wantLen := 1 + maxRounds*2
+	if len(ctx) != wantLen {
+		t.Fatalf("窗口裁剪后应有 %d 条，实际 %d 条", wantLen, len(ctx))
+	}
+	// 第 0 条必须是 lead（始终在）
+	if !m.IsLeadUserMessage(0) {
+		t.Error("lead 应在 ctx[0]，但 IsLeadUserMessage(0) 返回 false")
+	}
+	if ctx[0].Content[0].ToText() != "PROJECT_RULES: use spaces" {
+		t.Errorf("ctx[0] 文本 = %q, 期望 lead", ctx[0].Content[0].ToText())
+	}
+}
+
+// TestConversationManager_LeadUserMessage_NotInAllMessages 验证 lead 不属于
+// 完整对话历史（AllMessages 仍只返回 history，不含 lead）。
+// 这保证了会话持久化向后兼容：旧 session JSON 恢复后不会"多出"lead 消息。
+func TestConversationManager_LeadUserMessage_NotInAllMessages(t *testing.T) {
+	m := NewConversationManager(5)
+	m.AddUserMessage("u1")
+	m.AddAssistantMessage("a1")
+	m.SetLeadUserMessage("LEAD_TEXT")
+
+	all := m.AllMessages()
+	if len(all) != 2 {
+		t.Fatalf("AllMessages 应仅含 2 条历史，实际 %d 条", len(all))
+	}
+	for i, msg := range all {
+		if msg.Content[0].ToText() == "LEAD_TEXT" {
+			t.Errorf("AllMessages[%d] 不应包含 lead 文本", i)
+		}
 	}
 }
 
@@ -319,7 +477,7 @@ func TestConversationManager_AllMessagesKeepsFullHistory(t *testing.T) {
 	}
 
 	// GetContext 应被窗口裁剪到最近 maxRounds 轮
-	ctx := m.GetContext("")
+	ctx := m.GetContext()
 	if len(ctx) != maxRounds*2 {
 		t.Fatalf("窗口视图应为 %d 条，实际 %d 条", maxRounds*2, len(ctx))
 	}
@@ -361,7 +519,7 @@ type scriptedProvider struct {
 	cursor  int
 }
 
-func (p *scriptedProvider) StreamChat(_ context.Context, _ string, _ []llm.Message, _ []tool.ToolSpec) (<-chan llm.StreamChunk, error) {
+func (p *scriptedProvider) StreamChat(_ context.Context, _ llm.SystemPrompt, _ []llm.Message, _ []tool.ToolSpec) (<-chan llm.StreamChunk, error) {
 	ch := make(chan llm.StreamChunk, 32)
 	if p.cursor >= len(p.scripts) {
 		// 没有更多脚本，发一个 Done 结束
@@ -445,7 +603,7 @@ func TestRunTurn_NoToolUse(t *testing.T) {
 	m.AddUserMessage("hi")
 
 	var chunks []llm.StreamChunk
-	res := m.RunTurn(context.Background(), p, "system", nil, NewToolHandler(tool.NewRegistry(), time.Second, ""), TurnHooks{
+	res := m.RunTurn(context.Background(), p, llm.NewSystemPromptFromText("system"), nil, NewToolHandler(tool.NewRegistry(), time.Second, ""), TurnHooks{
 		OnStreamChunk: func(c llm.StreamChunk) { chunks = append(chunks, c) },
 	})
 
@@ -510,7 +668,7 @@ func TestRunTurn_ToolUseHappensOnce(t *testing.T) {
 		onErrorCalled  bool
 		streamChunkN   int
 	)
-	res := m.RunTurn(context.Background(), p, "system", nil, NewToolHandler(reg, time.Second, ""), TurnHooks{
+	res := m.RunTurn(context.Background(), p, llm.NewSystemPromptFromText("system"), nil, NewToolHandler(reg, time.Second, ""), TurnHooks{
 		OnToolUse:    func(b llm.ToolUseBlock) { gotToolUse = &b },
 		OnToolResult: func(b llm.ToolResultBlock) { gotToolResult = &b },
 		OnError:      func(error) { onErrorCalled = true },
@@ -603,7 +761,7 @@ func TestRunTurn_ToolErrorPropagatesAsIsError(t *testing.T) {
 	m := NewConversationManager(10)
 	m.AddUserMessage("call err tool")
 
-	res := m.RunTurn(context.Background(), p, "system", nil, NewToolHandler(reg, time.Second, ""), TurnHooks{})
+	res := m.RunTurn(context.Background(), p, llm.NewSystemPromptFromText("system"), nil, NewToolHandler(reg, time.Second, ""), TurnHooks{})
 
 	if res.Error != nil {
 		t.Fatalf("RunTurn 返回错误: %v", res.Error)
@@ -634,7 +792,7 @@ func TestRunTurn_ToolNotFoundInRegistry(t *testing.T) {
 	m := NewConversationManager(10)
 	m.AddUserMessage("call missing")
 
-	res := m.RunTurn(context.Background(), p, "system", nil, NewToolHandler(tool.NewRegistry(), time.Second, ""), TurnHooks{})
+	res := m.RunTurn(context.Background(), p, llm.NewSystemPromptFromText("system"), nil, NewToolHandler(tool.NewRegistry(), time.Second, ""), TurnHooks{})
 
 	if res.Error != nil {
 		t.Fatalf("RunTurn 返回错误: %v", res.Error)
@@ -661,7 +819,7 @@ func TestRunTurn_FirstLLMContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // 立即取消
 
-	res := m.RunTurn(ctx, p, "system", nil, NewToolHandler(tool.NewRegistry(), time.Second, ""), TurnHooks{})
+	res := m.RunTurn(ctx, p, llm.NewSystemPromptFromText("system"), nil, NewToolHandler(tool.NewRegistry(), time.Second, ""), TurnHooks{})
 
 	// 第一次 LLM 立刻 Done，ToolUse=nil，aborted 取决于 ctx 状态
 	if res.Error != nil {
@@ -688,7 +846,7 @@ func TestRunTurn_FirstLLMChunkError(t *testing.T) {
 	m.AddUserMessage("hi")
 
 	var gotErr error
-	res := m.RunTurn(context.Background(), p, "system", nil, NewToolHandler(tool.NewRegistry(), time.Second, ""), TurnHooks{
+	res := m.RunTurn(context.Background(), p, llm.NewSystemPromptFromText("system"), nil, NewToolHandler(tool.NewRegistry(), time.Second, ""), TurnHooks{
 		OnError: func(e error) { gotErr = e },
 	})
 
@@ -731,7 +889,7 @@ func TestRunTurn_ToolHandlerOnStartOnEnd(t *testing.T) {
 	m := NewConversationManager(10)
 	m.AddUserMessage("hi")
 
-	res := m.RunTurn(context.Background(), p, "system", nil, th, TurnHooks{})
+	res := m.RunTurn(context.Background(), p, llm.NewSystemPromptFromText("system"), nil, th, TurnHooks{})
 	if res.Error != nil {
 		t.Fatalf("RunTurn 返回错误: %v", res.Error)
 	}
@@ -792,7 +950,7 @@ func TestRunTurn_ToolHandlerTimeout(t *testing.T) {
 	th := NewToolHandler(reg, 50*time.Millisecond, "")
 	th.SetOnEnd(func(e ToolExecutionEvent) { endEvent = e })
 
-	res := m.RunTurn(context.Background(), p, "system", nil, th, TurnHooks{})
+	res := m.RunTurn(context.Background(), p, llm.NewSystemPromptFromText("system"), nil, th, TurnHooks{})
 	if res.Error != nil {
 		t.Fatalf("RunTurn 返回错误: %v", res.Error)
 	}
@@ -856,7 +1014,7 @@ L2: world
 	}
 	m1 := NewConversationManager(10)
 	m1.AddUserMessage("执行 rm -rf /")
-	res1 := m1.RunTurn(context.Background(), p1, "system", nil, h, TurnHooks{})
+	res1 := m1.RunTurn(context.Background(), p1, llm.NewSystemPromptFromText("system"), nil, h, TurnHooks{})
 	if res1.Error != nil {
 		t.Fatalf("第一次 RunTurn 出错: %v", res1.Error)
 	}
@@ -880,7 +1038,7 @@ L2: world
 	}
 	m2 := NewConversationManager(10)
 	m2.AddUserMessage("读 hello.txt")
-	res2 := m2.RunTurn(context.Background(), p2, "system", nil, h, TurnHooks{})
+	res2 := m2.RunTurn(context.Background(), p2, llm.NewSystemPromptFromText("system"), nil, h, TurnHooks{})
 	if res2.Error != nil {
 		t.Fatalf("第二次 RunTurn 出错: %v", res2.Error)
 	}
