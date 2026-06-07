@@ -63,6 +63,9 @@
         userScrolledUp: false,         // 用户向上滚动后停止自动滚动
         sessionsTableActive: false,    // /sessions 表格视图是否启用（true 时 session_list 响应会渲染表格）
         _toolById: {},                 // tool_use_id -> DOM 节点，用于 end 事件定位
+        // Step 1.4：file_diff 单次回包按 tool_use_id 路由到对应弹窗回调。
+        // 每个 callback 自行处理「找到/没找到/超时」，处理完即从 map 移除。
+        _fileDiffCallbacks: {},        // tool_use_id -> { resolve, timer, modal }
     };
 
     // ---- / 快捷命令清单（Step 9 落地后将替换为命令注册表查询） ----
@@ -195,6 +198,9 @@
         ToolCallStart:     'tool_call_start',
         ToolCallEnd:       'tool_call_end',
         DevExportSP:       'dev_export_sp',
+        // Step 1.4：查看改动弹窗用
+        GetFileDiff:       'get_file_diff',
+        FileDiff:          'file_diff',
     };
 
     // abortMarker 与后端 agent_loop.go 中的 abortMarker 常量保持一致，
@@ -248,6 +254,7 @@
             case MsgType.ToolCallStart:   return onToolCallStart(msg.payload);
             case MsgType.ToolCallEnd:     return onToolCallEnd(msg.payload);
             case MsgType.DevExportSP:     return onDevExportSP(msg.payload);
+            case MsgType.FileDiff:        return onFileDiff(msg.payload);
             default: console.warn('未知消息类型:', msg.type, msg.payload);
         }
     }
@@ -468,6 +475,509 @@
         }
         updateToolEndNode(node, p);
         scrollToBottomIfNeeded();
+    }
+
+    // =========================================================================
+    // Step 1.4：文件改动预览弹窗
+    // =========================================================================
+    // 触发链路：「查看改动」按钮 → openFileDiffModal(toolUseId)
+    //   → ws 发 get_file_diff → 收到 file_diff → onFileDiff 路由到对应回调
+    //   → 渲染双栏 diff（或显示 reason 文案）
+    //
+    // 设计要点：
+    //   1. 每个弹窗独立 callback map（state._fileDiffCallbacks）→ 互不串扰
+    //   2. 10 秒超时：定时器到点未回包 → 显示"请求超时"
+    //   3. 关闭路径统一：closeFileDiffModal 负责清定时器 + 移 DOM + 解绑全局 Esc
+    //   4. DOM 全程 createElement（XSS 防护），只有 hljs 高亮后的 innerHTML 走 DOMPurify
+
+    // 拉取文件 diff 的超时时间（10s）。进程内 FileDiffStore 是内存数据，
+    // 拉取为本地查表动作，正常应在毫秒级返回；10s 已经是非常宽裕的兜底。
+    const FILE_DIFF_REQUEST_TIMEOUT_MS = 10000;
+
+    // reason 字段 → 用户可读文案。统一收口便于文案调整。
+    const FILE_DIFF_REASON_TEXT = {
+        not_found: '暂无改动预览（可能进程已重启，或该调用为旧会话）',
+        too_large: '文件改动过大（> 2 MB），已放弃预览',
+    };
+
+    // onFileDiff 收到后端的 file_diff 响应，路由到对应 tool_use_id 的回调。
+    // 找不到回调时（已超时/已关闭）静默丢弃，避免回包顺序错乱时的控制台噪音。
+    function onFileDiff(p) {
+        if (!p || !p.tool_use_id) return;
+        const cb = state._fileDiffCallbacks[p.tool_use_id];
+        if (!cb) return;
+        // 清理 10s 定时器（必须在 delete 之前取消，否则回调里再 close 时会重复清理）
+        if (cb.timer) {
+            clearTimeout(cb.timer);
+        }
+        delete state._fileDiffCallbacks[p.tool_use_id];
+        try {
+            cb.resolve(p);
+        } catch (err) {
+            console.error('file_diff 回调执行失败', err);
+        }
+    }
+
+    // openFileDiffModal 打开指定 tool_use_id 的文件改动预览弹窗。
+    // 流程：
+    //   1. 校验 + 构造 modal DOM（loading 态）插入 body
+    //   2. 注册 Esc 关闭、点击 backdrop 关闭、关闭按钮关闭
+    //   3. ws 发 get_file_diff；10s 超时显示错误文案
+    //   4. 收到回包后渲染双栏 diff 或显示 reason
+    function openFileDiffModal(toolUseId) {
+        if (!toolUseId) {
+            console.warn('openFileDiffModal: toolUseId 为空');
+            return;
+        }
+        // 避免同一 tool_use_id 并发打开多个弹窗
+        if (state._fileDiffCallbacks[toolUseId]) {
+            console.warn('openFileDiffModal: 已存在同 ID 的弹窗，忽略重复请求', toolUseId);
+            return;
+        }
+
+        const modal = buildDiffModalSkeleton(toolUseId);
+        document.body.appendChild(modal);
+        const body = modal.querySelector('.diff-modal-body');
+
+        // 显示 loading 态
+        renderDiffMessage(body, '正在加载改动预览…', /*error=*/false);
+
+        // 绑定关闭路径
+        const escHandler = (ev) => {
+            if (ev.key === 'Escape') {
+                closeFileDiffModal(modal, toolUseId);
+            }
+        };
+        document.addEventListener('keydown', escHandler);
+        modal._escHandler = escHandler;
+
+        modal.querySelectorAll('[data-diff-modal-close]').forEach(el => {
+            el.addEventListener('click', () => closeFileDiffModal(modal, toolUseId));
+        });
+
+        // 注册回调 + 定时器
+        let resolveCb;
+        const promise = new Promise((resolve) => { resolveCb = resolve; });
+        const timer = setTimeout(() => {
+            const cb = state._fileDiffCallbacks[toolUseId];
+            if (!cb) return;
+            delete state._fileDiffCallbacks[toolUseId];
+            renderDiffMessage(body, '请求超时（> 10s）未收到响应', /*error=*/true);
+        }, FILE_DIFF_REQUEST_TIMEOUT_MS);
+        state._fileDiffCallbacks[toolUseId] = { resolve: resolveCb, timer, modal };
+
+        // 发送查询
+        const sent = sendWS(MsgType.GetFileDiff, { tool_use_id: toolUseId });
+        if (!sent) {
+            // WS 未连接：立刻清理
+            clearTimeout(timer);
+            delete state._fileDiffCallbacks[toolUseId];
+            renderDiffMessage(body, '与 CodePilot 的连接已断开，请稍后重试', /*error=*/true);
+            return;
+        }
+
+        // 异步渲染：resolve 后根据 payload 渲染
+        promise.then(payload => {
+            // 弹窗可能在等待期间被关闭（用户按 Esc / 点击遮罩）
+            if (!modal.isConnected) return;
+            if (payload.tool_use_id !== toolUseId) {
+                // 极小概率：服务端回串了别的 ID（理论上不会发生），按兜底处理
+                renderDiffMessage(body, '响应与请求不匹配，请稍后重试', /*error=*/true);
+                return;
+            }
+            if (!payload.found) {
+                const reason = payload.reason || 'not_found';
+                const text = FILE_DIFF_REASON_TEXT[reason] || `未找到改动预览（reason=${reason}）`;
+                renderDiffMessage(body, text, /*error=*/true);
+                return;
+            }
+            renderDiffGrid(body, payload);
+        });
+    }
+
+    // closeFileDiffModal 关闭弹窗：清回调 + 定时器 + DOM + 全局 Esc。
+    // 不重复清理：clearTimeout / delete 重复调用是 no-op。
+    function closeFileDiffModal(modal, toolUseId) {
+        if (!modal) return;
+        if (modal._escHandler) {
+            document.removeEventListener('keydown', modal._escHandler);
+            modal._escHandler = null;
+        }
+        const cb = state._fileDiffCallbacks[toolUseId];
+        if (cb) {
+            if (cb.timer) clearTimeout(cb.timer);
+            delete state._fileDiffCallbacks[toolUseId];
+        }
+        if (modal.parentNode) modal.parentNode.removeChild(modal);
+    }
+
+    // buildDiffModalSkeleton 构造弹窗骨架。文件路径/工具名从工具块头部取。
+    function buildDiffModalSkeleton(toolUseId) {
+        const modal = document.createElement('div');
+        modal.className = 'diff-modal';
+        modal.dataset.toolUseId = toolUseId;
+        modal.setAttribute('role', 'dialog');
+        modal.setAttribute('aria-modal', 'true');
+        modal.setAttribute('aria-label', '文件改动预览');
+
+        // 从工具块头部取文件名 / 工具名（让用户一眼知道是哪次调用的改动）
+        const toolNode = state._toolById[toolUseId];
+        let filePath = '';
+        let toolName = '';
+        if (toolNode) {
+            const summaryEl = toolNode.querySelector('.message-tool-summary');
+            const nameEl = toolNode.querySelector('.message-tool-name');
+            filePath = (summaryEl?.textContent || '').trim();
+            toolName = (nameEl?.textContent || '').trim();
+        }
+
+        // backdrop 与 inner 都在同一节点下：inner 上的点击不能冒泡到 modal 关闭
+        modal.innerHTML = `
+            <div class="diff-modal-inner" role="document">
+                <div class="diff-modal-header">
+                    <span class="diff-modal-filename" title="${escapeHTML(filePath || toolUseId)}">${escapeHTML(filePath || toolUseId)}</span>
+                    <span class="diff-modal-toolname">${escapeHTML(toolName || 'Diff')}</span>
+                    <span class="diff-modal-spacer"></span>
+                    <button class="diff-modal-close" type="button" data-diff-modal-close title="关闭 (Esc)">×</button>
+                </div>
+                <div class="diff-modal-body"></div>
+            </div>
+        `;
+        // 点击 .diff-modal 自身（即遮罩空白）关闭；inner 内部点击不触发。
+        // 通过 capture 阶段拦截，点击 inner 时不冒泡到 modal 自身
+        // （DOM 上 modal 是 inner 的父，inner 事件不会冒泡到 modal？会的）
+        // 正确做法：在 inner 上加 stopPropagation
+        const inner = modal.querySelector('.diff-modal-inner');
+        if (inner) {
+            inner.addEventListener('click', (ev) => ev.stopPropagation());
+        }
+        modal.addEventListener('click', (ev) => {
+            if (ev.target === modal) {
+                closeFileDiffModal(modal, toolUseId);
+            }
+        });
+        return modal;
+    }
+
+    // renderDiffMessage 在 body 区域显示一行消息（loading / 错误 / 空态）。
+    function renderDiffMessage(body, text, isError) {
+        body.innerHTML = '';
+        const msg = document.createElement('div');
+        msg.className = 'diff-modal-message' + (isError ? ' error' : '');
+        msg.textContent = text;
+        body.appendChild(msg);
+    }
+
+    // renderDiffGrid 在 body 区域构建双栏 diff。
+    // 输入为 FileDiffPayload（含 before / after / language）。
+    //
+    // 渲染策略（自上而下三层）：
+    //   1. 行级 diff：dmp.diff_linesToChars_ + diff_main + diff_cleanupEfficiency
+    //      （不调 diff_cleanupSemantic，它在小改动上倾向过度合并，会把"明显不同"
+    //      的多行强行包成一个 op，导致上下文错位；Efficiency 仅合并不经济的碎片，
+    //      行边界更稳定）
+    //   2. 双栏排版：把 [ctx|add|del] 块拆成单行，按行号递增左右两栏同步
+    //      - ctx 行 → 双栏都画
+    //      - del 行 → 仅左栏（红底）
+    //      - add 行 → 仅右栏（绿底）
+    //   3. 行内 inline word diff：对成对 (del, add) 行做字符级 diff_main，
+    //      在 del 行内包裹 <span class="diff-word-del">…</span> 标红删除线，
+    //      在 add 行内包裹 <span class="diff-word-add">…</span> 标绿
+    //      - changed 行（del/add）使用纯文本 + 词级高亮（避免 hljs 跨 span 干扰 diff 标记）
+    //      - unchanged 行（ctx）保留完整 hljs 语法高亮（赏心悦目）
+    //      配对策略：连续 del 块与紧随其后的连续 add 块按行数两两配对 min(dels, adds)，
+    //      剩余单边行保持原状
+    function renderDiffGrid(body, payload) {
+        body.innerHTML = '';
+        const grid = document.createElement('div');
+        grid.className = 'diff-grid';
+
+        const left = document.createElement('div');
+        left.className = 'diff-side';
+        const right = document.createElement('div');
+        right.className = 'diff-side';
+
+        const leftLabel = document.createElement('div');
+        leftLabel.className = 'diff-side-label';
+        leftLabel.textContent = 'Before';
+        left.appendChild(leftLabel);
+
+        const rightLabel = document.createElement('div');
+        rightLabel.className = 'diff-side-label';
+        rightLabel.textContent = 'After';
+        right.appendChild(rightLabel);
+
+        // 行级 diff：dmp 在 window 全局上（vendor/diff-match-patch.min.js UMD 暴露）
+        const dmp = window.diff_match_patch;
+        const before = payload.before || '';
+        const after = payload.after || '';
+        const language = payload.language || '';
+
+        // 原文按行切分（pop 末尾空行：和 rows 拆行策略保持一致）
+        // 关键：rows 拆行时也 pop 末尾空，所以这里必须同步 pop，否则 cursor 索引错位
+        const beforeRawLines = splitLines(before);
+        const afterRawLines = splitLines(after);
+
+        // 整体高亮 Before/After 全文（一次调用，O(n)），仅 ctx 行使用
+        // 高亮失败时回退纯文本，由 escapeHTML 注入保证 XSS 安全。
+        const beforeHL = splitHighlightLines(highlightCode(before, language));
+        const afterHL = splitHighlightLines(highlightCode(after, language));
+
+        // 计算行级 diff
+        let rows = []; // 每项 { op: 'eq'|'add'|'del', text }
+        try {
+            if (!dmp) {
+                // 极端情况：vendor 没加载到；按整段当作 equal 行处理
+                rows = [{ op: 'eq', text: before }];
+                if (after && after !== before) {
+                    rows.push({ op: 'del', text: before });
+                    rows.push({ op: 'add', text: after });
+                }
+            } else {
+                const d = new dmp();
+                // 用 diff_linesToChars_ 把多行文本先按行压缩为单字符，
+                // 再走 diff_main，这是官方推荐的大文本做法（速度远好于直接对长字符串做 diff）。
+                const a = d.diff_linesToChars_(before, after);
+                const diffs = d.diff_main(a.chars1, a.chars2, false);
+                d.diff_charsToLines_(diffs, a.lineArray);
+                // 改用 diff_cleanupEfficiency（仅合并不经济碎片），不用 diff_cleanupSemantic。
+                // Semantic 在小改动上倾向过度合并，会把多行不相干的修改包成同一个 op，
+                // 反而让 del/add 块边界错位。Efficiency 保守且行边界稳定。
+                d.diff_cleanupEfficiency(diffs);
+                // 注意：diff-match-patch 的 Diff 类型是普通对象 {0:op, 1:text}，
+                // 不是数组，不可迭代，不能用 [op, text] 解构。必须用 d[0]/d[1] 访问。
+                rows = diffs.map(d => ({
+                    op: d[0] === 0 ? 'eq' : (d[0] > 0 ? 'add' : 'del'),
+                    text: d[1],
+                }));
+            }
+        } catch (err) {
+            console.error('diff 计算失败', err);
+            rows = [{ op: 'eq', text: before }];
+        }
+
+        // 拆行渲染：保持左右栏视觉上的"行对齐"
+        let leftLine = 0;   // Before 栏行号
+        let rightLine = 0;  // After 栏行号
+        const leftRows = [];   // Before 栏行
+        const rightRows = [];  // After 栏行
+
+        for (const r of rows) {
+            // split('\n') 切完后末尾会多一个空字符串（"a\nb\n" → ["a","b",""]），
+            // 需要去掉最后一个以避免每段都多出一行空行
+            const lines = r.text.split('\n');
+            if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+            if (lines.length === 0) continue;
+
+            for (const line of lines) {
+                if (r.op === 'eq') {
+                    leftLine += 1;
+                    rightLine += 1;
+                    leftRows.push({ lineNo: leftLine, cls: 'ctx' });
+                    rightRows.push({ lineNo: rightLine, cls: 'ctx' });
+                } else if (r.op === 'del') {
+                    leftLine += 1;
+                    leftRows.push({ lineNo: leftLine, cls: 'del' });
+                    rightRows.push({ lineNo: 0, cls: 'empty' });
+                } else { // 'add'
+                    rightLine += 1;
+                    leftRows.push({ lineNo: 0, cls: 'empty' });
+                    rightRows.push({ lineNo: rightLine, cls: 'add' });
+                }
+            }
+        }
+
+        // 把原文行号 → 高亮 HTML 的对应行做映射
+        // 关键：beforeHL 的每一项对应 beforeRawLines 同一索引（已 pop 末尾空）
+        // 即：第 N 个非 empty 行 → beforeHL[N-1]（0-based 索引）
+        const leftHL = pickHighlightByIndex(leftRows, beforeHL, /*hasContent=*/r => r.cls !== 'empty');
+        const rightHL = pickHighlightByIndex(rightRows, afterHL, /*hasContent=*/r => r.cls !== 'empty');
+
+        // 行内 inline word diff：对成对 (del, add) 行做字符级 diff。
+        // 算法：
+        //   - 扫 leftRows / rightRows，连续的 del 块和紧随其后的连续 add 块视为"成对修改段"
+        //   - 段内按行数两两配对（min(del 数, add 数)）
+        //   - 配对的行用 dmp.diff_main(text1, text2, false) 做字符级 diff
+        //   - 把 [op, text] 渲染为：op=-1 标 .diff-word-del；op=1 标 .diff-word-add；op=0 原样
+        //   - changed 行用纯文本（escapeHTML）渲染，避免 hljs 跨 span 与 inline diff 嵌套
+        //   - 剩余单边行（多出 del 或多出 add）保持原样
+        applyInlineWordDiff(leftRows, rightRows, leftHL, rightHL, dmp);
+
+        // 渲染
+        for (let i = 0; i < leftRows.length; i++) {
+            const row = leftRows[i];
+            left.appendChild(buildDiffLine(row.lineNo, row.cls, leftHL[i] || '', row.hasInline));
+        }
+        for (let i = 0; i < rightRows.length; i++) {
+            const row = rightRows[i];
+            right.appendChild(buildDiffLine(row.lineNo, row.cls, rightHL[i] || '', row.hasInline));
+        }
+
+        grid.appendChild(left);
+        grid.appendChild(right);
+        body.appendChild(grid);
+    }
+
+    // applyInlineWordDiff 就地修改 leftHL / rightHL 数组：
+    //   - 对成对 (del, add) 行所在位置，原纯文本 / hljs 字符串替换为带 .diff-word-*
+    //     包裹的 HTML 片段（行内 inline diff）
+    //   - 配对行同时修改 row 标记（添加 .has-inline-diff 类），CSS 可据此加左侧色条
+    //
+    // 入参说明：
+    //   - leftRows / rightRows：renderDiffGrid 内部已算好的行元数据
+    //   - leftHL / rightHL：与 leftRows/rightRows 等长的"内容 HTML"数组（ctx 行用 hljs，初始全用 hljs）
+    //   - dmp：window.diff_match_patch 构造器；为 null 时跳过 inline diff（保留原 hljs 染色）
+    function applyInlineWordDiff(leftRows, rightRows, leftHL, rightHL, dmp) {
+        if (!dmp) return;
+        const n = leftRows.length;
+        let i = 0;
+        while (i < n) {
+            // 跳过 ctx / empty 行
+            if (leftRows[i].cls !== 'del') { i++; continue; }
+            // 找连续的 del 块结束位置
+            const delStart = i;
+            let delEnd = i;
+            while (delEnd < n && leftRows[delEnd].cls === 'del') delEnd++;
+            // 找紧随其后的连续 add 块
+            let addStart = delEnd;
+            let addEnd = addStart;
+            while (addEnd < n && rightRows[addEnd].cls === 'add') addEnd++;
+            // delEnd 之前都在左栏 del 段；addStart..addEnd-1 是右栏 add 段
+            const delCount = delEnd - delStart;
+            const addCount = addEnd - addStart;
+            const pairCount = Math.min(delCount, addCount);
+            // 配对的行做 inline diff
+            for (let k = 0; k < pairCount; k++) {
+                const lIdx = delStart + k;
+                const rIdx = addStart + k;
+                // 行内词级 diff 用原文（去 hljs 染色）做：先 escape 再 diff 再包 span
+                const beforeText = stripHTML(leftHL[lIdx] || '');
+                const afterText = stripHTML(rightHL[rIdx] || '');
+                // 内容相同的纯 del/add 行不浪费 inline 计算
+                if (beforeText === afterText) continue;
+                const d = new dmp();
+                const charDiffs = d.diff_main(beforeText, afterText, false);
+                // diff_cleanupSemantic 会按"标点/空白"切分，让 diff 块贴近单词边界
+                d.diff_cleanupSemantic(charDiffs);
+                leftHL[lIdx] = renderInlineDiff(charDiffs, /*side=*/'del');
+                rightHL[rIdx] = renderInlineDiff(charDiffs, /*side=*/'add');
+                // 给对应 row 加 has-inline-diff 类，CSS 可选地用色条强调
+                leftRows[lIdx].hasInline = true;
+                rightRows[rIdx].hasInline = true;
+            }
+            // 跳到 add 块末尾继续
+            i = Math.max(delEnd, addEnd);
+        }
+    }
+
+    // stripHTML 去除 HTML 标签，仅保留文本内容。用于把 hljs 高亮后的 HTML 转回原文做 inline diff。
+    // 实现：单个正则匹配 <...> 非贪婪替换为空；HTML 实体原样保留（与 inline diff 字符串内容一致即可）。
+    // 注意：hljs 高亮的 HTML 不含 <script> 等危险标签（vendor 是 trusted），这里只是去标签不做安全转义。
+    function stripHTML(html) {
+        if (!html) return '';
+        return html.replace(/<[^>]*>/g, '');
+    }
+
+    // renderInlineDiff 把字符级 dmp diff 渲染为带 .diff-word-* 包裹的 HTML。
+    // side='del'：保留 DEL 与 EQUAL，INS 丢弃（Before 不显示新增部分）
+    // side='add'：保留 INS 与 EQUAL，DEL 丢弃（After 不显示删除部分）
+    // 输出字符串可直接 innerHTML 注入：所有内容都经过 escapeHTML 处理，无脚本风险。
+    function renderInlineDiff(charDiffs, side) {
+        const parts = [];
+        for (let i = 0; i < charDiffs.length; i++) {
+            const op = charDiffs[i][0];
+            const text = charDiffs[i][1];
+            if (op === 0) {
+                // 公共部分：原样
+                parts.push(escapeHTML(text));
+            } else if (op === -1) {
+                // DEL：仅在 Before 侧保留
+                if (side === 'del') {
+                    parts.push('<span class="diff-word-del">' + escapeHTML(text) + '</span>');
+                }
+            } else { // op === 1
+                // INS：仅在 After 侧保留
+                if (side === 'add') {
+                    parts.push('<span class="diff-word-add">' + escapeHTML(text) + '</span>');
+                }
+            }
+        }
+        return parts.join('');
+    }
+
+    // splitLines 把字符串按 \n 切分并 pop 末尾空字符串，与 renderDiffGrid
+    // 内部拆行策略保持一致；为外部组件（如单元测试）提供稳定接口。
+    function splitLines(text) {
+        if (!text) return [];
+        const lines = text.split('\n');
+        if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+        return lines;
+    }
+
+    // splitHighlightLines 对高亮后的 HTML 字符串按 \n 切分。
+    // 简化策略：hljs 对代码块几乎都是逐行 token 化，跨行 span 极少；
+    // 即便出现跨行 tag，视觉上只会"掉色"一行，不影响 diff 行级准确性。
+    function splitHighlightLines(html) {
+        if (!html) return [];
+        const lines = html.split('\n');
+        if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+        return lines;
+    }
+
+    // pickHighlightByIndex 按"非 empty 行序号"取 hljsLines 的对应行。
+    // 同步 pop 末尾空后，rows 非 empty 数量 === hljsLines 数量，按 cursor 取即可。
+    function pickHighlightByIndex(rows, hljsLines, hasContent) {
+        const result = new Array(rows.length).fill('');
+        let cursor = 0;
+        for (let i = 0; i < rows.length; i++) {
+            if (!hasContent(rows[i])) {
+                result[i] = '';
+                continue;
+            }
+            if (cursor < hljsLines.length) {
+                result[i] = hljsLines[cursor];
+            } else {
+                // 越界兜底：rows 多了 hljsLines 少了（极端），用空字符串
+                result[i] = '';
+            }
+            cursor += 1;
+        }
+        return result;
+    }
+
+    // buildDiffLine 构造单行 DOM：行号 + 内容（内容为已高亮 HTML）。
+    // 内容直接用 innerHTML 注入：来自 highlightCode（hljs / escapeHTML），无脚本风险。
+    // 兼容 hasInline 标记：applyInlineWordDiff 设置后，给行加 .diff-line-has-inline 类，
+    // CSS 可据此加深左侧色条，视觉上强调"这行有行内词级高亮"。
+    function buildDiffLine(lineNo, cls, contentHTML, hasInline) {
+        const row = document.createElement('div');
+        let className = 'diff-line diff-line-' + cls;
+        if (hasInline) className += ' diff-line-has-inline';
+        row.className = className;
+        const num = document.createElement('span');
+        num.className = 'diff-line-num';
+        num.textContent = lineNo > 0 ? String(lineNo) : '';
+        const content = document.createElement('span');
+        content.className = 'diff-line-content';
+        content.innerHTML = contentHTML || '';
+        row.appendChild(num);
+        row.appendChild(content);
+        return row;
+    }
+
+    // highlightCode 对一段文本做 hljs 高亮。未识别语言（空）走 escapeHTML，
+    // 返回纯文本，调用方通过 innerHTML 注入仍安全。
+    function highlightCode(text, language) {
+        if (!text) return '';
+        if (language && window.hljs) {
+            try {
+                const result = window.hljs.highlight(text, { language, ignoreIllegals: true });
+                return result.value;
+            } catch (err) {
+                console.warn('hljs 高亮失败，回退纯文本', err);
+            }
+        }
+        return escapeHTML(text);
     }
 
     // =========================================================================
@@ -908,6 +1418,14 @@
         dur.textContent = startedAtIso ? formatStartedAt(startedAtIso) : '';
         header.appendChild(dur);
 
+        // Step 1.4：操作按钮容器。初始为空，由 updateToolEndNode 根据
+        // 工具名 + status 决定是否注入「查看改动」等动作按钮。
+        // 用 margin-left:auto 推到右侧（toggle 紧跟其后在最右）。
+        const actions = document.createElement('span');
+        actions.className = 'message-tool-actions';
+        actions.dataset.toolActions = '1';
+        header.appendChild(actions);
+
         const toggle = document.createElement('span');
         toggle.className = 'message-tool-toggle';
         toggle.setAttribute('aria-hidden', 'true');
@@ -999,6 +1517,56 @@
             pre.textContent = (endPayload.output == null) ? '' : String(endPayload.output);
             pre.classList.toggle('message-tool-output-error', !!endPayload.is_error);
         }
+
+        // Step 1.4：按工具名 + status 注入头部动作按钮。
+        // 仅 WriteFile/EditFile 且 status==='completed' 时显示「查看改动」。
+        // 失败 / 超时 / 中断不显示（无 diff 可看）。
+        const toolName = endPayload.name || (node.querySelector('.message-tool-name')?.textContent || '');
+        if (status === 'completed' && isFileEditingTool(toolName)) {
+            const actions = node.querySelector('.message-tool-actions');
+            if (actions) {
+                attachViewDiffButton(actions, node.dataset.toolUseId);
+            }
+        }
+    }
+
+    // isFileEditingTool 判断工具是否为「文件编辑类」——只有 WriteFile/EditFile
+    // 会向 FileDiffStore 写入记录，其他工具（Bash/Glob/Grep/ReadFile）无 diff。
+    function isFileEditingTool(name) {
+        return name === 'WriteFile' || name === 'EditFile';
+    }
+
+    // attachViewDiffButton 向 actions 容器插入「查看改动」按钮。
+    // 幂等：重复调用不会重复插入（已存在则替换文本；此处一般只调一次）。
+    // stopPropagation 防止点击冒泡触发 header 的折叠 toggle。
+    function attachViewDiffButton(actions, toolUseId) {
+        // 幂等：避免重复插入
+        let btn = actions.querySelector('[data-action="view-diff"]');
+        if (!btn) {
+            btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'message-tool-action-btn';
+            btn.dataset.action = 'view-diff';
+            btn.title = '查看本次调用的文件改动（左右双栏 diff）';
+            btn.innerHTML = `
+                <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M2 4h7"></path>
+                    <path d="M2 8h10"></path>
+                    <path d="M2 12h5"></path>
+                    <path d="M11 12l3-3-3-3"></path>
+                </svg>
+                <span>查看改动</span>
+            `;
+            actions.appendChild(btn);
+        }
+        // 每次重新绑定（replace node 后旧 handler 失效），使用 cloneNode 简化逻辑
+        const fresh = btn.cloneNode(true);
+        btn.parentNode.replaceChild(fresh, btn);
+        fresh.addEventListener('click', (ev) => {
+            ev.stopPropagation();   // 防止冒泡触发 header 折叠
+            ev.preventDefault();
+            openFileDiffModal(toolUseId);
+        });
     }
 
     // formatDuration 把毫秒数格式化为 "Xms" / "X.Ys"。

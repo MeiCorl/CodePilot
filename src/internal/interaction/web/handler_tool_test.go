@@ -118,7 +118,7 @@ func newToolRigWithEnabled(t *testing.T, scripts [][]llm.StreamChunk, toolInstan
 	}
 	toolHandler := conversation.NewToolHandler(registry, 5*time.Second, dir)
 
-	h := NewHandler(mp, sm, cfg, 10, nil, 100000, dir, registry, toolHandler)
+	h := NewHandler(mp, sm, cfg, 10, nil, 100000, dir, registry, toolHandler, nil)
 
 	s := NewServer("127.0.0.1:0")
 	h.Register(s.Router())
@@ -409,7 +409,7 @@ func TestSessionLoadedIncludesToolHistory(t *testing.T) {
 
 	cfg := &config.Config{Provider: "anthropic", Model: "test", APIKey: "k", MaxTokens: 1024}
 	mp := &scriptedProvider{}
-	h := NewHandler(mp, sm, cfg, 10, nil, 100000, dir, tool.NewRegistry(), conversation.NewToolHandler(tool.NewRegistry(), 5*time.Second, dir))
+	h := NewHandler(mp, sm, cfg, 10, nil, 100000, dir, tool.NewRegistry(), conversation.NewToolHandler(tool.NewRegistry(), 5*time.Second, dir), nil)
 	s := NewServer("127.0.0.1:0")
 	h.Register(s.Router())
 	ts := httptest.NewServer(http.HandlerFunc(s.ConnectionManager().HandleWS))
@@ -885,7 +885,7 @@ func TestAgentLoopConfigFromHandler(t *testing.T) {
 	}
 	toolHandler := conversation.NewToolHandler(registry, 5*time.Second, dir)
 
-	h := NewHandler(mp, sm, cfg, 10, nil, 50000, dir, registry, toolHandler)
+	h := NewHandler(mp, sm, cfg, 10, nil, 50000, dir, registry, toolHandler, nil)
 	s := NewServer("127.0.0.1:0")
 	h.Register(s.Router())
 	ts := httptest.NewServer(http.HandlerFunc(s.ConnectionManager().HandleWS))

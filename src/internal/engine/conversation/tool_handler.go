@@ -172,6 +172,9 @@ func (h *ToolHandler) doExecute(ctx context.Context, toolUse llm.ToolUseBlock) (
 		execCtx, cancel = context.WithTimeout(ctx, h.timeout)
 		defer cancel()
 	}
+	// 把 tool_use_id 注入 ctx，供工具实现按 id 关联副作用（如 WriteFile/EditFile
+	// 写入 FileDiffStore）。空 id 时 WithToolUseID 不注入，等价于 ctx 不变。
+	execCtx = tool.WithToolUseID(execCtx, toolUse.ID)
 
 	t, ok := h.lookup(toolUse.Name)
 	if !ok {

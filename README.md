@@ -159,8 +159,8 @@ CodePilot/
 │   │           ├── console_windows.go   #   Windows 终端窗口隐藏
 │   │           └── console_other.go     #   其他平台 no-op
 ├── config/                              # 配置文件示例
-│   ├── config.example.json              #   Anthropic 配置示例
-│   └── config.example.openai.json       #   OpenAI 配置示例
+│   ├── setting.example.json              #   Anthropic 配置示例
+│   └── setting.example.openai.json       #   OpenAI 配置示例
 ├── docs/                                # 设计文档（按开发步骤组织）
 ├── go.mod
 ├── go.sum
@@ -189,20 +189,20 @@ go build -o codepilot.exe ./src
 
 ### 配置
 
-首次运行前，需要创建配置文件 `~/.codepilot/config.json`：
+首次运行前，需要创建配置文件 `~/.codepilot/setting.json`：
 
 ```bash
 # 创建配置目录
 mkdir -p ~/.codepilot
 
 # 使用 Anthropic（Claude）配置
-cp config/config.example.json ~/.codepilot/config.json
+cp config/setting.example.json ~/.codepilot/setting.json
 
 # 或使用 OpenAI（GPT）配置
-cp config/config.example.openai.json ~/.codepilot/config.json
+cp config/setting.example.openai.json ~/.codepilot/setting.json
 ```
 
-编辑 `~/.codepilot/config.json`，填入你的 API Key：
+编辑 `~/.codepilot/setting.json`，填入你的 API Key：
 
 ```json
 {

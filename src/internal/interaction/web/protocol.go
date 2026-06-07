@@ -19,6 +19,10 @@ const (
 	// MsgTypeDevExportSP 由前端的「开发者模式 → Export SP」按钮触发。
 	// 服务端响应同类型消息，payload 包含完整 SP 结构。
 	MsgTypeDevExportSP = "dev_export_sp"
+	// MsgTypeGetFileDiff 由前端「查看改动」按钮触发，请求指定 tool_use_id
+	// 对应的 WriteFile / EditFile 工具调用的文件 diff（before/after）。
+	// 服务端响应 MsgTypeFileDiff 同名字段。
+	MsgTypeGetFileDiff = "get_file_diff"
 )
 
 // 服务端 → 客户端 消息类型常量。
@@ -34,6 +38,9 @@ const (
 	MsgTypeToolCallStart  = "tool_call_start"
 	MsgTypeToolCallEnd    = "tool_call_end"
 	MsgTypeAgentIteration = "agent_iteration"
+	// MsgTypeFileDiff 是 get_file_diff 请求的响应消息。
+	// Found=false 时 Reason 标识原因（"not_found" / "too_large"），Before/After 为空。
+	MsgTypeFileDiff = "file_diff"
 )
 
 // 流式结束原因与 Agent 状态的取值常量。
@@ -222,6 +229,26 @@ type DevExportSPPayload struct {
 	LeadUserMessage string   `json:"lead_user_message"`
 	Stats           []SPSourceStat `json:"stats"`
 	TotalTokens     int      `json:"total_tokens"`
+}
+
+// GetFileDiffPayload 文件 diff 查询请求（客户端 → 服务端）。
+// 工具侧按 tool_use_id 索引到对应 FileDiff；找不到时服务端回 found=false。
+type GetFileDiffPayload struct {
+	ToolUseID string `json:"tool_use_id"`
+}
+
+// FileDiffPayload 文件 diff 查询响应（服务端 → 客户端）。
+// Found=false 时 Reason 必填（"not_found" / "too_large"），FilePath / Language /
+// Before / After 均为空，避免前端误以为存在数据。
+// Found=true 时 Reason 必须为空，Before / After 为对应文件改动前后的全文。
+type FileDiffPayload struct {
+	ToolUseID string `json:"tool_use_id"`
+	Found     bool   `json:"found"`
+	Reason    string `json:"reason,omitempty"`
+	FilePath  string `json:"file_path,omitempty"`
+	Language  string `json:"language,omitempty"`
+	Before    string `json:"before,omitempty"`
+	After     string `json:"after,omitempty"`
 }
 
 // AgentIterationPayload Agent Loop 迭代进度事件。

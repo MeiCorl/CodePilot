@@ -37,7 +37,7 @@ func (f *fakeSource) Assemble(_ context.Context, _ sources.Env) (sources.Section
 
 // TestBuilder_Assemble_EmptySources 验证：当未注册任何 Source 时，
 // Assemble 返回零值 SystemPrompt 且不 panic。
-// 用途：对应 config.json 中 system_prompt.enabled=false 的场景。
+// 用途：对应 setting.json 中 system_prompt.enabled=false 的场景。
 func TestBuilder_Assemble_EmptySources(t *testing.T) {
 	b := NewBuilder()
 	sp, err := b.Assemble(context.Background(), sources.Env{})

@@ -1,5 +1,5 @@
 // Package config 负责 CodePilot 的配置文件加载与校验。
-// 配置文件路径为 ~/codepilot/config.json，包含 LLM 供应商、模型、密钥等信息。
+// 配置文件路径为 ~/.codepilot/setting.json，包含 LLM 供应商、模型、密钥等信息。
 package config
 
 import (
@@ -10,7 +10,7 @@ import (
 )
 
 // Config 是 CodePilot 的全局配置结构体。
-// 字段与 ~/codepilot/config.json 一一对应。
+// 字段与 ~/.codepilot/setting.json 一一对应。
 type Config struct {
 	// Provider 为 LLM 供应商名称，合法值："anthropic"、"openai"
 	Provider string `json:"provider"`
@@ -68,7 +68,7 @@ const (
 	defaultMaxTokens               = 16384
 )
 
-// Load 从 ~/.codepilot/config.json 加载配置文件。
+// Load 从 ~/.codepilot/setting.json 加载配置文件。
 // 加载后填充默认值并校验必填字段和合法值。
 // 文件不存在时返回友好提示错误。
 func Load() (*Config, error) {
@@ -77,7 +77,7 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("获取用户主目录失败: %w", err)
 	}
 
-	configPath := filepath.Join(homeDir, ".codepilot", "config.json")
+	configPath := filepath.Join(homeDir, ".codepilot", "setting.json")
 	return LoadFromPath(configPath)
 }
 
@@ -86,7 +86,7 @@ func LoadFromPath(configPath string) (*Config, error) {
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("配置文件不存在: %s\n请创建配置文件，可参考项目根目录 config/config.example.json", configPath)
+			return nil, fmt.Errorf("配置文件不存在: %s\n请创建配置文件，可参考项目根目录 config/setting.example.json", configPath)
 		}
 		return nil, fmt.Errorf("读取配置文件失败: %w", err)
 	}

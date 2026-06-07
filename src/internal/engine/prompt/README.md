@@ -119,7 +119,7 @@ src/internal/engine/prompt/
 
 ### 关闭整个 System Prompt
 
-`config.json` 中设置 `system_prompt.enabled = false`，Builder 会用空 Source 列表初始化，Assemble 直接返回零值 SystemPrompt（`IsEmpty() == true`）。Provider 收到空 SP 后跳过 system 字段构造。
+`setting.json` 中设置 `system_prompt.enabled = false`，Builder 会用空 Source 列表初始化，Assemble 直接返回零值 SystemPrompt（`IsEmpty() == true`）。Provider 收到空 SP 后跳过 system 字段构造。
 
 ## 缓存策略
 

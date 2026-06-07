@@ -1,7 +1,7 @@
 // Package safety 提供 CodePilot 工具系统的最小化安全兜底：
 // 路径沙箱与 Bash 危险命令黑名单。
 //
-// 设计目标：两道兜底**不可被工具配置关闭**，即使用户在 config.json
+// 设计目标：两道兜底**不可被工具配置关闭**，即使用户在 setting.json
 // 中设置了任何"禁用安全检查"字段也无效。所有涉及文件读写的工具
 // 必须经 ResolveInSandbox，所有 Bash 执行前必须经 CheckBashCommand。
 //

@@ -41,12 +41,12 @@
 
 **状态**：已完成
 
-**目标**：实现配置文件加载，支持从 `~/codepilot/config.json` 读取 LLM 供应商配置，提供默认值和校验。
+**目标**：实现配置文件加载，支持从 `~/.codepilot/setting.json` 读取 LLM 供应商配置，提供默认值和校验。
 
 **影响文件**：
 
 - `internal/config/config.go` — 新建，配置结构体定义、加载、校验
-- `config/config.example.json` — 新建，配置文件示例
+- `config/setting.example.json` — 新建，配置文件示例
 
 **依赖**：Task 1
 
@@ -61,12 +61,12 @@
   - `Timeout`（int）：请求超时秒数，默认 60
   - `MaxRetries`（int）：最大重试次数，默认 2
 2. 实现配置加载函数：
-  - 读取 `~/codepilot/config.json` 文件
+  - 读取 `~/.codepilot/setting.json` 文件
   - 如文件不存在，在控制台提示用户创建并展示示例配置
   - 解析 JSON 到结构体，校验必填字段（Provider、Model、APIKey）
   - 未填写的可选字段使用默认值（Timeout=60, MaxRetries=2）
 3. 实现配置校验：Provider 必须是 `"anthropic"` 或 `"openai"`，不合法时报错退出
-4. 创建 `config/config.example.json` 示例文件（含两套供应商注释示例）
+4. 创建 `config/setting.example.json` 示例文件（含两套供应商注释示例）
 
 **参考资料**：
 

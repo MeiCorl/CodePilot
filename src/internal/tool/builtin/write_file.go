@@ -9,6 +9,9 @@ import (
 	"path/filepath"
 	"strings"
 
+	"go.uber.org/zap"
+
+	"github.com/MeiCorl/CodePilot/src/internal/logger"
 	"github.com/MeiCorl/CodePilot/src/internal/tool"
 	"github.com/MeiCorl/CodePilot/src/internal/tool/safety"
 )
@@ -28,6 +31,10 @@ var _ = writeFileInput{} // 见 schema.go
 type WriteFileTool struct {
 	tool.BaseTool
 	WorkingDirectory string
+	// DiffSink 用于在执行成功后把 before/after 推送给 WebUI 用于 diff 弹窗。
+	// 可为 nil（主流程未注入或单测场景），nil 时跳过写入不 panic。
+	// 类型为 tool.FileDiffSink（定义在 tool 包，避免 builtin 反向依赖 web）。
+	DiffSink tool.FileDiffSink
 }
 
 // NewWriteFileTool 构造 WriteFile 工具实例。
@@ -41,6 +48,13 @@ func NewWriteFileTool(workingDir string) *WriteFileTool {
 		},
 		WorkingDirectory: workingDir,
 	}
+}
+
+// SetDiffSink 注入 diff 接收器。主流程在 RegisterWithOptions 之后调一次。
+// 设计为 setter 而非构造器参数：避免改动 RegisterWithOptions 签名波及所有测试；
+// nil 参数表示显式关闭 diff 采集。
+func (t *WriteFileTool) SetDiffSink(sink tool.FileDiffSink) {
+	t.DiffSink = sink
 }
 
 // Execute 实现 tool.Tool.Execute。
@@ -63,6 +77,17 @@ func (t *WriteFileTool) Execute(ctx context.Context, input json.RawMessage) (str
 		return "", err
 	}
 
+	// 读取旧内容用作 diff.before。
+	// 文件不存在时（新文件场景）before 为空字符串，符合 FileDiffStore 约定。
+	var before string
+	if data, err := os.ReadFile(absPath); err == nil {
+		before = string(data)
+	} else if !os.IsNotExist(err) {
+		// 读取失败（权限等）不影响写入主流程，仅记录后继续
+		logger.Warn("WriteFile 读取旧内容失败，diff.before 留空",
+			zap.String("file_path", absPath), zap.Error(err))
+	}
+
 	// 自动创建父目录
 	dir := filepath.Dir(absPath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
@@ -74,5 +99,33 @@ func (t *WriteFileTool) Execute(ctx context.Context, input json.RawMessage) (str
 		return "", fmt.Errorf("写入文件失败: %w", err)
 	}
 
+	// 写入成功后推 diff。Sink 为 nil 或 ctx 缺 toolUseID 时安全跳过。
+	// 任何分支的失败都不影响主流程返回值（写入已成功，diff 是辅助功能）。
+	t.recordDiff(ctx, absPath, before, in.Content)
+
 	return fmt.Sprintf("已写入 %d 字节到 %s", len(in.Content), absPath), nil
+}
+
+// recordDiff 尝试把本次改动推给 DiffSink。
+// 失败不返回 error：主流程语义是"写入文件"，diff 仅供 UI 二次展示。
+func (t *WriteFileTool) recordDiff(ctx context.Context, absPath, before, after string) {
+	if t.DiffSink == nil {
+		return
+	}
+	id, ok := tool.ToolUseIDFromContext(ctx)
+	if !ok {
+		// ctx 中无 toolUseID 时（单测 / 无 engine 包装）跳过，
+		// 避免写入一条没有 id 的 diff 记录（Store 也会拒收）。
+		return
+	}
+	if !t.DiffSink.Set(id, tool.FileDiffEntry{
+		FilePath: absPath,
+		Before:   before,
+		After:    after,
+	}) {
+		logger.Warn("WriteFile diff 被 DiffSink 拒绝",
+			zap.String("tool_use_id", id),
+			zap.String("file_path", absPath),
+		)
+	}
 }

@@ -23,7 +23,7 @@ import (
 )
 
 // defaultContextWindowSize 为 Handler 层的兜底默认值。
-// 正常情况下 ContextWindowSize 由 Config 层（config.json）提供并通过 main.go 传入，
+// 正常情况下 ContextWindowSize 由 Config 层（setting.json）提供并通过 main.go 传入，
 // 此常量仅在传入值 <= 0 时作为安全回退。
 const defaultContextWindowSize = 200000
 
@@ -53,6 +53,10 @@ type Handler struct {
 	workdir           string
 	registry          *tool.Registry
 	toolHandler       *conversation.ToolHandler
+	// fileDiffStore 是 WriteFile/EditFile 工具写入的 diff 数据存储。
+	// Step 1.4 接入；Task 3 (get_file_diff 协议) 真正消费此字段。
+	// 为 nil 时前端请求 diff 会得到 not_found 提示，等价于"未启用 diff 预览"。
+	fileDiffStore *FileDiffStore
 
 	mu      sync.Mutex
 	current *session.Session
@@ -72,6 +76,7 @@ type Handler struct {
 // registry 为 nil 时 RunTurn 不会携带任何工具描述（与未启用工具等价）；
 // toolHandler 为 nil 时 RunTurn 仍可工作（无 tool_use 分发能力，LLM 不会调工具）。
 // promptBuilder 负责 System Prompt 的组装；为 nil 时降级为空 SP（不构造 system、首条 user 消息）。
+// fileDiffStore 为 nil 时前端"查看改动"按钮点击会得到 not_found 提示，工具仍正常工作。
 func NewHandler(
 	provider llm.Provider,
 	sessMgr *session.SessionManager,
@@ -82,6 +87,7 @@ func NewHandler(
 	workdir string,
 	registry *tool.Registry,
 	toolHandler *conversation.ToolHandler,
+	fileDiffStore *FileDiffStore,
 ) *Handler {
 	if contextWindowSize <= 0 {
 		contextWindowSize = defaultContextWindowSize
@@ -96,6 +102,7 @@ func NewHandler(
 		workdir:           workdir,
 		registry:          registry,
 		toolHandler:       toolHandler,
+		fileDiffStore:     fileDiffStore,
 	}
 	// 尝试恢复最近一个会话
 	if latest, err := sessMgr.LoadLatest(); err == nil && latest != nil {
@@ -159,6 +166,7 @@ func (h *Handler) Register(router *Router) {
 	router.Register(MsgTypeClearSession, h.handleClearSession)
 	router.Register(MsgTypeDeleteSession, h.handleDeleteSession)
 	router.Register(MsgTypeDevExportSP, h.handleDevExportSP)
+	router.Register(MsgTypeGetFileDiff, h.handleGetFileDiff)
 }
 
 // ModelName 返回当前配置中的模型名，供状态栏展示。
@@ -617,6 +625,52 @@ func (h *Handler) handleDevExportSP(conn *websocket.Conn, msg Message) error {
 	})
 }
 
+// handleGetFileDiff 处理前端「查看改动」按钮的查询请求：
+// 按 tool_use_id 从 FileDiffStore 取出对应 WriteFile/EditFile 的 before/after，
+// 通过 file_diff 消息回推。
+//
+// 三种响应分支：
+//   - 找到：found=true, reason="", 回填 file_path / language / before / after
+//   - 找不到：found=false, reason="not_found"（store 为 nil / 已被淘汰 / 旧会话重启都走此分支）
+//   - 空 tool_use_id：通过 stream_error(invalid_payload) 拒绝
+//
+// 不修改 store 内容（仅查询）。并发安全由 FileDiffStore 内部 RWMutex 负责。
+func (h *Handler) handleGetFileDiff(conn *websocket.Conn, msg Message) error {
+	p, err := AsPayload[GetFileDiffPayload](msg)
+	if err != nil {
+		return h.sendStreamError(conn, "invalid_payload", err.Error())
+	}
+	if strings.TrimSpace(p.ToolUseID) == "" {
+		return h.sendStreamError(conn, "empty_tool_use_id", "tool_use_id 不能为空")
+	}
+
+	// store 为 nil 时也走 not_found，等价于"未启用 diff 预览"
+	if h.fileDiffStore == nil {
+		return h.sendFileDiff(conn, FileDiffPayload{
+			ToolUseID: p.ToolUseID,
+			Found:     false,
+			Reason:    "not_found",
+		})
+	}
+
+	diff, ok := h.fileDiffStore.Get(p.ToolUseID)
+	if !ok {
+		return h.sendFileDiff(conn, FileDiffPayload{
+			ToolUseID: p.ToolUseID,
+			Found:     false,
+			Reason:    "not_found",
+		})
+	}
+	return h.sendFileDiff(conn, FileDiffPayload{
+		ToolUseID: diff.ToolUseID,
+		Found:     true,
+		FilePath:  diff.FilePath,
+		Language:  diff.Language,
+		Before:    diff.Before,
+		After:     diff.After,
+	})
+}
+
 // buildSPEnv 构造 prompt.Builder.Assemble 所需的 Env 输入。
 // 数据源：cfg + workdir + 进程启动时间 + VERSION。
 //
@@ -706,6 +760,12 @@ func (h *Handler) sendToolCallEnd(conn *websocket.Conn, p ToolCallEndPayload) er
 // 每轮迭代开始时调用，告知前端当前迭代序号和最大迭代次数。
 func (h *Handler) sendAgentIteration(conn *websocket.Conn, p AgentIterationPayload) error {
 	return h.sendMessage(conn, MsgTypeAgentIteration, p)
+}
+
+// sendFileDiff 发送 file_diff 响应（响应 get_file_diff 请求）。
+// payload.Found=false 时 Reason 必填，前端据此区分文案（not_found / too_large）。
+func (h *Handler) sendFileDiff(conn *websocket.Conn, p FileDiffPayload) error {
+	return h.sendMessage(conn, MsgTypeFileDiff, p)
 }
 
 // mapToolEventStatus 把 conversation 包的内部工具事件状态枚举

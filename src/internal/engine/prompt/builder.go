@@ -29,7 +29,7 @@ type Builder struct {
 	// sources 为已注册的 Source 列表，注册顺序与最终 SystemBlocks 顺序一致
 	sources []sources.Source
 	// enabled 控制系统是否实际产出内容；为 false 时 Assemble 直接返回空 SystemPrompt，
-	// 对应 config.json 中 system_prompt.enabled = false 的场景。
+	// 对应 setting.json 中 system_prompt.enabled = false 的场景。
 	// 默认为 true；通过 SetEnabled 切换。
 	enabled bool
 }

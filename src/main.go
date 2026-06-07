@@ -2,7 +2,7 @@
 //
 // 启动链路：
 //  1. 初始化文件日志（失败不阻塞主流程）
-//  2. 加载 ~/.codepilot/config.json 配置
+//  2. 加载 ~/.codepilot/setting.json 配置
 //  3. 按配置构造 LLM Provider
 //  4. 创建会话管理器（自动恢复最近一个会话）
 //  5. 启动 HTTP + WebSocket 服务，监听本机回环地址；端口由操作系统
@@ -115,6 +115,22 @@ func run() error {
 	bashTimeout := time.Duration(cfg.ToolExecutionTimeoutSeconds) * time.Second
 	builtin.RegisterWithOptions(toolRegistry, toolWorkdir, bashTimeout)
 	toolHandler := conversation.NewToolHandler(toolRegistry, bashTimeout, toolWorkdir)
+
+	// Step 1.4：构造 FileDiffStore 注入 WriteFile/EditFile 工具，
+	// 供前端「查看改动」按钮按需拉取文件 diff。
+	// store 在 main 顶层构造（不放在 Handler 内部），方便按 Register 名直接
+	// 取出 WriteFile/EditFile 工具实例调 SetDiffSink。
+	fileDiffStore := web.NewFileDiffStore()
+	if wfTool, ok := toolRegistry.Get(builtin.WriteFileName); ok {
+		if wf, ok := wfTool.(*builtin.WriteFileTool); ok {
+			wf.SetDiffSink(fileDiffStore)
+		}
+	}
+	if efTool, ok := toolRegistry.Get(builtin.EditFileName); ok {
+		if ef, ok := efTool.(*builtin.EditFileTool); ok {
+			ef.SetDiffSink(fileDiffStore)
+		}
+	}
 	logger.Info("工具系统就绪",
 		zap.Int("count", toolRegistry.Count()),
 		zap.Strings("enabled", toolRegistry.EnabledNames(cfg.Tools.Enabled)),
@@ -138,7 +154,7 @@ func run() error {
 	// 8. 构造 Handler / Server
 	// 使用 DefaultAddr（127.0.0.1:0）让 OS 自动分配端口，
 	// 这样多个项目下可同时启动多个 CodePilot 进程互不冲突。
-	handler := web.NewHandler(provider, sessMgr, cfg, defaultMaxRounds, promptBuilder, cfg.ContextWindowSize, workdir, toolRegistry, toolHandler)
+	handler := web.NewHandler(provider, sessMgr, cfg, defaultMaxRounds, promptBuilder, cfg.ContextWindowSize, workdir, toolRegistry, toolHandler, fileDiffStore)
 	server := web.NewServer(web.DefaultAddr)
 	handler.Register(server.Router())
 

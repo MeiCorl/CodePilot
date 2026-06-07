@@ -19,7 +19,7 @@ CodePilot 是一个终端 AI Coding Agent（类似 Claude Code），需要从零
 7. **Markdown 渲染**：LLM 回复内容使用 Glamour 做终端 Markdown 渲染（代码块高亮、粗体、列表缩进等）
 8. **统一消息格式**：内部采用 ContentBlock 数组表示消息内容（本步骤仅实现 TextBlock），各 Provider 适配器负责将内部格式转换为对应 SDK 消息格式
 9. **多模型供应商支持**：支持 Anthropic（Claude 系列）和 OpenAI（GPT 系列），通过 Provider 抽象接口实现，后续可扩展
-10. **配置文件驱动**：通过 `~/.codepilot/config.json` 配置模型供应商、模型名称、API 地址、密钥等，支持切换供应商
+10. **配置文件驱动**：通过 `~/.codepilot/setting.json` 配置模型供应商、模型名称、API 地址、密钥等，支持切换供应商
 11. **会话持久化**：对话历史自动保存到本地文件，每个会话对应一个 JSON 文件，存储在 `~/.codepilot/sessions/` 目录下
 12. **多会话管理**：支持创建新会话、列出历史会话、切换到指定会话恢复对话。用户通过输入 `/sessions`（列出会话）、`/new`（新建会话并清空当前对话窗口）、`/resume <id>`（恢复会话）进行操作，类似 Claude Code 的 `/resume`
 13. **上下文滑窗**：采用最简单的滑动窗口策略管理上下文，预留 System Prompt 空间（约 20%），超出时丢弃最早的消息对
@@ -69,7 +69,7 @@ codepilot/
 │       ├── openai.go            # OpenAI 适配器（含消息格式转换）
 │       └── types.go             # 通用消息类型（ContentBlock 体系）
 ├── config/
-│   └── config.example.json      # 配置文件示例
+│   └── setting.example.json      # 配置文件示例
 ├── docs/
 │   └── step1-LLM打通/           # 本步骤设计文档
 ├── go.mod

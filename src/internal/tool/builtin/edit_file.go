@@ -13,6 +13,9 @@ import (
 	"os"
 	"strings"
 
+	"go.uber.org/zap"
+
+	"github.com/MeiCorl/CodePilot/src/internal/logger"
 	"github.com/MeiCorl/CodePilot/src/internal/tool"
 	"github.com/MeiCorl/CodePilot/src/internal/tool/safety"
 )
@@ -34,6 +37,10 @@ type EditFileTool struct {
 	tool.BaseTool
 	// WorkingDirectory 是路径沙箱根目录，所有 file_path 必须落在其内。
 	WorkingDirectory string
+	// DiffSink 用于在执行成功后把 before/after 推送给 WebUI 用于 diff 弹窗。
+	// 可为 nil（主流程未注入或单测场景），nil 时跳过写入不 panic。
+	// 类型为 tool.FileDiffSink（定义在 tool 包，避免 builtin 反向依赖 web）。
+	DiffSink tool.FileDiffSink
 }
 
 // NewEditFileTool 构造 EditFile 工具实例。
@@ -47,6 +54,12 @@ func NewEditFileTool(workingDir string) *EditFileTool {
 		},
 		WorkingDirectory: workingDir,
 	}
+}
+
+// SetDiffSink 注入 diff 接收器。主流程在 RegisterWithOptions 之后调一次。
+// 设计动机与 WriteFileTool.SetDiffSink 相同。
+func (t *EditFileTool) SetDiffSink(sink tool.FileDiffSink) {
+	t.DiffSink = sink
 }
 
 // Execute 实现 tool.Tool.Execute。
@@ -107,5 +120,29 @@ func (t *EditFileTool) Execute(ctx context.Context, input json.RawMessage) (stri
 		newLines = 0
 	}
 
+	// 写入成功后推 diff。失败不影响主返回值。
+	t.recordDiff(ctx, absPath, original, newContent)
+
 	return fmt.Sprintf("已编辑 %s（替换了 %d 行 → %d 行）", absPath, oldLines, newLines), nil
+}
+
+// recordDiff 与 WriteFileTool 同名方法语义一致：ctx 缺 id 或 sink 为 nil 时安全跳过。
+func (t *EditFileTool) recordDiff(ctx context.Context, absPath, before, after string) {
+	if t.DiffSink == nil {
+		return
+	}
+	id, ok := tool.ToolUseIDFromContext(ctx)
+	if !ok {
+		return
+	}
+	if !t.DiffSink.Set(id, tool.FileDiffEntry{
+		FilePath: absPath,
+		Before:   before,
+		After:    after,
+	}) {
+		logger.Warn("EditFile diff 被 DiffSink 拒绝",
+			zap.String("tool_use_id", id),
+			zap.String("file_path", absPath),
+		)
+	}
 }

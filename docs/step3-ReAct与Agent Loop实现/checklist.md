@@ -81,7 +81,7 @@
   - 结论：通过
 
 - [x] 配置文件不指定新字段时使用默认值
-  - 预期：`config.json` 中不包含 `max_agent_loop_iterations` 和 `context_safety_margin` 时，加载后 Config 使用默认值（25 和 4096）
+  - 预期：`setting.json` 中不包含 `max_agent_loop_iterations` 和 `context_safety_margin` 时，加载后 Config 使用默认值（25 和 4096）
   - 实际：`TestLoadFromPathDefaults` 和 `TestSetDefaults` 测试通过，验证了零值时自动填充默认值
   - 结论：通过
 

@@ -73,7 +73,7 @@ codepilot/
 │   │   └── logger/                 # 日志系统（不变）
 │   └── llm/                        # LLM 适配器（不变）
 ├── config/
-│   └── config.example.json         # 配置文件示例（不变）
+│   └── setting.example.json         # 配置文件示例（不变）
 ├── docs/
 │   └── step1.1-UI界面重构/         # 本步骤设计文档
 └── go.mod / go.sum                 # 依赖：移除 Bubble Tea 系，引入 gorilla/websocket 等

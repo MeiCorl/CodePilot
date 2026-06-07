@@ -24,7 +24,7 @@
 ## 2. 配置系统（对应 Task 2）
 
 - 配置文件正常加载
-  - 预期：在 `~/.codepilot/config.json` 放置合法配置后，程序可正确读取 Provider、Model、APIKey、Timeout、MaxRetries 等字段
+  - 预期：在 `~/.codepilot/setting.json` 放置合法配置后，程序可正确读取 Provider、Model、APIKey、Timeout、MaxRetries 等字段
   - 实际：程序正确读取并输出 "供应商: anthropic | 模型: claude-sonnet-4-20250514"
   - 结论：通过
 - 配置文件不存在时友好提示
@@ -40,7 +40,7 @@
   - 实际：单元测试 TestLoadFromPathDefaults 验证通过，Timeout=60, MaxRetries=2
   - 结论：通过
 - 示例配置文件存在
-  - 预期：`config/config.example.json` 包含 Anthropic 和 OpenAI 两套配置示例
+  - 预期：`config/setting.example.json` 包含 Anthropic 和 OpenAI 两套配置示例
   - 实际：`config/config.example.json`（Anthropic）和 `config/config.example.openai.json`（OpenAI）均存在
   - 结论：通过
 
@@ -280,7 +280,7 @@
   - 实际：`go build ./cmd/codepilot/` 编译通过，codepilot.exe (43MB) 构建成功；main.go 按顺序调用 logger.Init → config.Load → llm.NewProvider → session.NewSessionManager → tui.NewAppModel → tea.NewProgram.Run
   - 结论：通过
 - 配置缺失时优雅退出
-  - 预期：`~/codepilot/config.json` 不存在时，终端输出友好提示信息后退出
+  - 预期：`~/.codepilot/setting.json` 不存在时，终端输出友好提示信息后退出
   - 实际：移除配置文件后运行 codepilot.exe，输出 "错误: 配置文件不存在: C:\Users\Administratorcodepilot\config.json\n请创建配置文件，可参考项目根目录 config/config.example.json" 后退出
   - 结论：通过
 - 日志初始化失败不阻塞启动

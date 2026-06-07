@@ -147,7 +147,7 @@
   - 结论：通过 ✓
 
 - [x] **3.11 安全兜底不可被配置关闭**
-  - 预期：尝试在 config.json 中关闭 `tools.safety` 等字段无效；代码中也没有开关
+  - 预期：尝试在 setting.json 中关闭 `tools.safety` 等字段无效；代码中也没有开关
   - 实际：`safety.ResolveInSandbox` 与 `safety.CheckBashCommand` 在 `src/tool/builtin/` 的 `read_file.go` / `write_file.go` / `bash.go` / `glob.go` / `grep.go` 中**硬编码调用**，无任何 config 字段作为前置判断；`config.Config` 也无 `Tools.Safety` / `Tools.DisableBlacklist` 之类字段；spec.md 第 47 行明确"危险命令黑名单和路径沙箱**不可被工具配置关闭**"
   - 结论：通过 ✓
 
@@ -287,7 +287,7 @@
 
 ## 7. 配置与启动接入（Task 8）
 
-- [x] **7.1 config.json 新增 tools 段被正确解析**
+- [x] **7.1 setting.json 新增 tools 段被正确解析**
   - 预期：示例配置 `{"tools": {"enabled": ["read_file", "bash"]}}` 解析后 `cfg.Tools.Enabled` 包含这两个工具名
   - 实际：`TestLoadFromPathWithToolsConfig` 通过；`config.go` 新增 `Tools ToolsConfig \`json:"tools"\`` + `ToolsConfig{Enabled []string}`，配套 `TestLoadFromPathDefaults` 验证 `Tools.Enabled` 缺省时为空切片、`ToolExecutionTimeoutSeconds` 默认 30、`ToolWorkingDirectory` 默认空串
   - 结论：通过 ✓

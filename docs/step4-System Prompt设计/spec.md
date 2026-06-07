@@ -40,7 +40,7 @@
 6. **模板变量插值**：静态 SP 与环境上下文中支持少量预定义变量（`{{OS}}`、`{{CWD}}`、`{{DATE}}`、`{{VERSION}}`），避免硬编码过期信息
 7. **Anthropic Prompt Caching**：在 Anthropic Provider 协议层对静态 SP + 环境上下文打 `cache_control` 标记，多轮迭代命中缓存降低成本与延迟
 8. **可观测性**：在 WebUI 状态栏与日志中显示当前 System Prompt 的总 token 数（估算）+ 各层小计；提供开发者模式开关可一键导出当前完整组装结果
-9. **配置可关闭**：在 `config.json` 中提供 `system_prompt.enabled` 开关，关闭后回退到空 system 字段（保持与早期会话的兼容）
+9. **配置可关闭**：在 `setting.json` 中提供 `system_prompt.enabled` 开关，关闭后回退到空 system 字段（保持与早期会话的兼容）
 10. **会话恢复兼容**：System Prompt 本身**不**持久化到 session JSON（每次启动重新组装），但组装结果应在同一会话内保持稳定，确保恢复会话后 LLM 看到的 system 仍与首次一致
 
 ---

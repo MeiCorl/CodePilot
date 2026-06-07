@@ -311,11 +311,11 @@
 
 **状态**：已完成
 
-**目标**：扩展 `config.json` 字段承载工具配置；`main.go` 新增 import 触发 `builtin` 包的 init() 注册所有工具；启动日志打印已注册工具列表与安全兜底状态。
+**目标**：扩展 `setting.json` 字段承载工具配置；`main.go` 新增 import 触发 `builtin` 包的 init() 注册所有工具；启动日志打印已注册工具列表与安全兜底状态。
 
 **影响文件**：
 - `src/internal/config/config.go` — 修改，新增 `ToolsConfig` 结构、`ToolExecutionTimeout`、`ToolWorkingDirectory` 字段
-- `config/config.example.json` — 修改，补充 tools 段示例
+- `config/setting.example.json` — 修改，补充 tools 段示例
 - `src/main.go` — 修改，import `_ "src/tool/builtin"` 触发注册
 
 **依赖**：Task 1, Task 2, Task 6
@@ -325,7 +325,7 @@
    - `type ToolsConfig struct { Enabled []string \`json:"enabled,omitempty"\` }`
    - `type Config struct { ...; Tools ToolsConfig \`json:"tools"\`; ToolExecutionTimeoutSeconds int \`json:"tool_execution_timeout_seconds"\`; ToolWorkingDirectory string \`json:"tool_working_directory,omitempty"\` }`
    - 默认值：`ToolExecutionTimeoutSeconds = 30`；`ToolWorkingDirectory = ""` 视为 cwd
-2. `config.example.json`：
+2. `setting.example.json`：
    ```json
    {
      "tools": { "enabled": ["read_file", "write_file", "bash", "glob", "grep"] },

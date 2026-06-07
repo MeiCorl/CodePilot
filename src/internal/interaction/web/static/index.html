@@ -32,7 +32,7 @@
             <div class="topbar-brand">
                 <span class="topbar-logo" aria-hidden="true">CP</span>
                 <span>CodePilot</span>
-                <span class="topbar-version" id="version-badge" title="当前版本">v1.2.0</span>
+                <span class="topbar-version" id="version-badge" title="当前版本">v1.2.1</span>
             </div>
 
             <span class="topbar-divider" aria-hidden="true"></span>
@@ -170,6 +170,8 @@
     <script src="/vendor/purify.min.js" defer></script>
     <script src="/vendor/marked.min.js" defer></script>
     <script src="/vendor/highlight.min.js" defer></script>
+    <!-- Step 1.4 接入 diff-match-patch：app.js 的 openFileDiffModal 通过全局 diff_match_patch 计算行级 diff -->
+    <script src="/vendor/diff-match-patch.min.js" defer></script>
     <script src="/app.js" defer></script>
 </body>
 </html>

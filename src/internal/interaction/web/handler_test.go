@@ -103,7 +103,7 @@ func newTestRig(t *testing.T, chunks []llm.StreamChunk) *testRig {
 		MaxTokens: 1024,
 	}
 	mp := &mockProvider{chunks: chunks}
-	h := NewHandler(mp, sm, cfg, 10, nil, 100000, t.TempDir(), nil, nil)
+	h := NewHandler(mp, sm, cfg, 10, nil, 100000, t.TempDir(), nil, nil, nil)
 
 	s := NewServer("127.0.0.1:0")
 	h.Register(s.Router())
@@ -386,7 +386,7 @@ func TestListSessions(t *testing.T) {
 
 	cfg := &config.Config{Provider: "anthropic", Model: "test", APIKey: "k", MaxTokens: 1024}
 	mp := &mockProvider{}
-	h := NewHandler(mp, sm, cfg, 10, nil, 100000, t.TempDir(), nil, nil)
+	h := NewHandler(mp, sm, cfg, 10, nil, 100000, t.TempDir(), nil, nil, nil)
 	s := NewServer("127.0.0.1:0")
 	h.Register(s.Router())
 	ts := httptest.NewServer(http.HandlerFunc(s.ConnectionManager().HandleWS))
@@ -440,7 +440,7 @@ func TestListSessionsTableMode(t *testing.T) {
 
 	cfg := &config.Config{Provider: "anthropic", Model: "test", APIKey: "k", MaxTokens: 1024}
 	mp := &mockProvider{}
-	h := NewHandler(mp, sm, cfg, 10, nil, 100000, t.TempDir(), nil, nil)
+	h := NewHandler(mp, sm, cfg, 10, nil, 100000, t.TempDir(), nil, nil, nil)
 	s := NewServer("127.0.0.1:0")
 	h.Register(s.Router())
 	ts := httptest.NewServer(http.HandlerFunc(s.ConnectionManager().HandleWS))
@@ -545,7 +545,7 @@ func TestResumeSessionPrefixMatch(t *testing.T) {
 
 	cfg := &config.Config{Provider: "anthropic", Model: "test", APIKey: "k", MaxTokens: 1024}
 	mp := &mockProvider{}
-	h := NewHandler(mp, sm, cfg, 10, nil, 100000, t.TempDir(), nil, nil)
+	h := NewHandler(mp, sm, cfg, 10, nil, 100000, t.TempDir(), nil, nil, nil)
 	s := NewServer("127.0.0.1:0")
 	h.Register(s.Router())
 	ts := httptest.NewServer(http.HandlerFunc(s.ConnectionManager().HandleWS))
@@ -615,7 +615,7 @@ func TestResumeSessionAmbiguous(t *testing.T) {
 
 	cfg := &config.Config{Provider: "anthropic", Model: "test", APIKey: "k", MaxTokens: 1024}
 	mp := &mockProvider{}
-	h := NewHandler(mp, sm, cfg, 10, nil, 100000, t.TempDir(), nil, nil)
+	h := NewHandler(mp, sm, cfg, 10, nil, 100000, t.TempDir(), nil, nil, nil)
 	s := NewServer("127.0.0.1:0")
 	h.Register(s.Router())
 	ts := httptest.NewServer(http.HandlerFunc(s.ConnectionManager().HandleWS))
@@ -653,7 +653,7 @@ func TestSessionLoadedIncludesChatMessages(t *testing.T) {
 
 	cfg := &config.Config{Provider: "anthropic", Model: "test", APIKey: "k", MaxTokens: 1024}
 	mp := &mockProvider{}
-	h := NewHandler(mp, sm, cfg, 10, nil, 100000, t.TempDir(), nil, nil)
+	h := NewHandler(mp, sm, cfg, 10, nil, 100000, t.TempDir(), nil, nil, nil)
 	s := NewServer("127.0.0.1:0")
 	h.Register(s.Router())
 	ts := httptest.NewServer(http.HandlerFunc(s.ConnectionManager().HandleWS))
@@ -696,7 +696,7 @@ func TestGetCurrentSessionPushesCurrent(t *testing.T) {
 
 	cfg := &config.Config{Provider: "anthropic", Model: "test", APIKey: "k", MaxTokens: 1024}
 	mp := &mockProvider{}
-	h := NewHandler(mp, sm, cfg, 10, nil, 100000, t.TempDir(), nil, nil)
+	h := NewHandler(mp, sm, cfg, 10, nil, 100000, t.TempDir(), nil, nil, nil)
 	if h.CurrentSessionID() != sess.ID {
 		t.Fatalf("构造后 CurrentSessionID = %q，期望 %q", h.CurrentSessionID(), sess.ID)
 	}
@@ -731,7 +731,7 @@ func TestGetCurrentSessionEmptyMgr(t *testing.T) {
 	sm, _ := session.NewSessionManagerWithDir(dir)
 	cfg := &config.Config{Provider: "anthropic", Model: "test", APIKey: "k", MaxTokens: 1024}
 	mp := &mockProvider{}
-	h := NewHandler(mp, sm, cfg, 10, nil, 100000, t.TempDir(), nil, nil)
+	h := NewHandler(mp, sm, cfg, 10, nil, 100000, t.TempDir(), nil, nil, nil)
 
 	s := NewServer("127.0.0.1:0")
 	h.Register(s.Router())
@@ -766,7 +766,7 @@ func TestHandlerRecoversLatestSession(t *testing.T) {
 
 	cfg := &config.Config{Provider: "anthropic", Model: "test", APIKey: "k", MaxTokens: 1024}
 	mp := &mockProvider{}
-	h := NewHandler(mp, sm, cfg, 10, nil, 100000, t.TempDir(), nil, nil)
+	h := NewHandler(mp, sm, cfg, 10, nil, 100000, t.TempDir(), nil, nil, nil)
 
 	if h.CurrentSessionID() != sess.ID {
 		t.Errorf("CurrentSessionID = %q，期望 %q", h.CurrentSessionID(), sess.ID)
@@ -786,7 +786,7 @@ func TestDeleteSessionRemovesFileAndNotifies(t *testing.T) {
 	// 假设当前激活的是 s2（最近更新），删 s1
 	cfg := &config.Config{Provider: "anthropic", Model: "test", APIKey: "k", MaxTokens: 1024}
 	mp := &mockProvider{}
-	h := NewHandler(mp, sm, cfg, 10, nil, 100000, t.TempDir(), nil, nil)
+	h := NewHandler(mp, sm, cfg, 10, nil, 100000, t.TempDir(), nil, nil, nil)
 	// 直接覆盖构造时 LoadLatest 决定的 current，确保其是 s2
 	h.mu.Lock()
 	loaded, _ := sm.Load(s2.ID)
@@ -841,7 +841,7 @@ func TestDeleteSessionSwitchesCurrentWhenDeletingCurrent(t *testing.T) {
 
 	cfg := &config.Config{Provider: "anthropic", Model: "test", APIKey: "k", MaxTokens: 1024}
 	mp := &mockProvider{}
-	h := NewHandler(mp, sm, cfg, 10, nil, 100000, t.TempDir(), nil, nil)
+	h := NewHandler(mp, sm, cfg, 10, nil, 100000, t.TempDir(), nil, nil, nil)
 	// 强制把 current 设为 s1（稍旧），然后删除它，预期切到 s2
 	h.mu.Lock()
 	loaded, _ := sm.Load(s1.ID)
@@ -978,7 +978,7 @@ func TestStep4_LoadLegacySessionCompat(t *testing.T) {
 	// 用 NewHandler 加载（模拟「启动时自动恢复最近会话」）
 	cfg := &config.Config{Provider: "anthropic", Model: "test", APIKey: "k", MaxTokens: 1024}
 	mp := &mockProvider{}
-	h := NewHandler(mp, sm, cfg, 10, nil, 100000, t.TempDir(), nil, nil)
+	h := NewHandler(mp, sm, cfg, 10, nil, 100000, t.TempDir(), nil, nil, nil)
 
 	// 验证：CurrentSessionID = 旧会话 ID（LoadLatest 按 UpdatedAt 排序）
 	if h.CurrentSessionID() != legacyID {
@@ -1046,5 +1046,196 @@ func TestStep4_LoadLegacySessionCompat(t *testing.T) {
 		if loadedMessages < 3 {
 			t.Errorf("ChatMessages 数量 = %d，过少", loadedMessages)
 		}
+	}
+}
+
+// ---- Task 3: get_file_diff 协议单测 ----
+
+// newDiffTestRig 构造可注入 FileDiffStore 的测试装置。
+// newTestRig 默认把 fileDiffStore 设为 nil；本函数允许测试用例显式注入自定义 store。
+func newDiffTestRig(t *testing.T, store *FileDiffStore) *Handler {
+	t.Helper()
+	dir := t.TempDir()
+	sm, err := session.NewSessionManagerWithDir(dir)
+	if err != nil {
+		t.Fatalf("SessionManager 初始化失败: %v", err)
+	}
+	cfg := &config.Config{Provider: "anthropic", Model: "test", APIKey: "k", MaxTokens: 1024}
+	mp := &mockProvider{}
+	return NewHandler(mp, sm, cfg, 10, nil, 100000, t.TempDir(), nil, nil, store)
+}
+
+// dialRig 根据给定 handler 拉起 ws 服务并返回客户端连接。
+// 与 newTestRig 拆开便于本组测试复用 Handler 构造逻辑。
+func dialRig(t *testing.T, h *Handler) (*websocket.Conn, func()) {
+	t.Helper()
+	s := NewServer("127.0.0.1:0")
+	h.Register(s.Router())
+	ts := httptest.NewServer(http.HandlerFunc(s.ConnectionManager().HandleWS))
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/"
+	client, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		ts.Close()
+		t.Fatalf("ws 拨号失败: %v", err)
+	}
+	cleanup := func() {
+		client.Close()
+		ts.Close()
+	}
+	return client, cleanup
+}
+
+// TestGetFileDiff_Found 验证 found 分支：store 中有记录时回包含完整 before/after。
+func TestGetFileDiff_Found(t *testing.T) {
+	store := NewFileDiffStore()
+	store.Set("tool-abc", tool.FileDiffEntry{
+		FilePath: "/tmp/foo.go",
+		Before:   "package x\n",
+		After:    "package x\nconst Y = 1\n",
+	})
+	h := newDiffTestRig(t, store)
+	client, cleanup := dialRig(t, h)
+	defer cleanup()
+
+	data, err := EncodePayload(MsgTypeGetFileDiff, GetFileDiffPayload{ToolUseID: "tool-abc"})
+	if err != nil {
+		t.Fatalf("编码失败: %v", err)
+	}
+	if err := client.WriteMessage(websocket.TextMessage, data); err != nil {
+		t.Fatalf("发送失败: %v", err)
+	}
+
+	_ = client.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, raw, err := client.ReadMessage()
+	if err != nil {
+		t.Fatalf("读取失败: %v", err)
+	}
+	msg, err := Decode(raw)
+	if err != nil {
+		t.Fatalf("解码失败: %v", err)
+	}
+	if msg.Type != MsgTypeFileDiff {
+		t.Fatalf("Type = %q, want %q", msg.Type, MsgTypeFileDiff)
+	}
+	p, _ := AsPayload[FileDiffPayload](msg)
+	if !p.Found {
+		t.Errorf("Found = false, want true")
+	}
+	if p.Reason != "" {
+		t.Errorf("Reason = %q, want \"\"", p.Reason)
+	}
+	if p.ToolUseID != "tool-abc" {
+		t.Errorf("ToolUseID = %q, want %q", p.ToolUseID, "tool-abc")
+	}
+	if p.FilePath != "/tmp/foo.go" {
+		t.Errorf("FilePath = %q, want %q", p.FilePath, "/tmp/foo.go")
+	}
+	if p.Language != "go" {
+		t.Errorf("Language = %q, want %q", p.Language, "go")
+	}
+	if p.Before != "package x\n" {
+		t.Errorf("Before = %q, want %q", p.Before, "package x\n")
+	}
+	if p.After != "package x\nconst Y = 1\n" {
+		t.Errorf("After = %q, want %q", p.After, "package x\nconst Y = 1\n")
+	}
+}
+
+// TestGetFileDiff_NotFound 验证 not_found 分支：store 中无该 tool_use_id 时回 found=false。
+func TestGetFileDiff_NotFound(t *testing.T) {
+	store := NewFileDiffStore()
+	// 故意写入另一条记录，确保查询的 id 不存在
+	store.Set("tool-other", tool.FileDiffEntry{FilePath: "/x", After: "y"})
+	h := newDiffTestRig(t, store)
+	client, cleanup := dialRig(t, h)
+	defer cleanup()
+
+	data, err := EncodePayload(MsgTypeGetFileDiff, GetFileDiffPayload{ToolUseID: "tool-missing"})
+	if err != nil {
+		t.Fatalf("编码失败: %v", err)
+	}
+	if err := client.WriteMessage(websocket.TextMessage, data); err != nil {
+		t.Fatalf("发送失败: %v", err)
+	}
+
+	_ = client.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, raw, err := client.ReadMessage()
+	if err != nil {
+		t.Fatalf("读取失败: %v", err)
+	}
+	msg, _ := Decode(raw)
+	if msg.Type != MsgTypeFileDiff {
+		t.Fatalf("Type = %q, want %q", msg.Type, MsgTypeFileDiff)
+	}
+	p, _ := AsPayload[FileDiffPayload](msg)
+	if p.Found {
+		t.Errorf("Found = true, want false")
+	}
+	if p.Reason != "not_found" {
+		t.Errorf("Reason = %q, want %q", p.Reason, "not_found")
+	}
+	// 找不到时业务字段必须为空
+	if p.FilePath != "" || p.Language != "" || p.Before != "" || p.After != "" {
+		t.Errorf("not_found 分支应不携带业务字段，实际: %+v", p)
+	}
+	if p.ToolUseID != "tool-missing" {
+		t.Errorf("ToolUseID = %q, want %q", p.ToolUseID, "tool-missing")
+	}
+}
+
+// TestGetFileDiff_EmptyToolUseID 验证空 tool_use_id 走 stream_error 拒绝。
+func TestGetFileDiff_EmptyToolUseID(t *testing.T) {
+	store := NewFileDiffStore()
+	h := newDiffTestRig(t, store)
+	client, cleanup := dialRig(t, h)
+	defer cleanup()
+
+	// 显式发送空字符串（仅空白字符也算空）
+	data, _ := EncodePayload(MsgTypeGetFileDiff, GetFileDiffPayload{ToolUseID: "   "})
+	if err := client.WriteMessage(websocket.TextMessage, data); err != nil {
+		t.Fatalf("发送失败: %v", err)
+	}
+
+	_ = client.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, raw, err := client.ReadMessage()
+	if err != nil {
+		t.Fatalf("读取失败: %v", err)
+	}
+	msg, _ := Decode(raw)
+	if msg.Type != MsgTypeStreamError {
+		t.Fatalf("Type = %q, want %q", msg.Type, MsgTypeStreamError)
+	}
+	p, _ := AsPayload[StreamErrorPayload](msg)
+	if p.Code != "empty_tool_use_id" {
+		t.Errorf("Code = %q, want %q", p.Code, "empty_tool_use_id")
+	}
+}
+
+// TestGetFileDiff_NilStore 验证 store 为 nil 时也走 not_found，等价"未启用 diff 预览"。
+func TestGetFileDiff_NilStore(t *testing.T) {
+	h := newDiffTestRig(t, nil)
+	client, cleanup := dialRig(t, h)
+	defer cleanup()
+
+	data, _ := EncodePayload(MsgTypeGetFileDiff, GetFileDiffPayload{ToolUseID: "any-id"})
+	if err := client.WriteMessage(websocket.TextMessage, data); err != nil {
+		t.Fatalf("发送失败: %v", err)
+	}
+
+	_ = client.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, raw, err := client.ReadMessage()
+	if err != nil {
+		t.Fatalf("读取失败: %v", err)
+	}
+	msg, _ := Decode(raw)
+	if msg.Type != MsgTypeFileDiff {
+		t.Fatalf("Type = %q, want %q", msg.Type, MsgTypeFileDiff)
+	}
+	p, _ := AsPayload[FileDiffPayload](msg)
+	if p.Found {
+		t.Errorf("nil store 时 Found = true, want false")
+	}
+	if p.Reason != "not_found" {
+		t.Errorf("Reason = %q, want %q", p.Reason, "not_found")
 	}
 }

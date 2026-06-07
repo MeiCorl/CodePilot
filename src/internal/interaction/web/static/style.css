@@ -854,6 +854,46 @@ body {
 }
 .message-tool-header:hover { background: var(--bg-hover); }
 
+/* Step 1.4：工具块头部动作按钮容器。
+   位于 summary 之后、toggle 折叠箭头之前。
+   margin-left:auto 让 actions 推到右侧，toggle 紧跟其后保持在最右。
+   容器内可容纳多个 .message-tool-action-btn（未来扩展）。 */
+.message-tool-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+    margin-left: auto;
+    margin-right: var(--sp-2);
+}
+
+/* Step 1.4：「查看改动」等动作按钮样式。
+   与 design token 对齐：默认低调灰，hover 琥珀金高亮。 */
+.message-tool-action-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    font-size: var(--fs-xs);
+    color: var(--fg-dim);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--r-sm);
+    cursor: pointer;
+    transition: color .15s var(--ease-out),
+                background .15s var(--ease-out),
+                border-color .15s var(--ease-out);
+}
+.message-tool-action-btn:hover {
+    color: var(--accent-bright);
+    background: var(--bg-hover);
+    border-color: var(--accent);
+}
+.message-tool-action-btn svg {
+    width: 12px;
+    height: 12px;
+}
+
 /* 工具图标方块：与 .message-avatar 直径对齐，但用纯字符表示 */
 .message-tool-icon {
     width: 22px;
@@ -1732,4 +1772,271 @@ body {
     max-height: 320px;
     overflow-y: auto;
     background: var(--bg, #0a0a0b);
+}
+
+/* ============================================================================
+ * Step 1.4 · 文件 diff 弹窗
+ * 双栏并排（Before / After），行级背景色区分新增/删除/未变。
+ * 配色与 highlight 主题 token 对齐：
+ *   - 删除红 --error ( #E06C75 )
+ *   - 新增绿 --success ( #98C379 )
+ *   - 未变保持透明，避免长文件大面积色块
+ * ========================================================================== */
+
+/* 整层遮罩：fixed 居中、80% 视口宽、80vh 高上限 */
+.diff-modal {
+    position: fixed;
+    inset: 0;
+    z-index: 200;          /* 高于 sp-modal(100) / dev-panel(150) */
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(10, 10, 11, 0.72);   /* 暗遮罩，承袭全局 modal 风格 */
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+    animation: diff-modal-fade-in 0.16s ease-out;
+}
+
+@keyframes diff-modal-fade-in {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+}
+
+/* 内容容器：宽度 80% 视口（不超过 1280）、最大高 80vh */
+.diff-modal-inner {
+    width: 80vw;
+    max-width: 1280px;
+    max-height: 80vh;
+    background: var(--bg, #0a0a0b);
+    border: 1px solid var(--border, #1a1b1e);
+    border-radius: 10px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+/* 头部：文件名 + 工具名 + 关闭按钮 */
+.diff-modal-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border, #1a1b1e);
+    background: var(--bg, #0a0a0b);
+    flex-shrink: 0;
+}
+
+.diff-modal-filename {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--fg, #e8e8e8);
+    word-break: break-all;
+}
+
+.diff-modal-toolname {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    color: var(--accent, #c8a96a);
+    text-transform: uppercase;
+    background: rgba(200, 169, 106, 0.10);
+    border: 1px solid rgba(200, 169, 106, 0.28);
+    border-radius: 3px;
+    padding: 2px 6px;
+    flex-shrink: 0;
+}
+
+.diff-modal-spacer {
+    flex: 1;
+}
+
+.diff-modal-close {
+    width: 24px;
+    height: 24px;
+    border: none;
+    background: transparent;
+    color: var(--fg-dim, #a0a0a8);
+    font-size: 18px;
+    line-height: 1;
+    cursor: pointer;
+    border-radius: 4px;
+    flex-shrink: 0;
+}
+
+.diff-modal-close:hover {
+    background: var(--bg-hover, #15151a);
+    color: var(--fg, #e8e8e8);
+}
+
+/* 主体：滚动容器；内含双栏 grid */
+.diff-modal-body {
+    flex: 1;
+    overflow: auto;
+    background: var(--bg, #0a0a0b);
+    min-height: 0;
+}
+
+/* 加载态 / 错误态：单列居中 */
+.diff-modal-message {
+    padding: 40px 20px;
+    text-align: center;
+    color: var(--fg-muted, #6a6a72);
+    font-size: 13px;
+    line-height: 1.6;
+}
+
+.diff-modal-message.error {
+    color: var(--error, #e06c75);
+}
+
+/* 双栏 grid：左 before、右 after；等宽，行高 1.5，行号列固定 */
+.diff-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px;
+    line-height: 1.5;
+}
+
+/* 单列容器：内部多个 .diff-line 堆叠 */
+.diff-side {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;        /* 防止内容溢出撑破 grid */
+}
+
+.diff-side + .diff-side {
+    border-left: 1px solid var(--border, #1a1b1e);
+}
+
+/* 列标题（Before / After） */
+.diff-side-label {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    padding: 6px 12px;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--fg-dim, #a0a0a8);
+    background: var(--bg, #0a0a0b);
+    border-bottom: 1px solid var(--border, #1a1b1e);
+    user-select: none;
+}
+
+/* 单行：行号 + 内容 */
+.diff-line {
+    display: flex;
+    align-items: stretch;
+    min-height: 1.5em;
+}
+
+.diff-line-num {
+    flex-shrink: 0;
+    width: 48px;
+    padding: 0 8px;
+    text-align: right;
+    color: var(--fg-faint, #4a4a52);
+    user-select: none;
+    border-right: 1px solid var(--border, #1a1b1e);
+    background: var(--bg, #0a0a0b);
+}
+
+.diff-line-content {
+    flex: 1;
+    padding: 0 12px;
+    white-space: pre;
+    overflow-x: auto;
+    color: var(--fg, #e8e8e8);
+}
+
+/* 新增：绿底浅色文字；只出现在右栏（After） */
+.diff-line-add {
+    background: rgba(152, 195, 121, 0.14);
+}
+
+.diff-line-add .diff-line-content {
+    color: var(--success, #98c379);
+}
+
+.diff-line-add .diff-line-num {
+    color: var(--success, #98c379);
+    background: rgba(152, 195, 121, 0.08);
+}
+
+/* 删除：红底浅色文字；只出现在左栏（Before） */
+.diff-line-del {
+    background: rgba(224, 108, 117, 0.14);
+}
+
+.diff-line-del .diff-line-content {
+    color: var(--error, #e06c75);
+}
+
+.diff-line-del .diff-line-num {
+    color: var(--error, #e06c75);
+    background: rgba(224, 108, 117, 0.08);
+}
+
+/* 未变：透明背景 */
+.diff-line-ctx {
+    background: transparent;
+}
+
+/* 占位空行：对侧有变化时此侧留空，保持行号对齐 */
+.diff-line-empty {
+    background: rgba(255, 255, 255, 0.02);
+}
+
+.diff-line-empty .diff-line-content {
+    background: repeating-linear-gradient(
+        45deg,
+        transparent,
+        transparent 4px,
+        rgba(255, 255, 255, 0.02) 4px,
+        rgba(255, 255, 255, 0.02) 8px
+    );
+}
+
+/* 行首 +/- 标记：与 git diff 风格一致 */
+.diff-line-add .diff-line-content::before { content: "+ "; color: var(--success, #98c379); }
+.diff-line-del .diff-line-content::before { content: "- "; color: var(--error, #e06c75); }
+.diff-line-ctx .diff-line-content::before { content: "  "; color: var(--fg-faint, #4a4a52); }
+
+/* 行内 inline word diff 高亮：成对 (del, add) 行做字符级 diff 后包裹。
+   视觉层次：
+     - 行级背景色（.diff-line-add / .diff-line-del）→ 标出"整行被增/删"
+     - 词级背景色（.diff-word-add / .diff-word-del）→ 标出"行内具体哪个词被改"
+   词级背景色比行级更亮，让用户一眼定位"修改点"。 */
+/* 词级删除：Before 侧，把"被删的词"用红底 + 删除线标出 */
+.diff-word-del {
+    background: rgba(224, 108, 117, 0.32);
+    color: #e06c75;
+    text-decoration: line-through;
+    text-decoration-color: rgba(224, 108, 117, 0.75);
+    text-decoration-thickness: 1px;
+    border-radius: 2px;
+    padding: 0 2px;
+    margin: 0 -1px;
+}
+/* 词级新增：After 侧，把"新增的词"用绿底 + 加粗标出 */
+.diff-word-add {
+    background: rgba(152, 195, 121, 0.32);
+    color: #98c379;
+    border-radius: 2px;
+    padding: 0 2px;
+    margin: 0 -1px;
+    font-weight: 500;
+}
+
+/* 行内 inline diff 行加左侧 3px 色条，视觉强调"这行有行内词级改动"。
+   注意：left 4px 是行号，色条贴在内容区最左，避免与行号混淆。 */
+.diff-line-has-inline.diff-line-add {
+    box-shadow: inset 3px 0 0 var(--success, #98c379);
+}
+.diff-line-has-inline.diff-line-del {
+    box-shadow: inset 3px 0 0 var(--error, #e06c75);
 }

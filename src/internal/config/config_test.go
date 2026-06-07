@@ -35,7 +35,7 @@ func TestSetDefaults(t *testing.T) {
 // TestLoadFromPathSuccess 验证正常加载完整配置
 func TestLoadFromPathSuccess(t *testing.T) {
 	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.json")
+	cfgPath := filepath.Join(dir, "setting.json")
 	content, _ := json.Marshal(Config{
 		Provider:   "openai",
 		Model:     "gpt-4o",
@@ -60,7 +60,7 @@ func TestLoadFromPathSuccess(t *testing.T) {
 // TestLoadFromPathDefaults 验证不填写可选字段时使用默认值
 func TestLoadFromPathDefaults(t *testing.T) {
 	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.json")
+	cfgPath := filepath.Join(dir, "setting.json")
 	// 不填写 Timeout 和 MaxRetries
 	content, _ := json.Marshal(map[string]any{
 		"provider":   "anthropic",
@@ -94,7 +94,7 @@ func TestLoadFromPathDefaults(t *testing.T) {
 // TestLoadFromPathWithToolsConfig 验证 tools 段被正确解析。
 func TestLoadFromPathWithToolsConfig(t *testing.T) {
 	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.json")
+	cfgPath := filepath.Join(dir, "setting.json")
 	content, _ := json.Marshal(map[string]any{
 		"provider":                      "anthropic",
 		"model":                         "claude-sonnet-4-20250514",
@@ -123,7 +123,7 @@ func TestLoadFromPathWithToolsConfig(t *testing.T) {
 
 // TestLoadFromPathNotFound 验证文件不存在时的错误提示
 func TestLoadFromPathNotFound(t *testing.T) {
-	_, err := LoadFromPath("/nonexistent/path/config.json")
+	_, err := LoadFromPath("/nonexistent/path/setting.json")
 	if err == nil {
 		t.Fatal("期望返回错误，实际为 nil")
 	}

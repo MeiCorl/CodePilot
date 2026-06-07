@@ -120,7 +120,7 @@
 2. `Builder.Assemble`：注册顺序 `static → environment → agents_md → memory`（前 2 个 placement=System，后 2 个 placement=UserMessage）
 3. `Builder.Assemble`：把 System placement 的多段 `Section` 拼成 `SystemBlocks`（按 Source 顺序）；UserMessage placement 合并为单条 `LeadUserMessage`（空则不创建）
 4. `Builder.Assemble`：累计每段 tokens（`tokens/estimate.go`），写入 `Stats` 与 `TotalTokens`
-5. 配置开关：`config.json` 中 `system_prompt.enabled = false` 时，Builder 跳过所有 Source，返回空 `SystemPrompt`
+5. 配置开关：`setting.json` 中 `system_prompt.enabled = false` 时，Builder 跳过所有 Source，返回空 `SystemPrompt`
 6. 集成测试：端到端跑一次 `Assemble`，验证最终结构字段、顺序、token 估算
 
 **参考资料**：

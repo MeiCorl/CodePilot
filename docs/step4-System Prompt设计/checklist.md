@@ -128,7 +128,7 @@
   - 实际：`TestBuilder_RealFourSources_EndToEnd` PASS（SystemBlocks=2、LeadUserMessage 含 `project body` + `<project_instructions>` 包裹、Stats 4 条按预期顺序）
   - 结论：通过
 
-- [x] `config.json` 中 `system_prompt.enabled = false` 时 Builder 跳过所有 Source，返回空 `SystemPrompt`
+- [x] `setting.json` 中 `system_prompt.enabled = false` 时 Builder 跳过所有 Source，返回空 `SystemPrompt`
   - 预期：单元测试断言 SystemBlocks == nil, LeadUserMessage == "", TotalTokens == 0
   - 实际：`TestBuilder_Disabled_ShortCircuit` PASS（用 `panicSource` 验证 enabled=false 时**真的没**调用 Source.Assemble；`IsEmpty()` 返回 true、所有统计字段为 0）
   - 结论：通过

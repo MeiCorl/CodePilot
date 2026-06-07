@@ -14,16 +14,16 @@
 | 指标     | 数值                                                    |
 | ------ | ----------------------------------------------------- |
 | 计划总步骤数 | 12（含子步骤后实际更多）                                         |
-| 已完成步骤数 | 7（Step 1 / Step 1.1 / Step 1.2 / Step 1.3 / Step 2 / Step 3 / Step 4）    |
+| 已完成步骤数 | 8（Step 1 / Step 1.1 / Step 1.2 / Step 1.3 / Step 1.4 / Step 2 / Step 3 / Step 4）    |
 | 当前最新版本 | V1.0.6                                                |
 | 下一步骤   | Step 5 — 权限系统设计                             |
-| 最近更新   | 2026-06-06                                            |
+| 最近更新   | 2026-06-07                                            |
 
 
 进度条：
 
 ```
-[█████████████████░░░░░░░░░░░] 7/12 步骤完成（58%）
+[███████████████████░░░░░░░░░░] 8/12 步骤完成（67%）
 ```
 
 ---
@@ -37,14 +37,14 @@
 - **Task 完成数**：12 / 12
 - **核心交付能力**：
   1. Anthropic（Claude）+ OpenAI（GPT）双 Provider 适配，统一通过 `ContentBlock` 抽象交互
-  2. 配置文件驱动（`~/.codepilot/config.json`）：模型、API 地址、密钥、超时、重试等
+  2. 配置文件驱动（`~/.codepilot/setting.json`）：模型、API 地址、密钥、超时、重试等
   3. 基于滑动窗口的简单上下文管理（预留 System Prompt 空间）
   4. 多会话管理 + 会话 JSON 持久化（`~/.codepilot/sessions/`）
   5. 异步文件日志系统（`~/.codepilot/logs/`）
   6. 流式响应 + 中断
 - **遗留备注**：Task 9 的 Bubble Tea TUI 界面已在 Step 1.1 中被 WebUI 完全替换
 
-### Step 1.1 — UI 界面重构：TUI → WebUI（V1.0.1）
+#### Step 1.1 — UI 界面重构：TUI → WebUI（V1.0.1）
 
 - **完成时间**：见 commit `a54be70` `Release V1.0.1: 重构UI界面,使用Web页面代替TUI交互`
 - **设计文档**：[docs/step1.1-UI界面重构/](../docs/step1.1-UI界面重构/)
@@ -58,7 +58,7 @@
   6. 深色编辑式美学（参考 Linear / Vercel / Raycast 风格）
   7. 最小可用斜杠命令：`/new`、`/sessions`、`/resume <id>`，输入 `/` 弹出下拉候选
 
-### Step 1.2 — 对话栏富文本渲染增强（V1.0.2）
+#### Step 1.2 — 对话栏富文本渲染增强（V1.0.2）
 
 - **完成时间**：见 commit `fe891be` `Release V1.0.2: 增强UI富文本渲染能力`
 - **设计文档**：[docs/step1.2-对话栏文本渲染/](../docs/step1.2-对话栏文本渲染/)
@@ -70,6 +70,39 @@
   4. DOMPurify v3.2.4 XSS 防护，剔除 `<script>` / `<iframe>` / `on`* 等危险标记
   5. 流中 chunk 纯文本展示，`stream_done` 后一次性 marked → DOMPurify → enhanceCodeBlocks，避免半截代码闪烁
   6. highlight 主题 token 颜色与设计系统对齐（琥珀金 keyword / 思考蓝函数名 / 绿色字符串）
+
+#### Step 1.3 — WebUI 流式渲染（V1.0.5）
+
+- **完成时间**：2026-06-04
+- **设计文档**：[docs/step1.3-WebUI流式渲染/](../docs/step1.3-WebUI流式渲染/)
+- **Task 完成数**：6 / 6
+- **核心交付能力**：
+  1. 流式 Markdown 实时渲染：LLM 输出的每个 delta 经 marked + DOMPurify 解析后立即渲染为格式化 HTML，用户实时看到标题、列表、加粗、链接、表格等元素
+  2. 未闭合代码块预处理（`closeOpenFences`）：自动检测并补全未闭合的围栏标记，确保代码块在流式中即时创建容器
+  3. 防抖合并渲染（80ms）：高频 delta 合并后统一渲染，长文本不卡顿
+  4. 首个 delta 立即渲染：用户无感知延迟，响应即现
+  5. 流结束后最终增强：`enhanceCodeBlocks` 追加 hljs 语法高亮、代码块 header（语言标签 + Copy 按钮）、JSON 校验，最终渲染质量与 Step 1.2 一致
+  6. DOMPurify 安全防护持续有效：流式过程中每次 `innerHTML` 更新均经过 DOMPurify 过滤
+  7. 完整的边界场景处理：工具调用兼容、中断内容保留、会话切换状态清理、空响应安全跳过
+
+#### Step 1.4 — WebUI 工具展示优化（V1.0.7）
+
+- **完成时间**：2026-06-07
+- **设计文档**：[docs/step1.4-WebUI工具展示优化/](../docs/step1.4-WebUI工具展示优化/)
+- **Task 完成数**：7 / 7
+- **核心交付能力**：
+  1. **「查看改动」按钮 + 双栏 diff 弹窗**：`WriteFile` / `EditFile` 完成态工具块头部新增琥珀金按钮，点击触发双栏 diff 弹窗（Before / After 全文 + 行级高亮），新增绿、删除红、未变白
+  2. **diff-match-patch 行级 diff**：自包含 vendor 资源（21 KB UMD 版），`diff_main` + `diff_cleanupSemantic` → 按 op 拆行映射 `add / del / ctx` 三态，按行号分配
+  3. **highlight.js 按文件后缀语法高亮**：覆盖 13 种语言（`go` / `markdown` / `json` / `xml` / `python` / `typescript` / `javascript` / `css` / `yaml` / `sql` / `bash` 等），未识别后缀回退纯文本
+  4. **进程内 FileDiffStore**：`sync.RWMutex` 保护 `map[tool_use_id]FileDiff`；单条容量上限 2 MB（`Before+After` 字节数），超限拒绝写入并 warn；tool_use_id 为主键保证同文件多次编辑各自独立弹窗
+  5. **WebSocket 协议 `get_file_diff` ↔ `file_diff`**：前端按钮点击 → ws 发 `get_file_diff{tool_use_id}` → 后端按 id 查 store → 回 `file_diff{tool_use_id, found, reason, file_path, language, before, after}`；reason 取 `not_found` / `too_large`
+  6. **Consumer-side Interface 解耦**：`tool.FileDiffSink` 接口定义在 tool 包（最底座），web.FileDiffStore 自动满足，builtin 仅依赖抽象，**避免 web → builtin 反向依赖**；主流程在 `main.go` 顶层构造 `FileDiffStore` 单例后通过 `SetDiffSink` setter 注入 WriteFile/EditFile
+  7. **diff 数据生命周期**：仅进程内存，不进 session JSON；进程重启后旧会话拉取得到 `reason="not_found"` 弹窗显示"暂无改动预览"对应文案，不报错
+  8. **tool_use_id ctx 传递**：`tool.WithToolUseID(ctx, id)` / `ToolUseIDFromContext(ctx)` 让 engine 在调工具前把 id 注入 ctx，工具侧 recordDiff 不感知 engine 实现
+  9. **历史会话兼容**：恢复分支沿用 `appendToolStartNode + updateToolEndNode` 同一套代码，旧 `tool_call.name` 为 WriteFile/EditFile 自动出现按钮（点击后由后端回 not_found 提示）
+  10. **安全与性能**：弹窗内容全 DOMPurify/转义，无 `<script>` 注入路径；10s WS 超时兜底；Esc / 点击遮罩 / × 按钮三种关闭方式；并发 5 个 toolUseID 拉取互不串扰
+  11. **端到端测试覆盖**：5 个 e2e 集成用例（WriteFile / EditFile / NotFound / NilStore / MultipleParallel）+ 真实启动冒烟（HTTP 资源 200、WS 协议往返正确）
+  12. **失败态无按钮**：`updateToolEndNode` 中 `status === 'completed' && isFileEditingTool(toolName)` 守卫；error / aborted / timeout 不调 `attachViewDiffButton`
 
 ### Step 2 — 工具系统集成（V1.0.3）
 
@@ -104,20 +137,6 @@
   8. WebUI 迭代进度事件：`agent_iteration` WebSocket 事件 + `status_update("thinking")` 状态切换
   9. 5 种终止原因枚举：completed / max_iterations / context_overflow / aborted / error，前端可区分展示
   10. 会话持久化向后兼容：多轮 tool_use/tool_result 消息正确序列化，Step 2 旧会话在新代码下正常加载
-
-### Step 1.3 — WebUI 流式渲染（V1.0.5）
-
-- **完成时间**：2026-06-04
-- **设计文档**：[docs/step1.3-WebUI流式渲染/](../docs/step1.3-WebUI流式渲染/)
-- **Task 完成数**：6 / 6
-- **核心交付能力**：
-  1. 流式 Markdown 实时渲染：LLM 输出的每个 delta 经 marked + DOMPurify 解析后立即渲染为格式化 HTML，用户实时看到标题、列表、加粗、链接、表格等元素
-  2. 未闭合代码块预处理（`closeOpenFences`）：自动检测并补全未闭合的围栏标记，确保代码块在流式中即时创建容器
-  3. 防抖合并渲染（80ms）：高频 delta 合并后统一渲染，长文本不卡顿
-  4. 首个 delta 立即渲染：用户无感知延迟，响应即现
-  5. 流结束后最终增强：`enhanceCodeBlocks` 追加 hljs 语法高亮、代码块 header（语言标签 + Copy 按钮）、JSON 校验，最终渲染质量与 Step 1.2 一致
-  6. DOMPurify 安全防护持续有效：流式过程中每次 `innerHTML` 更新均经过 DOMPurify 过滤
-  7. 完整的边界场景处理：工具调用兼容、中断内容保留、会话切换状态清理、空响应安全跳过
 
 ### Step 4 — System Prompt 设计（V1.0.6）
 
@@ -167,9 +186,9 @@
 
 | 架构层       | 已落地                                                    | 待落地                                         |
 | --------- | ----------------------------------------------------- | ------------------------------------------- |
-| 第 1 层：交互层 | WebUI（HTTP + WebSocket + 富文本渲染 + 流式 Markdown 实时渲染 + SP 可观测性 + 开发者模式 Export） | 完整命令系统（Step 9）、Skill 系统（Step 10）            |
+| 第 1 层：交互层 | WebUI（HTTP + WebSocket + 富文本渲染 + 流式 Markdown 实时渲染 + SP 可观测性 + 开发者模式 Export + 工具块「查看改动」双栏 diff 弹窗） | 完整命令系统（Step 9）、Skill 系统（Step 10）            |
 | 第 2 层：引擎层 | 对话管理 + Agent Loop（ReAct 循环迭代 + 多工具并行 + 迭代上限 + 溢出保护）、完整 System Prompt（Builder + 4 Source + 模板变量 + Anthropic 缓存切片） | —                                            |
-| 第 3 层：工具层 | 工具抽象 + Registry + 5 内置工具 + 路径沙箱 + Bash 黑名单 + 批量执行 | MCP（Step 6）、Hook（Step 11）、SubAgent（Step 12） |
+| 第 3 层：工具层 | 工具抽象 + Registry + 6 内置工具（ReadFile/WriteFile/EditFile/Bash/Glob/Grep）+ 路径沙箱 + Bash 黑名单 + 批量执行 + 进程内 FileDiffStore | MCP（Step 6）、Hook（Step 11）、SubAgent（Step 12） |
 | 第 4 层：记忆层 | 会话持久化、上下文滑动窗口                                        | 高级上下文管理（Step 7）、自动记忆（Step 8）                |
 | 第 5 层：安全层 | 路径沙箱、Bash 危险命令黑名单                                    | 完整权限系统（Step 5，含 HITL 确认）                    |
 

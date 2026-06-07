@@ -300,7 +300,7 @@
   - 结论：通过。
 
 - [x] 配置缺失时优雅退出
-  - 预期：`~/.codepilot/config.json` 不存在时，终端输出友好提示后退出（不启动 Web 服务）
+  - 预期：`~/.codepilot/setting.json` 不存在时，终端输出友好提示后退出（不启动 Web 服务）
   - 实际：冒烟测试第一轮（缺 config.json）stderr 输出 "[error] 配置文件不存在: ...\n请创建配置文件，可参考项目根目录 config/config.example.json"；进程以 exit 1 结束，未进入 Web 启动分支。`config.Load` 返回的 error 已携带可执行建议，main 透传到 stderr。
   - 结论：通过。
 
