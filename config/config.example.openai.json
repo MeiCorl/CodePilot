@@ -3,8 +3,8 @@
     "model": "gpt-4o",
     "base_url": "",
     "api_key": "sk-your-api-key-here",
-    "max_tokens": 4096,
-    "timeout": 60,
+    "max_tokens": 16384,
+    "timeout": 180,
     "max_retries": 2,
     "tools": {
         "enabled": ["read_file", "write_file", "bash", "glob", "grep"]

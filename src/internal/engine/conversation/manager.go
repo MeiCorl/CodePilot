@@ -13,6 +13,9 @@ import (
 	"context"
 	"unicode/utf8"
 
+	"go.uber.org/zap"
+
+	"github.com/MeiCorl/CodePilot/src/internal/logger"
 	memctx "github.com/MeiCorl/CodePilot/src/internal/memory/context"
 	"github.com/MeiCorl/CodePilot/src/llm"
 	"github.com/MeiCorl/CodePilot/src/internal/tool"
@@ -387,7 +390,7 @@ type TurnResult struct {
 // RunTurn 是 AgentLoop 的兼容包装：内部构造 AgentLoopConfig 并委托给 AgentLoop，
 // 保持原有的调用签名不变。调用方（如 web/handler）无需感知内部重构。
 //
-// 当 AgentLoopConfig 未指定时，默认使用 MaxIterations=25 的循环配置。
+// 当 AgentLoopConfig 未指定时，默认使用 MaxIterations=50 的循环配置。
 // 并发约束：RunTurn 直接读写 history，调用方需保证同一时刻只有一个
 // RunTurn 活跃（实际由 web/handler 的 streamState 状态机串行化）。
 //
@@ -407,7 +410,7 @@ func (m *ConversationManager) RunTurn(
 	// 委托给 AgentLoop，使用默认配置
 	loopResult := m.AgentLoop(ctx, provider, sp, toolSpecs, toolHandler,
 		AgentLoopConfig{
-			MaxIterations: 25,
+			MaxIterations: 50,
 		},
 		AgentLoopHooks{
 			TurnHooks: hooks,
@@ -472,6 +475,9 @@ type RunOneTurnResult struct {
 	Aborted bool
 	// Err 为 StreamChat 初始化失败或 chunk.Err 携带的错误
 	Err error
+	// LLMStopReason 为 LLM API 返回的停止原因，用于诊断输出是否被截断。
+	// 可能值见 llm.StreamChunk.LLMStopReason 注释。
+	LLMStopReason string
 }
 
 // HasToolUse 返回本次 LLM 响应是否包含 tool_use 块。
@@ -513,11 +519,12 @@ func (m *ConversationManager) runOneLLM(
 	}
 
 	var (
-		textBuf    []byte
-		toolUses   []llm.ToolUseBlock
-		usage      *llm.TokenUsage
-		aborted    bool
-		streamDone bool
+		textBuf       []byte
+		toolUses      []llm.ToolUseBlock
+		usage         *llm.TokenUsage
+		aborted       bool
+		streamDone    bool
+		llmStopReason string
 	)
 	for {
 		select {
@@ -526,12 +533,19 @@ func (m *ConversationManager) runOneLLM(
 			aborted = true
 			for {
 				select {
-				case _, ok := <-chunkCh:
+				case chunk, ok := <-chunkCh:
 					if !ok {
-						return RunOneTurnResult{Text: string(textBuf), ToolUses: toolUses, Usage: usage, Aborted: true}
+						return RunOneTurnResult{Text: string(textBuf), ToolUses: toolUses, Usage: usage, Aborted: true, LLMStopReason: llmStopReason}
+					}
+					// 排空时顺便提取最后的 stop_reason 和 usage
+					if chunk.Usage != nil {
+						usage = chunk.Usage
+					}
+					if chunk.LLMStopReason != "" {
+						llmStopReason = chunk.LLMStopReason
 					}
 				default:
-					return RunOneTurnResult{Text: string(textBuf), ToolUses: toolUses, Usage: usage, Aborted: true}
+					return RunOneTurnResult{Text: string(textBuf), ToolUses: toolUses, Usage: usage, Aborted: true, LLMStopReason: llmStopReason}
 				}
 			}
 		case chunk, ok := <-chunkCh:
@@ -543,13 +557,14 @@ func (m *ConversationManager) runOneLLM(
 						hooks.OnStreamChunk(llm.StreamChunk{Done: true})
 					}
 				}
-				return RunOneTurnResult{Text: string(textBuf), ToolUses: toolUses, Usage: usage, Aborted: aborted}
+				m.logLLMStopReason(llmStopReason, usage, aborted)
+				return RunOneTurnResult{Text: string(textBuf), ToolUses: toolUses, Usage: usage, Aborted: aborted, LLMStopReason: llmStopReason}
 			}
 			if chunk.Err != nil {
 				if hooks.OnError != nil {
 					hooks.OnError(chunk.Err)
 				}
-				return RunOneTurnResult{Text: string(textBuf), ToolUses: toolUses, Usage: usage, Aborted: aborted, Err: chunk.Err}
+				return RunOneTurnResult{Text: string(textBuf), ToolUses: toolUses, Usage: usage, Aborted: aborted, Err: chunk.Err, LLMStopReason: llmStopReason}
 			}
 			// 收集所有 tool_use 块（Done chunk 上携带）
 			if chunk.HasToolUse() {
@@ -559,6 +574,10 @@ func (m *ConversationManager) runOneLLM(
 			if chunk.Usage != nil {
 				usage = chunk.Usage
 			}
+			// 提取 LLM 停止原因（Done chunk 上携带）
+			if chunk.LLMStopReason != "" {
+				llmStopReason = chunk.LLMStopReason
+			}
 			if chunk.Content != "" {
 				textBuf = append(textBuf, chunk.Content...)
 			}
@@ -567,8 +586,52 @@ func (m *ConversationManager) runOneLLM(
 			}
 			if chunk.Done {
 				streamDone = true
-				return RunOneTurnResult{Text: string(textBuf), ToolUses: toolUses, Usage: usage, Aborted: aborted}
+				m.logLLMStopReason(llmStopReason, usage, aborted)
+				return RunOneTurnResult{Text: string(textBuf), ToolUses: toolUses, Usage: usage, Aborted: aborted, LLMStopReason: llmStopReason}
 			}
+		}
+	}
+}
+
+// logLLMStopReason 在 LLM 流结束时记录停止原因日志，便于排查输出截断等问题。
+//
+// 根据 LLMStopReason 区分不同场景：
+//   - "end_turn"/"stop"（正常结束）→ Info 级别
+//   - "max_tokens"/"length"（输出被截断）→ Warn 级别，提示 max_tokens 配置不足
+//   - "tool_use"/"tool_calls"（工具调用）→ Info 级别
+//   - "canceled"（用户取消）→ Info 级别
+//   - 其他/空值 → Debug 级别
+func (m *ConversationManager) logLLMStopReason(stopReason string, usage *llm.TokenUsage, aborted bool) {
+	fields := []zap.Field{
+		zap.String("stop_reason", stopReason),
+	}
+	if usage != nil {
+		fields = append(fields,
+			zap.Int("input_tokens", usage.InputTokens),
+			zap.Int("output_tokens", usage.OutputTokens),
+		)
+	}
+
+	switch stopReason {
+	case "end_turn", "stop":
+		logger.Info("LLM 流正常结束", fields...)
+	case "max_tokens", "length":
+		// 输出被截断：这是用户最常遇到的问题，需醒目提示
+		outputTokens := 0
+		if usage != nil {
+			outputTokens = usage.OutputTokens
+		}
+		logger.Warn("LLM 输出被截断（达到 max_tokens 上限），建议增大配置中的 max_tokens",
+			append(fields, zap.Int("output_tokens", outputTokens))...)
+	case "tool_use", "tool_calls":
+		logger.Info("LLM 请求工具调用", fields...)
+	case "canceled":
+		logger.Info("LLM 流被用户取消", fields...)
+	default:
+		if aborted {
+			logger.Info("LLM 流被中断", fields...)
+		} else {
+			logger.Debug("LLM 流结束", fields...)
 		}
 	}
 }

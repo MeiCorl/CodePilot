@@ -32,7 +32,7 @@ type Config struct {
 	ToolExecutionTimeoutSeconds int `json:"tool_execution_timeout_seconds,omitempty"`
 	// ToolWorkingDirectory 为工具系统的沙箱根目录；留空则取进程启动时的工作目录
 	ToolWorkingDirectory string `json:"tool_working_directory,omitempty"`
-	// MaxAgentLoopIterations 为 Agent Loop 最大迭代次数，默认 25。
+	// MaxAgentLoopIterations 为 Agent Loop 最大迭代次数，默认 50。
 	// 一次迭代 = 一次 LLM 调用 + 可能的工具执行；达到上限后注入提示让模型优雅收尾。
 	MaxAgentLoopIterations int `json:"max_agent_loop_iterations,omitempty"`
 	// ContextWindowSize 为模型上下文窗口总大小（token 数），默认 200000。
@@ -62,9 +62,10 @@ const (
 	defaultTimeout                 = 180
 	defaultMaxRetries              = 2
 	defaultToolExecutionTimeoutSec = 30
-	defaultMaxAgentLoopIterations  = 25
+	defaultMaxAgentLoopIterations  = 50
 	defaultContextWindowSize       = 200000
 	defaultContextSafetyMargin     = 4096
+	defaultMaxTokens               = 16384
 )
 
 // Load 从 ~/.codepilot/config.json 加载配置文件。
@@ -108,6 +109,9 @@ func LoadFromPath(configPath string) (*Config, error) {
 
 // setDefaults 为可选字段设置默认值。
 func (c *Config) setDefaults() {
+	if c.MaxTokens == 0 {
+		c.MaxTokens = defaultMaxTokens
+	}
 	if c.Timeout == 0 {
 		c.Timeout = defaultTimeout
 	}

@@ -680,22 +680,22 @@ func TestAgentIterationEvent(t *testing.T) {
 		t.Fatalf("期望至少 2 个 agent_iteration 事件（2 轮迭代），实际收到 %d 个", len(iterations))
 	}
 
-	// 验证第 1 轮：current=1, max=25
+	// 验证第 1 轮：current=1, max=50
 	p1, _ := AsPayload[AgentIterationPayload](iterations[0])
 	if p1.Current != 1 {
 		t.Errorf("第 1 轮 Current = %d, 期望 1", p1.Current)
 	}
-	if p1.Max != 25 {
-		t.Errorf("第 1 轮 Max = %d, 期望 25", p1.Max)
+	if p1.Max != 50 {
+		t.Errorf("第 1 轮 Max = %d, 期望 50", p1.Max)
 	}
 
-	// 验证第 2 轮：current=2, max=25
+	// 验证第 2 轮：current=2, max=50
 	p2, _ := AsPayload[AgentIterationPayload](iterations[1])
 	if p2.Current != 2 {
 		t.Errorf("第 2 轮 Current = %d, 期望 2", p2.Current)
 	}
-	if p2.Max != 25 {
-		t.Errorf("第 2 轮 Max = %d, 期望 25", p2.Max)
+	if p2.Max != 50 {
+		t.Errorf("第 2 轮 Max = %d, 期望 50", p2.Max)
 	}
 }
 
@@ -719,8 +719,8 @@ func TestAgentIterationEventNoToolUse(t *testing.T) {
 	if p.Current != 1 {
 		t.Errorf("Current = %d, 期望 1", p.Current)
 	}
-	if p.Max != 25 {
-		t.Errorf("Max = %d, 期望 25", p.Max)
+	if p.Max != 50 {
+		t.Errorf("Max = %d, 期望 50", p.Max)
 	}
 }
 

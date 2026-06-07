@@ -1,5 +1,3 @@
-
-
 # CodePilot
 
 **一个由 Go 驱动的终端 AI Coding Agent**
@@ -8,8 +6,6 @@
 
 [Go Version](https://go.dev/)
 [License](LICENSE)
-
-
 
 ---
 
@@ -24,41 +20,41 @@ CodePilot 是一个从零构建的终端 AI Coding Agent（类似 Claude Code / 
 ### 已支持功能
 
 
-| 功能                   | 说明                                                                                       |
-| -------------------- | ---------------------------------------------------------------------------------------- |
-| **双 LLM 协议支持**       | Anthropic（Claude）+ OpenAI（GPT）双 Provider 适配，统一通过 `ContentBlock` 抽象交互                     |
-| **Web UI 交互**        | 基于 HTTP + WebSocket 的全双工通信，深色主题界面，自动调起浏览器                                                |
-| **流式 Markdown 实时渲染** | LLM 输出实时解析为格式化 HTML，支持标题、列表、代码块、表格等元素                                                    |
-| **代码语法高亮**           | 基于 highlight.js 的 18+ 语言自动语法高亮，含代码块语言标签与一键复制                                             |
-| **ReAct 推理循环**       | 思考→决策→行动→观察的迭代循环，直到 LLM 认为任务完成                                                           |
-| **多工具并行调用**          | 一次 LLM 响应中包含多个工具调用时，按权限分组并行执行                                                            |
-| **内置工具集**            | `ReadFile`（读文件）、`WriteFile`（写文件）、`EditFile`（编辑文件）、`Bash`（命令执行）、`Glob`（文件查找）、`Grep`（内容搜索） |
-| **迭代上限保护**           | 默认最大 25 次迭代，达到上限后注入提示让模型优雅收尾                                                             |
-| **上下文窗口管理**          | Token 溢出保护，空间不足时自动提示模型总结当前进展                                                             |
-| **分层 System Prompt**  | `Builder` 模式组装 4 个 Source（static / environment / agents_md / memory），行为规约、环境上下文、AGENTS.md 合并、自动记忆接入位 |
-| **Anthropic Prompt Caching** | SystemBlocks 多段带 `cache_control: ephemeral, ttl=5m` 标记，第二轮起命中服务端缓存降低成本与延迟            |
-| **SP 可观测性**           | WebUI 状态栏显示 SP 总 token 估算 + 4 层 Source 小计 tooltip，开发者模式一键导出完整 SP 快照                       |
-| **AGENTS.md 双层合并**    | 全局 `~/.codepilot/AGENTS.md` + 项目级 `<cwd>/AGENTS.md` 按 H2 段解析，项目级同名段完全覆盖全局                       |
-| **安全机制**             | 路径沙箱、Bash 危险命令黑名单、工具执行超时                                                                 |
-| **会话持久化**            | 多会话管理 + JSON 持久化，支持会话恢复与历史回放                                                             |
-| **优雅中断**             | 用户中断时保留已完成迭代的消息，支持后续恢复                                                                   |
-| **异步日志系统**           | 基于 zap 的文件日志，支持日志轮转                                                                      |
-| **跨平台支持**            | Windows / macOS / Linux 自动调起浏览器，Windows 支持终端窗口自动隐藏                                       |
+| 功能                           | 说明                                                                                                   |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------- |
+| **双 LLM 协议支持**               | Anthropic（Claude）+ OpenAI（GPT）双 Provider 适配，统一通过 `ContentBlock` 抽象交互                                 |
+| **Web UI 交互**                | 基于 HTTP + WebSocket 的全双工通信，深色主题界面，自动调起浏览器                                                            |
+| **流式 Markdown 实时渲染**         | LLM 输出实时解析为格式化 HTML，支持标题、列表、代码块、表格等元素                                                                |
+| **代码语法高亮**                   | 基于 highlight.js 的 18+ 语言自动语法高亮，含代码块语言标签与一键复制                                                         |
+| **ReAct 推理循环**               | 思考→决策→行动→观察的迭代循环，直到 LLM 认为任务完成                                                                       |
+| **多工具并行调用**                  | 一次 LLM 响应中包含多个工具调用时，按权限分组并行执行                                                                        |
+| **内置工具集**                    | `ReadFile`（读文件）、`WriteFile`（写文件）、`EditFile`（编辑文件）、`Bash`（命令执行）、`Glob`（文件查找）、`Grep`（内容搜索）             |
+| **迭代上限保护**                   | 默认最大 50 次迭代，达到上限后注入提示让模型优雅收尾                                                                         |
+| **上下文窗口管理**                  | Token 溢出保护，空间不足时自动提示模型总结当前进展                                                                         |
+| **分层 System Prompt**         | `Builder` 模式组装 4 个 Source（static / environment / agents_md / memory），行为规约、环境上下文、AGENTS.md 合并、自动记忆接入位 |
+| **Anthropic Prompt Caching** | SystemBlocks 多段带 `cache_control: ephemeral, ttl=5m` 标记，第二轮起命中服务端缓存降低成本与延迟                            |
+| **SP 可观测性**                  | WebUI 状态栏显示 SP 总 token 估算 + 4 层 Source 小计 tooltip，开发者模式一键导出完整 SP 快照                                  |
+| **AGENTS.md 双层合并**           | 全局 `~/.codepilot/AGENTS.md` + 项目级 `<cwd>/AGENTS.md` 按 H2 段解析，项目级同名段完全覆盖全局                            |
+| **安全机制**                     | 路径沙箱、Bash 危险命令黑名单、工具执行超时                                                                             |
+| **会话持久化**                    | 多会话管理 + JSON 持久化，支持会话恢复与历史回放                                                                         |
+| **优雅中断**                     | 用户中断时保留已完成迭代的消息，支持后续恢复                                                                               |
+| **异步日志系统**                   | 基于 zap 的文件日志，支持日志轮转                                                                                  |
+| **跨平台支持**                    | Windows / macOS / Linux 自动调起浏览器，Windows 支持终端窗口自动隐藏                                                   |
 
 
 ### 计划支持功能
 
 
-| 功能                   | 所属阶段    | 说明                                    |
-| -------------------- | ------- | ------------------------------------- |
-| **权限系统**             | Step 5  | 工具调用白/黑名单、危险操作确认机制、HITL 人工干预          |
-| **MCP 协议**           | Step 6  | Model Context Protocol，动态发现与调用外部工具服务器 |
-| **高级上下文管理**          | Step 7  | 上下文压缩（摘要）、缓存策略，优化 token 利用率           |
-| **记忆系统**             | Step 8  | 自动记忆用户偏好与项目约定，跨会话持久化（System Prompt 已留接入位） |
-| **快捷命令系统**           | Step 9  | `/help`、`/clear`、`/init` 等斜杠命令，快速触发操作 |
-| **Skill 系统**         | Step 10 | 可插拔技能模块，封装复杂工作流为可复用技能                 |
-| **Hook 系统**          | Step 11 | 工具执行前后的钩子机制，支持日志、拦截、过滤                |
-| **SubAgent**         | Step 12 | 子代理系统，支持并行调度、上下文隔离与结果回传               |
+| 功能           | 所属阶段    | 说明                                        |
+| ------------ | ------- | ----------------------------------------- |
+| **权限系统**     | Step 5  | 工具调用白/黑名单、危险操作确认机制、HITL 人工干预              |
+| **MCP 协议**   | Step 6  | Model Context Protocol，动态发现与调用外部工具服务器     |
+| **高级上下文管理**  | Step 7  | 上下文压缩（摘要）、缓存策略，优化 token 利用率               |
+| **记忆系统**     | Step 8  | 自动记忆用户偏好与项目约定，跨会话持久化（System Prompt 已留接入位） |
+| **快捷命令系统**   | Step 9  | `/help`、`/clear`、`/init` 等斜杠命令，快速触发操作     |
+| **Skill 系统** | Step 10 | 可插拔技能模块，封装复杂工作流为可复用技能                     |
+| **Hook 系统**  | Step 11 | 工具执行前后的钩子机制，支持日志、拦截、过滤                    |
+| **SubAgent** | Step 12 | 子代理系统，支持并行调度、上下文隔离与结果回传                   |
 
 
 ---
@@ -213,8 +209,8 @@ cp config/config.example.openai.json ~/.codepilot/config.json
     "provider": "anthropic",
     "model": "claude-sonnet-4-20250514",
     "api_key": "sk-ant-your-api-key-here",
-    "max_tokens": 4096,
-    "timeout": 60,
+    "max_tokens": 16384,
+    "timeout": 180,
     "max_retries": 2,
     "tools": {
         "enabled": ["read_file", "write_file", "bash", "glob", "grep"]
@@ -231,14 +227,14 @@ cp config/config.example.openai.json ~/.codepilot/config.json
 | `model`                          | 模型名称                           | 必填       |
 | `base_url`                       | API 基础地址（支持代理/私有部署）            | 官方默认     |
 | `api_key`                        | API 密钥                         | 必填       |
-| `max_tokens`                     | 单次回复最大 token 数                 | `4096`   |
-| `timeout`                        | 请求超时（秒）                        | `60`     |
+| `max_tokens`                     | 单次回复最大 token 数                 | `16384`  |
+| `timeout`                        | 请求超时（秒）                        | `180`    |
 | `max_retries`                    | 最大重试次数                         | `2`      |
 | `tools.enabled`                  | 启用的工具列表                        | 全部内置工具   |
 | `tool_execution_timeout_seconds` | 工具执行超时（秒）                      | `30`     |
 | `tool_working_directory`         | 工具工作目录（为空则使用进程 cwd）            | 进程 cwd   |
 | `context_window_size`            | 上下文窗口大小（token 数）               | `200000` |
-| `max_agent_loop_iterations`      | Agent Loop 最大迭代次数              | `25`     |
+| `max_agent_loop_iterations`      | Agent Loop 最大迭代次数              | `50`     |
 | `context_safety_margin`          | 上下文安全余量（token 数）               | `4096`   |
 
 

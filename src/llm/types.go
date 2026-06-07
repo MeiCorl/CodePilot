@@ -151,6 +151,14 @@ type StreamChunk struct {
 	// 仅在 Done=true 的最后一个 chunk 上携带；可能为 nil（流中断等场景），
 	// 上层需判空后降级到字符估算。
 	Usage *TokenUsage
+	// LLMStopReason 为 LLM API 返回的停止原因，用于诊断输出是否被截断。
+	// 仅在 Done=true 的最后一个 chunk 上携带。
+	// Anthropic 可能值: "end_turn"（正常结束）, "max_tokens"（达到输出上限被截断）,
+	//   "stop_sequence", "tool_use", "pause_turn", "refusal"
+	// OpenAI 可能值: "stop"（正常结束）, "length"（达到输出上限被截断）,
+	//   "tool_calls", "content_filter"
+	// 为空字符串表示未获取到（流中断等场景）。
+	LLMStopReason string
 }
 
 // HasToolUse 返回本次流式响应是否包含 tool_use 块。

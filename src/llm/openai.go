@@ -268,6 +268,8 @@ func (p *OpenAIProvider) doStream(ctx context.Context, params openai.ChatComplet
 	// Token 用量：OpenAI 在设置了 StreamOptions.IncludeUsage 后，
 	// 仅在最后一个 chunk（len(evt.Choices)==0）中携带完整用量
 	var inputTokens, outputTokens int64
+	// LLM 停止原因：从最后一个含 Choices 的 chunk 中获取 finish_reason
+	var finishReason string
 
 	for stream.Next() {
 		evt := stream.Current()
@@ -281,6 +283,11 @@ func (p *OpenAIProvider) doStream(ctx context.Context, params openai.ChatComplet
 		if len(evt.Choices) == 0 {
 			continue
 		}
+		// 提取 finish_reason：OpenAI 在流式最后几个 chunk 的 Choices[0] 中携带
+		// 非空的 finish_reason（如 "stop"、"length"、"tool_calls"）
+		if fr := evt.Choices[0].FinishReason; fr != "" {
+			finishReason = fr
+		}
 		delta := evt.Choices[0].Delta
 
 		// 文本增量
@@ -290,7 +297,7 @@ func (p *OpenAIProvider) doStream(ctx context.Context, params openai.ChatComplet
 			case <-ctx.Done():
 				// 区分用户主动取消和超时
 				if ctx.Err() == context.Canceled {
-					ch <- StreamChunk{Done: true}
+					ch <- StreamChunk{Done: true, LLMStopReason: "canceled"}
 					return nil
 				}
 				// DeadlineExceeded：超时，返回错误让上层感知
@@ -351,7 +358,7 @@ func (p *OpenAIProvider) doStream(ctx context.Context, params openai.ChatComplet
 	if err := stream.Err(); err != nil {
 		// 用户主动取消视为正常中断
 		if errors.Is(err, context.Canceled) {
-			ch <- StreamChunk{Done: true, ToolUses: toolUses, Usage: usage}
+			ch <- StreamChunk{Done: true, ToolUses: toolUses, Usage: usage, LLMStopReason: "canceled"}
 			return nil
 		}
 		// 超时视为错误，不应静默丢弃——用户看到的是"Thinking 后无输出"
@@ -361,8 +368,8 @@ func (p *OpenAIProvider) doStream(ctx context.Context, params openai.ChatComplet
 		return err
 	}
 
-	// 流正常结束，携带所有 tool_use 块和 token 用量
-	ch <- StreamChunk{Done: true, ToolUses: toolUses, Usage: usage}
+	// 流正常结束，携带所有 tool_use 块、token 用量和停止原因
+	ch <- StreamChunk{Done: true, ToolUses: toolUses, Usage: usage, LLMStopReason: finishReason}
 	return nil
 }
 

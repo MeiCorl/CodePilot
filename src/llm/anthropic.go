@@ -173,7 +173,7 @@ func (p *AnthropicProvider) streamWithRetry(ctx context.Context, sp SystemPrompt
 			delay := time.Duration(math.Pow(2, float64(attempt-1))) * time.Second
 			select {
 			case <-ctx.Done():
-				ch <- StreamChunk{Done: true}
+				ch <- StreamChunk{Done: true, LLMStopReason: "canceled"}
 				return
 			case <-time.After(delay):
 			}
@@ -225,6 +225,8 @@ func (p *AnthropicProvider) doStream(ctx context.Context, params anthropic.Messa
 
 	// Token 用量：从 MessageStartEvent 获取 input_tokens，从 MessageDeltaEvent 获取 output_tokens
 	var inputTokens, outputTokens int64
+	// LLM 停止原因：从 MessageDeltaEvent 获取 stop_reason
+	var stopReason string
 
 	for stream.Next() {
 		event := stream.Current()
@@ -234,8 +236,9 @@ func (p *AnthropicProvider) doStream(ctx context.Context, params anthropic.Messa
 			// 流开始时获取 input_tokens（本轮发送给模型的总输入 token 数）
 			inputTokens = evt.Message.Usage.InputTokens
 		case anthropic.MessageDeltaEvent:
-			// 流结束时获取累计的 output_tokens
+			// 流结束时获取累计的 output_tokens 和 stop_reason
 			outputTokens = evt.Usage.OutputTokens
+			stopReason = string(evt.Delta.StopReason)
 		case anthropic.ContentBlockStartEvent:
 			// ContentBlockStartEvent.ContentBlock 可能是 text 或 tool_use，
 			// 通过 Type 字段判别
@@ -254,7 +257,7 @@ func (p *AnthropicProvider) doStream(ctx context.Context, params anthropic.Messa
 					case <-ctx.Done():
 						// 区分用户主动取消和超时
 						if ctx.Err() == context.Canceled {
-							ch <- StreamChunk{Done: true}
+							ch <- StreamChunk{Done: true, LLMStopReason: "canceled"}
 							return nil
 						}
 						// DeadlineExceeded：超时，返回错误让上层感知
@@ -297,7 +300,7 @@ func (p *AnthropicProvider) doStream(ctx context.Context, params anthropic.Messa
 	if err := stream.Err(); err != nil {
 		// 用户主动取消（点击停止按钮等）视为正常中断，不视为错误
 		if errors.Is(err, context.Canceled) {
-			ch <- StreamChunk{Done: true, ToolUses: toolUses, Usage: usage}
+			ch <- StreamChunk{Done: true, ToolUses: toolUses, Usage: usage, LLMStopReason: "canceled"}
 			return nil
 		}
 		// 超时视为错误，不应静默丢弃——用户看到的是"Thinking 后无输出"
@@ -307,8 +310,8 @@ func (p *AnthropicProvider) doStream(ctx context.Context, params anthropic.Messa
 		return err
 	}
 
-	// 流正常结束，携带所有 tool_use 块和 token 用量
-	ch <- StreamChunk{Done: true, ToolUses: toolUses, Usage: usage}
+	// 流正常结束，携带所有 tool_use 块、token 用量和停止原因
+	ch <- StreamChunk{Done: true, ToolUses: toolUses, Usage: usage, LLMStopReason: stopReason}
 	return nil
 }
 

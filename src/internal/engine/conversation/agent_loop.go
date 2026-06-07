@@ -20,7 +20,7 @@ import (
 
 // AgentLoopConfig 控制 AgentLoop 的行为参数。
 type AgentLoopConfig struct {
-	// MaxIterations 为最大迭代次数（一次迭代 = 一次 LLM 调用 + 可能的工具执行），默认 25
+	// MaxIterations 为最大迭代次数（一次迭代 = 一次 LLM 调用 + 可能的工具执行），默认 50
 	MaxIterations int
 	// ContextSafetyMargin 为上下文安全余量（token 数），剩余低于此值时触发优雅终止
 	ContextSafetyMargin int
@@ -102,7 +102,7 @@ func (m *ConversationManager) AgentLoop(
 ) AgentLoopResult {
 	maxIter := cfg.MaxIterations
 	if maxIter <= 0 {
-		maxIter = 25
+		maxIter = 50
 	}
 
 	var (
@@ -194,6 +194,14 @@ func (m *ConversationManager) AgentLoop(
 
 		// ---- 无 tool_use → 任务完成 ----
 		if !turnResult.HasToolUse() {
+			// 检测 LLM 输出是否因 max_tokens 被截断
+			if turnResult.LLMStopReason == "max_tokens" || turnResult.LLMStopReason == "length" {
+				logger.Warn("AgentLoop 检测到 LLM 输出被截断（stop_reason=max_tokens/length），回复可能不完整",
+					zap.Int("iteration", iteration),
+					zap.String("llm_stop_reason", turnResult.LLMStopReason),
+					zap.Int("text_length", len(turnResult.Text)),
+				)
+			}
 			if turnResult.Text != "" {
 				m.AddAssistantMessage(turnResult.Text)
 				finalText = turnResult.Text

@@ -332,7 +332,7 @@ func (h *Handler) runStream(ctx context.Context, conn *websocket.Conn) {
 
 	// 构造 AgentLoopConfig：从全局 Config 读取迭代上限和上下文安全余量
 	loopCfg := conversation.AgentLoopConfig{
-		MaxIterations:       25,
+		MaxIterations:       50,
 		ContextSafetyMargin: 4096,
 		ContextWindowSize:   h.contextWindowSize,
 	}
