@@ -1,7 +1,6 @@
 package builtin
 
 import (
-	"context"
 	"encoding/json"
 	"path/filepath"
 	"strings"
@@ -158,7 +157,7 @@ func TestRegisterWithDiffSink_WriteAndEdit(t *testing.T) {
 		"file_path": target,
 		"content":   "package x\nconst A = 1\n",
 	})
-	ctxWrite := tool.WithToolUseID(context.Background(), "tool-w-1")
+	ctxWrite := tool.WithToolUseID(withSandedPath(t, dir, "hello.go"), "tool-w-1")
 	out, err := wf.Execute(ctxWrite, inputWrite)
 	if err != nil {
 		t.Fatalf("WriteFile 执行失败: %v", err)
@@ -203,7 +202,7 @@ func TestRegisterWithDiffSink_WriteAndEdit(t *testing.T) {
 		"old_string": "const A = 1",
 		"new_string": "const A = 2",
 	})
-	ctxEdit := tool.WithToolUseID(context.Background(), "tool-e-1")
+	ctxEdit := tool.WithToolUseID(withSandedPath(t, dir, "hello.go"), "tool-e-1")
 	out, err = ef.Execute(ctxEdit, inputEdit)
 	if err != nil {
 		t.Fatalf("EditFile 执行失败: %v", err)
@@ -241,7 +240,7 @@ func TestRegisterWithDiffSink_NilSafe(t *testing.T) {
 		"file_path": target,
 		"content":   "hi",
 	})
-	ctx := tool.WithToolUseID(context.Background(), "tool-nil-1")
+	ctx := tool.WithToolUseID(withSandedPath(t, dir, "nil-safe.txt"), "tool-nil-1")
 	if _, err := wf.Execute(ctx, input); err != nil {
 		t.Fatalf("nil sink 时 WriteFile 应仍能正常完成: %v", err)
 	}
@@ -265,7 +264,7 @@ func TestRegisterWithDiffSink_NoToolUseID_NoSinkCall(t *testing.T) {
 		"file_path": target,
 		"content":   "hello",
 	})
-	if _, err := wf.Execute(context.Background(), input); err != nil {
+	if _, err := wf.Execute(withSandedPath(t, dir, "no-id.txt"), input); err != nil {
 		t.Fatalf("Execute 不应失败: %v", err)
 	}
 	if len(sink.calls) != 0 {

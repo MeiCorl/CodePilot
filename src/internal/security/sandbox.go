@@ -1,14 +1,13 @@
-// Package safety 提供 CodePilot 工具系统的最小化安全兜底：
-// 路径沙箱与 Bash 危险命令黑名单。
+// Package security 提供 CodePilot 的安全层，包括：
+//   - 路径沙箱（ResolveInSandbox / IsPathOutsideSandbox）
+//   - Bash 危险命令黑名单（CheckBashCommand）
+//   - 权限检查器（Checker / Interceptor）
+//   - 人在回路确认（HITLCallback）
 //
-// 设计目标：两道兜底**不可被工具配置关闭**，即使用户在 setting.json
-// 中设置了任何"禁用安全检查"字段也无效。所有涉及文件读写的工具
-// 必须经 ResolveInSandbox，所有 Bash 执行前必须经 CheckBashCommand。
-//
-// 本文件是 Task 2 阶段的基础实现，覆盖常见路径遍历与显式越界；
-// Task 3 会在本文件基础上增强 symlink 解析、路径大小写不敏感等
-// 边缘场景，并补充更完善的黑名单规则。
-package safety
+// 本文件迁移自原 tool/safety/path.go，新增 IsPathOutsideSandbox 查询函数。
+// 路径沙箱作为硬兜底层，不可被配置关闭或绕过，所有涉及文件读写的工具
+// 必须经 ResolveInSandbox 校验。
+package security
 
 import (
 	"errors"
@@ -19,13 +18,9 @@ import (
 	"strings"
 )
 
-// ErrPathOutsideSandbox 路径经规范化后落在 sandbox 之外时返回。
+// ErrPathOutsideSandbox 路径经规范化后落在 sandboxDir 之外时返回。
 // 工具调用方应原样回传给 LLM，由 LLM 决定是否调整输入。
 var ErrPathOutsideSandbox = errors.New("路径沙箱拦截：目标路径不在允许的工作目录之内")
-
-// ErrDangerousCommand 命令命中黑名单时返回。
-// 工具调用方应在执行子进程前返回此错误，避免危险命令触及系统。
-var ErrDangerousCommand = errors.New("危险命令拦截：命令命中黑名单，拒绝执行")
 
 // ResolveInSandbox 将用户传入的路径解析为绝对路径，并校验其落在
 // sandboxDir 之内。
@@ -63,7 +58,7 @@ func ResolveInSandbox(path, sandboxDir string) (string, error) {
 	absTarget = filepath.Clean(absTarget)
 
 	// 3. 路径前缀校验（大小写不敏感：Windows 文件系统不区分大小写）
-	if !isPathInside(absTarget, absSandbox) {
+	if !IsPathInside(absTarget, absSandbox) {
 		return "", fmt.Errorf("%w: %q 不在 %q 之内", ErrPathOutsideSandbox, absTarget, absSandbox)
 	}
 
@@ -74,7 +69,7 @@ func ResolveInSandbox(path, sandboxDir string) (string, error) {
 			return "", fmt.Errorf("解析 symlink 失败: %w", err)
 		}
 		real = filepath.Clean(real)
-		if !isPathInside(real, absSandbox) {
+		if !IsPathInside(real, absSandbox) {
 			return "", fmt.Errorf("%w: symlink 目标 %q 落在 sandbox 外", ErrPathOutsideSandbox, real)
 		}
 		return real, nil
@@ -83,10 +78,59 @@ func ResolveInSandbox(path, sandboxDir string) (string, error) {
 	return absTarget, nil
 }
 
-// isPathInside 判断 child 是否落在 parent 之内（包含边界）。
+// IsPathOutsideSandbox 查询路径是否落在 sandboxDir 之外。
+//
+// 与 ResolveInSandbox 使用相同的规范化逻辑，但不拒绝，仅返回布尔值。
+// 供拦截器在权限检查时判断路径是否在工作目录范围外，结合档位决定
+// 是 Ask / Deny 还是 Allow。
+//
+// 返回值：
+//   - (true, nil): 路径越界
+//   - (false, nil): 路径在范围内
+//   - (false, error): 规范化过程出错
+func IsPathOutsideSandbox(path, sandboxDir string) (bool, error) {
+	if path == "" || sandboxDir == "" {
+		return false, nil
+	}
+
+	absSandbox, err := filepath.Abs(sandboxDir)
+	if err != nil {
+		return false, fmt.Errorf("解析 sandboxDir 失败: %w", err)
+	}
+	absSandbox = filepath.Clean(absSandbox)
+
+	absTarget := path
+	if !filepath.IsAbs(absTarget) {
+		absTarget = filepath.Join(absSandbox, absTarget)
+	}
+	absTarget = filepath.Clean(absTarget)
+
+	if !IsPathInside(absTarget, absSandbox) {
+		return true, nil
+	}
+
+	// 对已存在的 symlink 也要检查真实路径
+	if info, err := os.Lstat(absTarget); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		real, err := filepath.EvalSymlinks(absTarget)
+		if err != nil {
+			return false, fmt.Errorf("解析 symlink 失败: %w", err)
+		}
+		real = filepath.Clean(real)
+		if !IsPathInside(real, absSandbox) {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
+// IsPathInside 判断 child 是否落在 parent 之内（包含边界）。
 // 在 Windows/macOS 默认文件系统上做大小写不敏感比较，
 // Linux 上做大小写敏感比较。
-func isPathInside(child, parent string) bool {
+//
+// 导出此函数供 builtin 工具的 symlink 兜底使用：Glob/Grep 工具在 walk
+// 过程中对 symlink 调用 EvalSymlinks 后用本函数判断是否在 sandbox 内。
+func IsPathInside(child, parent string) bool {
 	child = filepath.Clean(child)
 	parent = filepath.Clean(parent)
 	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {

@@ -17,7 +17,6 @@ import (
 
 	"github.com/MeiCorl/CodePilot/src/internal/logger"
 	"github.com/MeiCorl/CodePilot/src/internal/tool"
-	"github.com/MeiCorl/CodePilot/src/internal/tool/safety"
 )
 
 // EditFileName 是 EditFile 工具的唯一标识（大驼峰格式）。
@@ -30,13 +29,14 @@ type editFileInput struct {
 	NewString string `json:"new_string" jsonschema:"required,description=替换后的新文本（设为空字符串可删除 old_string）"`
 }
 
-var _ = editFileInput{} // 见 schema.go
+// editFileSchema 见 schema.go。
+var _ = editFileInput{}
 
 // EditFileTool 是 EditFile 工具的实现。
+//
+// 沙箱解析由 ToolHandler.SandboxMiddleware 统一处理；absPath 来自 ctx。
 type EditFileTool struct {
 	tool.BaseTool
-	// WorkingDirectory 是路径沙箱根目录，所有 file_path 必须落在其内。
-	WorkingDirectory string
 	// DiffSink 用于在执行成功后把 before/after 推送给 WebUI 用于 diff 弹窗。
 	// 可为 nil（主流程未注入或单测场景），nil 时跳过写入不 panic。
 	// 类型为 tool.FileDiffSink（定义在 tool 包，避免 builtin 反向依赖 web）。
@@ -44,7 +44,11 @@ type EditFileTool struct {
 }
 
 // NewEditFileTool 构造 EditFile 工具实例。
+//
+// workingDir 参数保留签名以兼容 RegisterWithOptions 调用点（main.go），
+// 内部不使用——沙箱配置由 ToolHandler.RegisterMiddleware 注入。
 func NewEditFileTool(workingDir string) *EditFileTool {
+	_ = workingDir
 	return &EditFileTool{
 		BaseTool: tool.BaseTool{
 			ToolName:        EditFileName,
@@ -52,7 +56,6 @@ func NewEditFileTool(workingDir string) *EditFileTool {
 			ToolInputSchema: editFileSchema,
 			ToolPermission:  tool.PermWrite,
 		},
-		WorkingDirectory: workingDir,
 	}
 }
 
@@ -75,8 +78,8 @@ func (t *EditFileTool) Execute(ctx context.Context, input json.RawMessage) (stri
 		return "", errors.New("old_string 不能为空")
 	}
 
-	// 路径沙箱校验
-	absPath, err := safety.ResolveInSandbox(in.FilePath, t.WorkingDirectory)
+	// 沙箱解析：由 ToolHandler.SandboxMiddleware 完成；absPath 来自 ctx。
+	absPath, err := resolvePathFromContext(ctx, "file_path")
 	if err != nil {
 		return "", err
 	}

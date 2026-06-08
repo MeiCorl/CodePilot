@@ -26,6 +26,10 @@
         ctxPercent:     $('ctx-percent'),
         ctxBar:         null,            // 渲染时按需创建
         sendBtn:        $('send-btn'),
+        // Step 5：权限模式状态栏展示 + 切换下拉
+        permMode:       $('perm-mode'),
+        permStat:       $('perm-stat'),
+        permDropdown:   $('perm-mode-dropdown'),
         // Step 4：System Prompt 可观测性
         spTokens:       $('sp-tokens'),
         spBreakdown:    $('sp-breakdown'),
@@ -66,6 +70,10 @@
         // Step 1.4：file_diff 单次回包按 tool_use_id 路由到对应弹窗回调。
         // 每个 callback 自行处理「找到/没找到/超时」，处理完即从 map 移除。
         _fileDiffCallbacks: {},        // tool_use_id -> { resolve, timer, modal }
+        // Step 5：HITL 权限确认弹窗状态
+        _permModal: null,              // 当前打开的权限确认弹窗 DOM 元素
+        _permQueue: [],                // 排队等待的权限请求队列（FIFO）
+        _permCountdownTimer: null,     // 倒计时定时器
     };
 
     // ---- / 快捷命令清单（Step 9 落地后将替换为命令注册表查询） ----
@@ -201,6 +209,12 @@
         // Step 1.4：查看改动弹窗用
         GetFileDiff:       'get_file_diff',
         FileDiff:          'file_diff',
+        // Step 5：权限确认 HITL
+        PermissionRequest: 'permission_request',
+        PermissionResponse: 'permission_response',
+        PermissionMode:    'permission_mode',
+        // Step 5 增强：用户主动切换权限模式（状态栏下拉）
+        SetPermissionMode: 'set_permission_mode',
     };
 
     // abortMarker 与后端 agent_loop.go 中的 abortMarker 常量保持一致，
@@ -254,7 +268,9 @@
             case MsgType.ToolCallStart:   return onToolCallStart(msg.payload);
             case MsgType.ToolCallEnd:     return onToolCallEnd(msg.payload);
             case MsgType.DevExportSP:     return onDevExportSP(msg.payload);
-            case MsgType.FileDiff:        return onFileDiff(msg.payload);
+            case MsgType.FileDiff:          return onFileDiff(msg.payload);
+            case MsgType.PermissionRequest: return onPermissionRequest(msg.payload);
+            case MsgType.PermissionMode:    return onPermissionMode(msg.payload);
             default: console.warn('未知消息类型:', msg.type, msg.payload);
         }
     }
@@ -2307,4 +2323,482 @@
     } else {
         init();
     }
+
+    // =========================================================================
+    // Step 5：权限确认对话框（HITL — Human-in-the-Loop）
+    // =========================================================================
+    // 权限确认倒计时总秒数，与服务端 hitlTimeout (60s) 保持一致。
+    const PERM_COUNTDOWN_SECONDS = 60;
+
+    // onPermissionRequest 收到后端 permission_request 消息后的入口。
+    // 若当前已有确认对话框在展示，则将新请求排队等待（FIFO）。
+    // 否则直接弹出对话框。
+    function onPermissionRequest(p) {
+        if (!p || !p.id) {
+            console.warn('onPermissionRequest: 无效的请求 payload', p);
+            return;
+        }
+        // 如果当前有弹窗打开，排队等待
+        if (state._permModal) {
+            state._permQueue.push(p);
+            return;
+        }
+        openPermModal(p);
+    }
+
+    // openPermModal 构造并展示权限确认对话框。
+    // 流程：
+    //   1. 构造 modal DOM 插入 body
+    //   2. 绑定四个按钮的点击事件
+    //   3. 启动 60s 倒计时，到期自动发送拒绝
+    //   4. 不绑定 Esc / 遮罩点击关闭（防止误操作绕过确认）
+    //   5. 状态栏切换为"等待用户确认..."
+    function openPermModal(payload) {
+        const modal = buildPermModalSkeleton(payload);
+        document.body.appendChild(modal);
+        state._permModal = modal;
+
+        // 状态栏切换为等待确认
+        dom.statusText.textContent = '等待用户确认...';
+        dom.statusDot.dataset.status = 'thinking';
+
+        // 启动倒计时
+        startPermCountdown(payload.id, PERM_COUNTDOWN_SECONDS);
+    }
+
+    // closePermModal 关闭当前权限确认弹窗，清理倒计时定时器，
+    // 并检查队列中是否有等待的请求，有则弹出下一个。
+    function closePermModal() {
+        const modal = state._permModal;
+        if (!modal) return;
+
+        // 清理倒计时
+        if (state._permCountdownTimer) {
+            clearInterval(state._permCountdownTimer);
+            state._permCountdownTimer = null;
+        }
+
+        // 移除 DOM
+        if (modal.parentNode) modal.parentNode.removeChild(modal);
+        state._permModal = null;
+
+        // 恢复状态栏（回到之前的状态，由后续的 status_update 消息覆盖）
+        setAgentStatus(state.agentStatus);
+
+        // 检查队列
+        if (state._permQueue.length > 0) {
+            const next = state._permQueue.shift();
+            // 使用 requestAnimationFrame 确保 DOM 清理完成后再弹出下一个
+            requestAnimationFrame(() => openPermModal(next));
+        }
+    }
+
+    // sendPermResponse 发送权限确认响应给后端，并关闭对话框。
+    function sendPermResponse(id, allowed, scope) {
+        sendWS(MsgType.PermissionResponse, { id, allowed, scope });
+        closePermModal();
+    }
+
+    // permTargetDirHint 计算"永久允许"将放行的目录 glob（与后端 BuildPathPattern 语义一致）。
+    //
+    // 行为：
+    //   - 绝对路径 → 取父目录 + "/*"
+    //   - 相对路径 → 若 workdir 给出，拼接 workdir 后取父目录；否则取父目录
+    //   - 空路径 → "*"（工具级豁免占位）
+    //
+    // 本函数只用于前端 UI 提示，实际写入 setting.json 的 Pattern 由后端
+    // security.BuildPathPattern 计算——保持单一事实来源。
+    function permTargetDirHint(targetPath, workdir) {
+        if (!targetPath) return '*';
+        let abs = targetPath;
+        if (!isAbsolutePath(targetPath) && workdir) {
+            abs = joinPath(workdir, targetPath);
+        }
+        const dir = dirname(abs);
+        if (!dir || dir === '.' || dir === '/') {
+            return joinPath(abs, '*');
+        }
+        return joinPath(dir, '*');
+    }
+
+    // isAbsolutePath / dirname / joinPath：跨平台路径处理
+    // 简化版：仅作 UI 提示用，健壮性由后端兜底
+    function isAbsolutePath(p) {
+        if (!p) return false;
+        // Windows: C:\... 或 \\server\...; Unix: /...
+        if (/^[a-zA-Z]:[\\/]/.test(p)) return true;
+        if (p.startsWith('/') || p.startsWith('\\')) return true;
+        return false;
+    }
+
+    function dirname(p) {
+        if (!p) return '';
+        const idx = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'));
+        if (idx <= 0) return '';
+        return p.substring(0, idx);
+    }
+
+    function joinPath(dir, name) {
+        if (!dir) return name;
+        if (dir.endsWith('/') || dir.endsWith('\\')) return dir + name;
+        return dir + '/' + name;
+    }
+
+    // buildPermModalSkeleton 构造权限确认弹窗的 DOM 骨架。
+    // 不使用 innerHTML 拼接用户数据（XSS 防护），改用 textContent。
+    function buildPermModalSkeleton(payload) {
+        const modal = document.createElement('div');
+        modal.className = 'perm-modal';
+        modal.setAttribute('role', 'dialog');
+        modal.setAttribute('aria-modal', 'true');
+        modal.setAttribute('aria-label', '权限确认');
+
+        const card = document.createElement('div');
+        card.className = 'perm-modal-card';
+        // 阻止 card 内点击冒泡到 modal（虽然 modal 不关闭，但保持一致的 DOM 模式）
+        card.addEventListener('click', (ev) => ev.stopPropagation());
+
+        // ---- 头部 ----
+        const header = document.createElement('div');
+        header.className = 'perm-modal-header';
+
+        const iconWrap = document.createElement('div');
+        iconWrap.className = 'perm-modal-icon';
+        // 盾牌图标（与权限主题一致）
+        iconWrap.innerHTML = '<svg viewBox="0 0 16 16" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 1.5L2.5 4v4c0 3.5 2.5 6.5 5.5 7.5 3-1 5.5-4 5.5-7.5V4L8 1.5z"/><path d="M8 5.5v3M8 10.5v.5"/></svg>';
+
+        const title = document.createElement('span');
+        title.className = 'perm-modal-title';
+        title.textContent = '权限确认';
+
+        header.appendChild(iconWrap);
+        header.appendChild(title);
+
+        // ---- 内容区 ----
+        const body = document.createElement('div');
+        body.className = 'perm-modal-body';
+
+        // 工具名
+        const toolField = document.createElement('div');
+        toolField.className = 'perm-modal-field';
+        const toolLabel = document.createElement('span');
+        toolLabel.className = 'perm-modal-label';
+        toolLabel.textContent = '工具';
+        const toolValue = document.createElement('span');
+        toolValue.className = 'perm-modal-tool-name';
+        toolValue.textContent = payload.tool_name || '未知工具';
+        toolField.appendChild(toolLabel);
+        toolField.appendChild(toolValue);
+
+        // 参数摘要
+        const paramField = document.createElement('div');
+        paramField.className = 'perm-modal-field';
+        const paramLabel = document.createElement('span');
+        paramLabel.className = 'perm-modal-label';
+        paramLabel.textContent = '参数';
+        const paramValue = document.createElement('span');
+        paramValue.className = 'perm-modal-value';
+        paramValue.textContent = payload.params_summary || '(无参数信息)';
+        paramField.appendChild(paramLabel);
+        paramField.appendChild(paramValue);
+
+        // 触发原因
+        const reasonField = document.createElement('div');
+        reasonField.className = 'perm-modal-field';
+        const reasonLabel = document.createElement('span');
+        reasonLabel.className = 'perm-modal-label';
+        reasonLabel.textContent = '原因';
+        const reasonValue = document.createElement('span');
+        reasonValue.className = 'perm-modal-reason';
+        reasonValue.textContent = payload.reason || '需要用户确认';
+        reasonField.appendChild(reasonLabel);
+        reasonField.appendChild(reasonValue);
+
+        body.appendChild(toolField);
+        body.appendChild(paramField);
+        body.appendChild(reasonField);
+
+        // ---- Step 5 增强：目标路径 + 工作目录（仅路径类工具有意义）----
+        if (payload.target_path) {
+            // 工作目录（让用户一眼看出"目标在工作目录外"）
+            if (payload.workdir) {
+                const workdirField = document.createElement('div');
+                workdirField.className = 'perm-modal-field';
+                const workdirLabel = document.createElement('span');
+                workdirLabel.className = 'perm-modal-label';
+                workdirLabel.textContent = '工作目录';
+                const workdirValue = document.createElement('span');
+                workdirValue.className = 'perm-modal-value perm-modal-workdir';
+                workdirValue.textContent = payload.workdir;
+                workdirField.appendChild(workdirLabel);
+                workdirField.appendChild(workdirValue);
+                body.appendChild(workdirField);
+            }
+
+            // 目标路径（高亮：突出"这是路径类操作"）
+            const pathField = document.createElement('div');
+            pathField.className = 'perm-modal-field perm-modal-path';
+            const pathLabel = document.createElement('span');
+            pathLabel.className = 'perm-modal-label';
+            pathLabel.textContent = '目标路径';
+            const pathValue = document.createElement('span');
+            pathValue.className = 'perm-modal-value perm-modal-target-path';
+            pathValue.textContent = payload.target_path;
+            pathField.appendChild(pathLabel);
+            pathField.appendChild(pathValue);
+            body.appendChild(pathField);
+        }
+
+        // ---- Step 5 增强：matched_rule.pattern 展示（如果存在）----
+        if (payload.matched_rule && payload.matched_rule.pattern) {
+            const matchedField = document.createElement('div');
+            matchedField.className = 'perm-modal-field perm-modal-matched';
+            const matchedLabel = document.createElement('span');
+            matchedLabel.className = 'perm-modal-label';
+            matchedLabel.textContent = '命中规则';
+            const matchedValue = document.createElement('span');
+            matchedValue.className = 'perm-modal-value';
+            const tool = payload.matched_rule.tool || '*';
+            const pattern = payload.matched_rule.pattern;
+            const action = payload.matched_rule.action || '';
+            matchedValue.textContent = `${tool}  ${pattern}  ${action}`;
+            matchedField.appendChild(matchedLabel);
+            matchedField.appendChild(matchedValue);
+            body.appendChild(matchedField);
+        }
+
+        // ---- 按钮区 ----
+        const actions = document.createElement('div');
+        actions.className = 'perm-modal-actions';
+
+        const btnDeny = document.createElement('button');
+        btnDeny.className = 'perm-btn perm-btn-deny';
+        btnDeny.textContent = '拒绝';
+        btnDeny.type = 'button';
+        btnDeny.addEventListener('click', () => sendPermResponse(payload.id, false, 'once'));
+
+        const btnOnce = document.createElement('button');
+        btnOnce.className = 'perm-btn perm-btn-once';
+        btnOnce.textContent = '本次允许';
+        btnOnce.type = 'button';
+        btnOnce.addEventListener('click', () => sendPermResponse(payload.id, true, 'once'));
+
+        const btnSession = document.createElement('button');
+        btnSession.className = 'perm-btn perm-btn-session';
+        btnSession.textContent = '本会话允许';
+        btnSession.type = 'button';
+        btnSession.addEventListener('click', () => sendPermResponse(payload.id, true, 'session'));
+
+        const btnPermanent = document.createElement('button');
+        btnPermanent.className = 'perm-btn perm-btn-permanent';
+        btnPermanent.textContent = '永久允许';
+        btnPermanent.type = 'button';
+        btnPermanent.addEventListener('click', () => sendPermResponse(payload.id, true, 'permanent'));
+
+        actions.appendChild(btnDeny);
+        actions.appendChild(btnOnce);
+        actions.appendChild(btnSession);
+        actions.appendChild(btnPermanent);
+
+        // ---- 永久放行范围提示（仅路径类工具 + 有 target_path 时）----
+        // 提示后端"永久允许"将放行的实际目录 glob（与后端 BuildPathPattern 语义一致）
+        let hint = null;
+        if (payload.target_path) {
+            hint = document.createElement('div');
+            hint.className = 'perm-modal-hint';
+            const targetDir = permTargetDirHint(payload.target_path, payload.workdir);
+            hint.textContent = '选择"永久允许"将放行该目录（' + targetDir + '）下所有读操作';
+        }
+
+        // ---- 倒计时区域 ----
+        const countdown = document.createElement('div');
+        countdown.className = 'perm-modal-countdown';
+        const countdownText = document.createElement('span');
+        countdownText.className = 'perm-modal-countdown-text';
+        countdownText.id = 'perm-countdown-text';
+        countdownText.textContent = PERM_COUNTDOWN_SECONDS + ' 秒后自动拒绝';
+        countdown.appendChild(countdownText);
+
+        // ---- 组装 ----
+        card.appendChild(header);
+        card.appendChild(body);
+        card.appendChild(actions);
+        if (hint) {
+            card.appendChild(hint);
+        }
+        card.appendChild(countdown);
+        modal.appendChild(card);
+
+        return modal;
+    }
+
+    // startPermCountdown 启动倒计时。
+    // 每秒更新文案，最后 10 秒进入紧急样式（红色闪烁）。
+    // 倒计时归零时自动发送拒绝并关闭对话框。
+    function startPermCountdown(id, total) {
+        let remaining = total;
+        const textEl = document.getElementById('perm-countdown-text');
+        if (!textEl) return;
+
+        state._permCountdownTimer = setInterval(() => {
+            remaining--;
+            if (remaining <= 0) {
+                // 倒计时归零：自动拒绝
+                clearInterval(state._permCountdownTimer);
+                state._permCountdownTimer = null;
+                sendPermResponse(id, false, 'once');
+                return;
+            }
+            textEl.textContent = remaining + ' 秒后自动拒绝';
+            // 最后 10 秒进入紧急样式
+            if (remaining <= 10) {
+                textEl.classList.add('urgent');
+            }
+        }, 1000);
+    }
+
+    // =========================================================================
+    // Step 5：权限模式状态栏展示
+    // =========================================================================
+
+    // 权限模式配置映射：每种模式对应的图标、文案、颜色。
+    // icon 用真正的 Unicode 字符（🔒 🛡 🔓），label 用汉字「严格 / 默认 / 放行」，
+    // 不要写成 "u{1F6E1}" / "u9ED8u8BA4" 这种字面字符串——JavaScript 不会解析，
+    // 会原样显示在 UI 上。
+    const PERM_MODE_CONFIG = {
+        strict:     { icon: "\u{1F512}", label: "严格", color: "var(--error, #e06c75)" },
+        default:    { icon: "\u{1F6E1}", label: "默认", color: "var(--thinking, #61afef)" },
+        permissive: { icon: "\u{1F513}", label: "放行", color: "var(--success, #98c379)" },
+    };
+
+    // 状态：当前档位（后端最后一次推送为准），用于下拉高亮「当前档位」
+    state.permMode = 'default';
+
+    // onPermissionMode 处理后端推送的 permission_mode 消息，
+    // 更新状态栏中的权限模式标识 + 下拉中「当前档位」高亮。
+    //
+    // 调用时机：
+    //   1. 会话加载完成（sendPermissionMode 在 session_loaded 之后推送）
+    //   2. handleSetPermissionMode 切换档位成功后回推
+    function onPermissionMode(p) {
+        if (!p || !dom.permMode) return;
+        const mode = p.mode || "default";
+        const config = PERM_MODE_CONFIG[mode] || PERM_MODE_CONFIG.default;
+        state.permMode = mode;   // 同步全局状态，供下拉高亮使用
+
+        // 更新文案和颜色
+        dom.permMode.textContent = config.icon + " " + config.label;
+        dom.permMode.style.color = config.color;
+
+        // 更新 tooltip：显示模式 + 规则数 + 临时规则数
+        const ruleCount = p.rule_count || 0;
+        const sessionRuleCount = p.session_rule_count || 0;
+        const parent = dom.permMode.closest(".inputbar-stat");
+        if (parent) {
+            let title = config.label + "模式";
+            if (ruleCount > 0) title += " | " + ruleCount + " 条规则";
+            if (sessionRuleCount > 0) title += " | " + sessionRuleCount + " 条临时规则";
+            parent.title = title;
+        }
+
+        // 同步下拉中「当前档位」高亮（点击不关闭下拉时，外部状态变更也要即时反映）
+        highlightCurrentPermOption(mode);
+    }
+
+    // -------------------------------------------------------------------------
+    // 权限模式下拉（点击 permission 区域展开 / 选中后关闭）
+    // -------------------------------------------------------------------------
+
+    // togglePermDropdown 切换下拉显示状态。
+    // 打开时：第一次打开注册全局 click + ESC 关闭监听；关闭时移除监听。
+    function togglePermDropdown(force) {
+        if (!dom.permDropdown || !dom.permStat) return;
+        const willOpen = force === undefined ? dom.permDropdown.hidden : !!force;
+        if (willOpen) {
+            dom.permDropdown.hidden = false;
+            dom.permStat.classList.add('is-open');
+            // 立即同步「当前档位」高亮
+            highlightCurrentPermOption(state.permMode);
+            // 注册全局监听：点击其他位置 / ESC 时关闭
+            // 用 setTimeout 延后绑定，避免本次点击事件冒泡到 document 立即触发关闭
+            setTimeout(() => {
+                document.addEventListener('click', onDocClickClosePerm);
+                document.addEventListener('keydown', onEscClosePerm);
+            }, 0);
+        } else {
+            dom.permDropdown.hidden = true;
+            dom.permStat.classList.remove('is-open');
+            document.removeEventListener('click', onDocClickClosePerm);
+            document.removeEventListener('keydown', onEscClosePerm);
+        }
+    }
+
+    // onDocClickClosePerm 点击下拉外区域时关闭下拉。
+    // 用 closest() 检查事件源是否在 permStat 子树内；不在则关闭。
+    function onDocClickClosePerm(e) {
+        if (dom.permStat && !dom.permStat.contains(e.target)) {
+            togglePermDropdown(false);
+        }
+    }
+
+    // onEscClosePerm ESC 键关闭下拉。
+    function onEscClosePerm(e) {
+        if (e.key === 'Escape') {
+            togglePermDropdown(false);
+        }
+    }
+
+    // highlightCurrentPermOption 同步下拉选项中的「当前档位」高亮。
+    // data-mode 与档位字符串对应；给匹配的 option 加 is-current。
+    function highlightCurrentPermOption(mode) {
+        if (!dom.permDropdown) return;
+        const opts = dom.permDropdown.querySelectorAll('.perm-mode-option');
+        opts.forEach(btn => {
+            if (btn.dataset.mode === mode) {
+                btn.classList.add('is-current');
+            } else {
+                btn.classList.remove('is-current');
+            }
+        });
+    }
+
+    // onPermOptionPicked 下拉选项点击入口。
+    // 1. 与当前档位相同则仅关闭下拉（不发送无意义请求）
+    // 2. 不同则发送 set_permission_mode，后端回推 permission_mode 后 UI 自动同步
+    function onPermOptionPicked(mode) {
+        // 总是先关闭下拉（视觉即时反馈，避免等待网络）
+        togglePermDropdown(false);
+        if (mode === state.permMode) return;
+
+        // 防御：mode 必须是合法档位
+        if (!PERM_MODE_CONFIG[mode]) return;
+
+        sendWS(MsgType.SetPermissionMode, { mode: mode });
+    }
+
+    // 初始化：注册 perm-stat 点击 + 下拉选项点击事件。
+    // 这些 listener 只注册一次，在 IIFE 启动时执行。
+    function initPermDropdown() {
+        if (dom.permStat) {
+            dom.permStat.addEventListener('click', (e) => {
+                // 阻止冒泡，避免 onDocClickClosePerm 误关闭
+                e.stopPropagation();
+                togglePermDropdown();
+            });
+        }
+        if (dom.permDropdown) {
+            // 事件委托：3 个 .perm-mode-option 共用一个 listener
+            dom.permDropdown.addEventListener('click', (e) => {
+                const btn = e.target.closest('.perm-mode-option');
+                if (!btn) return;
+                // 阻止冒泡，避免冒泡到 permStat 触发 toggle
+                e.stopPropagation();
+                const mode = btn.dataset.mode;
+                if (mode) onPermOptionPicked(mode);
+            });
+        }
+    }
+
+    // 在 IIFE 末尾的主入口调用
+    initPermDropdown();
 })();

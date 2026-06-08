@@ -1,3 +1,8 @@
+// Package builtin 提供 CodePilot 的内置工具集。
+//
+// 本文件实现 Grep 工具：按正则搜索文件内容。
+// 沙箱解析由 ToolHandler.SandboxMiddleware 统一处理（path 参数）；
+// absBase 来自 ctx，walk 出的子路径天然在 sandbox 内，仅对 symlink 做兜底。
 package builtin
 
 import (
@@ -12,8 +17,8 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/MeiCorl/CodePilot/src/internal/security"
 	"github.com/MeiCorl/CodePilot/src/internal/tool"
-	"github.com/MeiCorl/CodePilot/src/internal/tool/safety"
 	"github.com/bmatcuk/doublestar/v4"
 )
 
@@ -34,16 +39,22 @@ type grepInput struct {
 	Include string `json:"include" jsonschema:"description=文件名 glob 过滤（如 *.go），仅匹配此 glob 的文件会被扫描"`
 }
 
-var _ = grepInput{} // 见 schema.go
+// grepSchema 见 schema.go。
+var _ = grepInput{}
 
 // GrepTool 是 Grep 工具的实现。
+//
+// 沙箱解析由 ToolHandler.SandboxMiddleware 统一处理；absBase 来自 ctx。
 type GrepTool struct {
 	tool.BaseTool
-	WorkingDirectory string
 }
 
 // NewGrepTool 构造 Grep 工具实例。
+//
+// workingDir 参数保留签名以兼容 RegisterWithOptions 调用点（main.go），
+// 内部不使用——沙箱配置由 ToolHandler.RegisterMiddleware 注入。
 func NewGrepTool(workingDir string) *GrepTool {
+	_ = workingDir
 	return &GrepTool{
 		BaseTool: tool.BaseTool{
 			ToolName:        GrepName,
@@ -51,7 +62,6 @@ func NewGrepTool(workingDir string) *GrepTool {
 			ToolInputSchema: grepSchema,
 			ToolPermission:  tool.PermRead,
 		},
-		WorkingDirectory: workingDir,
 	}
 }
 
@@ -80,12 +90,9 @@ func (t *GrepTool) Execute(ctx context.Context, input json.RawMessage) (string, 
 		return "", err
 	}
 
-	// 基准目录沙箱校验
-	base := in.Path
-	if base == "" {
-		base = t.WorkingDirectory
-	}
-	absBase, err := safety.ResolveInSandbox(base, t.WorkingDirectory)
+	// 沙箱解析：由 ToolHandler.SandboxMiddleware 完成；absBase 来自 ctx。
+	// path 为空时 Middleware 已默认填入 workdir，此处不再处理。
+	absBase, err := resolvePathFromContext(ctx, "path")
 	if err != nil {
 		return "", err
 	}
@@ -112,9 +119,16 @@ func (t *GrepTool) Execute(ctx context.Context, input json.RawMessage) (string, 
 				return nil
 			}
 		}
-		// 沙箱二次校验
-		if _, err := safety.ResolveInSandbox(p, t.WorkingDirectory); err != nil {
-			return nil
+		// absBase 已在 sandbox 内（含 symlink 解析），walk 出的子路径
+		// 天然在 sandbox 内；对 symlink 单独兜底以防 walk 期间新建的链。
+		if d.Type()&os.ModeSymlink != 0 {
+			real, err := filepath.EvalSymlinks(p)
+			if err != nil {
+				return nil
+			}
+			if !security.IsPathInside(real, absBase) {
+				return nil
+			}
 		}
 		// 文件大小过滤
 		info, err := d.Info()

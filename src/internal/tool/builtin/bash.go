@@ -14,7 +14,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/MeiCorl/CodePilot/src/internal/tool"
-	"github.com/MeiCorl/CodePilot/src/internal/tool/safety"
 	"golang.org/x/text/encoding/simplifiedchinese"
 	"golang.org/x/text/transform"
 )
@@ -68,10 +67,8 @@ func (t *BashTool) Execute(parent context.Context, input json.RawMessage) (strin
 		return "", errors.New("command 不能为空")
 	}
 
-	// 危险命令黑名单
-	if err := safety.CheckBashCommand(in.Command); err != nil {
-		return "", err
-	}
+	// 黑名单检查已提升至拦截器层（security.Checker.Decide 硬安全预检），
+		// 此处不再重复检查。
 
 	// 超时控制
 	timeout := t.DefaultTimeout

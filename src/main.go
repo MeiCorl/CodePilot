@@ -38,6 +38,7 @@ import (
 	"github.com/MeiCorl/CodePilot/src/internal/logger"
 	"github.com/MeiCorl/CodePilot/src/internal/memory/session"
 	"github.com/MeiCorl/CodePilot/src/internal/runtime/console"
+	"github.com/MeiCorl/CodePilot/src/internal/security"
 	"github.com/MeiCorl/CodePilot/src/llm"
 	"github.com/MeiCorl/CodePilot/src/internal/tool"
 	// import 触发 builtin 包的 init()，将 5 个内置工具以 cwd + 30s 兜底
@@ -138,6 +139,29 @@ func run() error {
 		zap.Duration("execution_timeout", bashTimeout),
 	)
 
+	// 6.5 Step 5：权限系统构造。
+	// 加载全局 + 项目级配置 → 合并策略 → 创建 Checker → 创建 Interceptor。
+	// HITL Callback 由 Handler 层注入（Handler 持有 WebSocket 连接），
+	// 此处先传 nil，后续通过 Handler.SetInterceptor 完成注入。
+	policy := security.LoadPermissions(cfg, nil)
+	checker := security.NewChecker(policy, toolWorkdir)
+	interceptor := security.NewInterceptor(checker, nil)
+	toolHandler.SetInterceptor(interceptor)
+
+	// 注册路径沙箱 Middleware：在 ToolHandler 的权限拦截之后、工具 Execute
+	// 之前运行，对所有路径类工具做统一沙箱解析；解析结果通过 ctx 注入
+	// PathResolver 传给工具，工具侧不再自行调 ResolveInSandbox。
+	// MCP 工具只要在 security.PathTools 注册即可零成本继承此保护。
+	// 注入 checker 作为 PathRuleProvider，使越界但被"永久/本会话允许"的
+	// 路径（目录级 glob 规则）在 Middleware 层也得到放行，避免双层防护
+	// 对已授权路径的"硬兜底误杀"。
+	toolHandler.RegisterMiddleware(security.SandboxMiddleware(toolWorkdir, checker))
+
+	logger.Info("权限系统就绪",
+		zap.String("mode", string(checker.Mode())),
+		zap.Int("rules", checker.RuleCount()),
+	)
+
 	// 7. 构造 System Prompt Builder（Step 4：分层 SP 体系）。
 	// 4 个 Source 按注册顺序产出内容：
 	//   - static:       5 个硬编码子模块（角色/行为/代码质量/工具/安全）
@@ -155,6 +179,8 @@ func run() error {
 	// 使用 DefaultAddr（127.0.0.1:0）让 OS 自动分配端口，
 	// 这样多个项目下可同时启动多个 CodePilot 进程互不冲突。
 	handler := web.NewHandler(provider, sessMgr, cfg, defaultMaxRounds, promptBuilder, cfg.ContextWindowSize, workdir, toolRegistry, toolHandler, fileDiffStore)
+	// 注入权限拦截器 + HITL 回调（Handler 内部实现 WebSocket 交互）
+	handler.SetInterceptor(interceptor, checker)
 	server := web.NewServer(web.DefaultAddr)
 	handler.Register(server.Router())
 

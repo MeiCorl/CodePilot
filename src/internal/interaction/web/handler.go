@@ -2,7 +2,10 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"runtime"
 	"runtime/debug"
 	"strings"
@@ -18,6 +21,7 @@ import (
 	"github.com/MeiCorl/CodePilot/src/internal/engine/prompt/sources"
 	"github.com/MeiCorl/CodePilot/src/internal/logger"
 	"github.com/MeiCorl/CodePilot/src/internal/memory/session"
+	"github.com/MeiCorl/CodePilot/src/internal/security"
 	"github.com/MeiCorl/CodePilot/src/llm"
 	"github.com/MeiCorl/CodePilot/src/internal/tool"
 )
@@ -57,6 +61,19 @@ type Handler struct {
 	// Step 1.4 接入；Task 3 (get_file_diff 协议) 真正消费此字段。
 	// 为 nil 时前端请求 diff 会得到 not_found 提示，等价于"未启用 diff 预览"。
 	fileDiffStore *FileDiffStore
+
+	// interceptor 为权限拦截器；为 nil 时 ToolHandler 不做权限检查。
+	interceptor *security.Interceptor
+	// checker 持有权限检查器引用，用于查询当前模式和规则数量。
+	checker *security.Checker
+	// pendingPermissions 管理等待用户确认的权限请求。
+	// key 为请求 ID，value 为等待响应的 channel。
+	pendingPermissions map[string]chan security.PermissionResponse
+	// pendingMu 保护 pendingPermissions 的并发访问。
+	pendingMu sync.Mutex
+	// pendingConn 追踪当前 runStream goroutine 使用的 WebSocket 连接，
+	// 供 HITL 回调获取连接使用。在 runStream 启动时设置，退出时置 nil。
+	pendingConn *websocket.Conn
 
 	mu      sync.Mutex
 	current *session.Session
@@ -103,6 +120,7 @@ func NewHandler(
 		registry:          registry,
 		toolHandler:       toolHandler,
 		fileDiffStore:     fileDiffStore,
+		pendingPermissions: make(map[string]chan security.PermissionResponse),
 	}
 	// 尝试恢复最近一个会话
 	if latest, err := sessMgr.LoadLatest(); err == nil && latest != nil {
@@ -167,6 +185,8 @@ func (h *Handler) Register(router *Router) {
 	router.Register(MsgTypeDeleteSession, h.handleDeleteSession)
 	router.Register(MsgTypeDevExportSP, h.handleDevExportSP)
 	router.Register(MsgTypeGetFileDiff, h.handleGetFileDiff)
+	router.Register(MsgTypePermissionResponse, h.handlePermissionResponse)
+	router.Register(MsgTypeSetPermissionMode, h.handleSetPermissionMode)
 }
 
 // ModelName 返回当前配置中的模型名，供状态栏展示。
@@ -234,6 +254,16 @@ func (h *Handler) handleUserInput(conn *websocket.Conn, msg Message) error {
 // ctx 在 abort_stream 时被 cancel；AgentLoop 内部会响应 ctx 取消并
 // 把当前 LLM 流 / 工具执行一并中断，由 runStream 根据 StopReason 映射退出原因。
 func (h *Handler) runStream(ctx context.Context, conn *websocket.Conn) {
+	// 记录当前活跃 WebSocket 连接，供 HITL 回调使用
+	h.mu.Lock()
+	h.pendingConn = conn
+	h.mu.Unlock()
+	defer func() {
+		h.mu.Lock()
+		h.pendingConn = nil
+		h.mu.Unlock()
+	}()
+
 	// recovered 标记是否因 panic 进入恢复逻辑
 	var recovered bool
 
@@ -671,6 +701,273 @@ func (h *Handler) handleGetFileDiff(conn *websocket.Conn, msg Message) error {
 	})
 }
 
+// SetInterceptor 设置权限拦截器并注入 HITL 回调。
+// 应在 main.go 顶层构造后、启动服务前调用。
+// interceptor 为 nil 时 ToolHandler 不做权限检查。
+func (h *Handler) SetInterceptor(interceptor *security.Interceptor, checker *security.Checker) {
+	h.interceptor = interceptor
+	h.checker = checker
+	if interceptor != nil {
+		interceptor.SetHITLCallback(h.hitlCallback)
+	}
+}
+
+// hitlCallback 是 HITL 确认的核心回调函数。
+// 由 Interceptor 在 ActionAsk 时同步调用，负责：
+//  1. 构造 permission_request WebSocket 消息并推送给前端
+//  2. 通过 channel + select 等待用户响应或超时（默认 60 秒）
+//  3. 处理 ScopePermanent 的配置文件写入
+func (h *Handler) hitlCallback(ctx context.Context, req security.PermissionRequest) (security.PermissionResponse, error) {
+	// 生成唯一请求 ID（使用时间戳纳秒后 8 位）
+	id := fmt.Sprintf("perm_%d", time.Now().UnixNano()%1e8)
+
+	// 构造匹配规则展示信息
+	var matchedRule *PermissionMatchedRule
+	if req.MatchedRule != nil {
+		matchedRule = &PermissionMatchedRule{
+			Tool:    req.MatchedRule.Tool,
+			Pattern: req.MatchedRule.Pattern,
+			Action:  string(req.MatchedRule.Action),
+		}
+	}
+
+	// 注册等待 channel
+	respCh := make(chan security.PermissionResponse, 1)
+	h.pendingMu.Lock()
+	h.pendingPermissions[id] = respCh
+	h.pendingMu.Unlock()
+	defer func() {
+		h.pendingMu.Lock()
+		delete(h.pendingPermissions, id)
+		h.pendingMu.Unlock()
+	}()
+
+	// 获取当前活跃的 WebSocket 连接
+	// hitlCallback 在 runStream goroutine 内被同步调用，
+	// 此时 conn 已在 goroutine 闭包中，需要通过 pendingPermissions 机制路由响应。
+	// 为获取 conn，我们把 conn 存入 context 或通过 Handler 字段传递。
+	// 简化方案：使用 Handler 的 pendingConn 记录当前活跃连接。
+	conn := h.getActiveConn()
+	if conn == nil {
+		return security.PermissionResponse{}, fmt.Errorf("无可用的 WebSocket 连接")
+	}
+
+	// 发送 permission_request 给前端
+	_ = h.sendMessage(conn, MsgTypePermissionRequest, PermissionRequestPayload{
+		ID:            id,
+		ToolName:      req.ToolName,
+		ParamsSummary: req.ParamsSummary,
+		Reason:        req.Reason,
+		MatchedRule:   matchedRule,
+		TargetPath:    req.TargetPath,
+		Workdir:       req.Workdir,
+	})
+
+	// 等待用户响应或超时（60 秒，独立于工具执行超时）
+	const hitlTimeout = 60 * time.Second
+	select {
+	case resp := <-respCh:
+		// 收到用户响应，处理 ScopePermanent 的配置文件写入
+		// 路径类工具 + 有 TargetPath → 用 security.BuildPathPattern 生成
+		// 目录级 Pattern（父目录 + /*），避免工具级豁免带来的安全风险。
+		if resp.Allowed && resp.Scope == security.ScopePermanent {
+			pattern := "*"
+			if _, isPathTool := security.IsPathTool(req.ToolName); isPathTool && req.TargetPath != "" {
+				pattern = security.BuildPathPattern(req.TargetPath, req.Workdir)
+			}
+			reason := "用户永久授权"
+			if pattern != "*" {
+				reason = fmt.Sprintf("用户永久授权：放行 %s", pattern)
+			}
+			h.handlePermanentAllow(req.ToolName, pattern, reason)
+		}
+		return resp, nil
+	case <-time.After(hitlTimeout):
+		return security.PermissionResponse{}, fmt.Errorf("权限确认超时（%s）", hitlTimeout)
+	case <-ctx.Done():
+		return security.PermissionResponse{}, ctx.Err()
+	}
+}
+
+// handlePermissionResponse 处理前端发回的权限确认响应。
+// 从 pendingPermissions 中找到对应的 channel，将响应传递给等待的 hitlCallback。
+func (h *Handler) handlePermissionResponse(conn *websocket.Conn, msg Message) error {
+	p, err := AsPayload[PermissionResponsePayload](msg)
+	if err != nil {
+		return h.sendStreamError(conn, "invalid_payload", err.Error())
+	}
+
+	h.pendingMu.Lock()
+	ch, ok := h.pendingPermissions[p.ID]
+	h.pendingMu.Unlock()
+
+	if !ok {
+		logger.Warn("收到未注册的权限响应",
+			zap.String("id", p.ID),
+		)
+		return nil
+	}
+
+	// 非阻塞发送响应
+	select {
+	case ch <- security.PermissionResponse{
+		Allowed: p.Allowed,
+		Scope:   security.Scope(p.Scope),
+	}:
+	default:
+		logger.Warn("权限响应 channel 已满，丢弃",
+			zap.String("id", p.ID),
+		)
+	}
+	return nil
+}
+
+// handleSetPermissionMode 处理前端「权限模式」下拉切换请求。
+//
+// 用户在状态栏点击 permission 区域会弹出 3 选 1 下拉（严格/默认/放行），
+// 选中后前端发送 set_permission_mode{mode: "..."}，本 handler：
+//  1. 校验 mode 合法性（必须是 strict / default / permissive）
+//  2. 调用 Checker.SetMode() 立即生效
+//  3. 通过 MsgTypePermissionMode 回推新档位给前端，状态栏 UI 同步更新
+//  4. 不修改 setting.json（运行时切换，不影响磁盘配置）
+//
+// 运行时切换 vs 配置文件切换：
+//   - 本接口是临时性切换，重启 CodePilot 后回到 setting.json 中配置的档位
+//   - 若用户希望永久切换档位，需编辑 ~/.codepilot/setting.json 或 <cwd>/.codepilot/setting.json
+func (h *Handler) handleSetPermissionMode(conn *websocket.Conn, msg Message) error {
+	p, err := AsPayload[SetPermissionModePayload](msg)
+	if err != nil {
+		return h.sendStreamError(conn, "invalid_payload", err.Error())
+	}
+
+	// 校验：checker 为 nil 时旧会话无权限系统，直接拒绝
+	if h.checker == nil {
+		logger.Warn("收到 set_permission_mode 但 Checker 未初始化", zap.String("mode", p.Mode))
+		return h.sendStreamError(conn, "permission_disabled", "权限系统未启用")
+	}
+
+	// 校验：mode 必须是合法档位（security.SetMode 内部也会校验，这里先校验一次以便日志）
+	switch security.Mode(p.Mode) {
+	case security.ModeStrict, security.ModeDefault, security.ModePermissive:
+		// 合法
+	default:
+		logger.Warn("收到非法的 set_permission_mode", zap.String("mode", p.Mode))
+		return h.sendStreamError(conn, "invalid_mode", "非法的权限模式: "+p.Mode)
+	}
+
+	// 校验：避免无意义的「同档位切换」日志噪声
+	oldMode := h.checker.Mode()
+	if security.Mode(p.Mode) == oldMode {
+		logger.Debug("set_permission_mode 与当前档位相同，跳过", zap.String("mode", p.Mode))
+	} else {
+		h.checker.SetMode(security.Mode(p.Mode))
+		logger.Info("权限模式已切换",
+			zap.String("from", string(oldMode)),
+			zap.String("to", p.Mode),
+		)
+	}
+
+	// 回推新档位给前端（前端无须本地更新 UI）
+	return h.sendPermissionMode(conn)
+}
+
+// handlePermanentAllow 将"永久允许"规则写入对应的 setting.json 配置文件。
+// 优先写入项目级配置（.codepilot/setting.json），否则写入全局配置。
+// 写入失败时降级为会话级规则（不阻断流程）。
+//
+// 参数：
+//   - toolName: 工具名（大驼峰，如 "ReadFile"）
+//   - pattern:  规则 Pattern，对路径类工具是目录级 glob（如 "/tmp/*"），
+//     对非路径类工具是 "*"（工具级豁免）
+//   - reason:   规则 Reason，会写入配置文件
+func (h *Handler) handlePermanentAllow(toolName, pattern, reason string) {
+	if pattern == "" {
+		pattern = "*"
+	}
+	if reason == "" {
+		reason = "用户永久授权"
+	}
+	rule := config.RuleConfig{
+		Tool:    toolName,
+		Pattern: pattern,
+		Action:  "allow",
+		Reason:  reason,
+	}
+
+	// 尝试写入项目级配置
+	if h.workdir != "" {
+		projectConfigPath := filepath.Join(h.workdir, ".codepilot", "setting.json")
+		if err := writeRuleToConfig(projectConfigPath, rule); err == nil {
+			logger.Info("永久允许规则已写入项目配置",
+				zap.String("path", projectConfigPath),
+				zap.String("tool", toolName),
+				zap.String("pattern", pattern),
+			)
+			return
+		}
+	}
+
+	// 回退到全局配置
+	if h.cfg != nil {
+		homeDir, err := os.UserHomeDir()
+		if err == nil {
+			globalConfigPath := filepath.Join(homeDir, ".codepilot", "setting.json")
+			if err := writeRuleToConfig(globalConfigPath, rule); err == nil {
+				logger.Info("永久允许规则已写入全局配置",
+					zap.String("path", globalConfigPath),
+					zap.String("tool", toolName),
+					zap.String("pattern", pattern),
+				)
+				return
+			}
+		}
+	}
+
+	// 写入失败：降级为会话级规则
+	if h.checker != nil {
+		h.checker.AddSessionRule(security.Rule{
+			Tool:    toolName,
+			Pattern: pattern,
+			Action:  security.ActionAllow,
+			Reason:  "用户永久授权（配置写入失败，降级为会话级）",
+		})
+	}
+	logger.Warn("永久允许规则写入配置文件失败，已降级为会话级规则",
+		zap.String("tool", toolName),
+	)
+}
+
+// getActiveConn 获取当前活跃的 WebSocket 连接。
+// 由于 hitlCallback 在 runStream goroutine 内被同步调用，
+// 此时 runStream 闭包中的 conn 就是活跃连接。
+// 简化实现：通过 pendingConn 字段追踪。
+func (h *Handler) getActiveConn() *websocket.Conn {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	// pendingConn 在 runStream 启动时设置
+	if h.pendingConn != nil {
+		return h.pendingConn
+	}
+	return nil
+}
+
+// sendPermissionMode 推送当前权限模式到前端。
+func (h *Handler) sendPermissionMode(conn *websocket.Conn) error {
+	mode := "default"
+	ruleCount := 0
+	sessionRuleCount := 0
+	if h.checker != nil {
+		mode = string(h.checker.Mode())
+		ruleCount = h.checker.RuleCount()
+		sessionRuleCount = h.checker.SessionRuleCount()
+	}
+	return h.sendMessage(conn, MsgTypePermissionMode, PermissionModePayload{
+		Mode:            mode,
+		RuleCount:       ruleCount,
+		SessionRuleCount: sessionRuleCount,
+	})
+}
+
 // buildSPEnv 构造 prompt.Builder.Assemble 所需的 Env 输入。
 // 数据源：cfg + workdir + 进程启动时间 + VERSION。
 //
@@ -862,13 +1159,18 @@ func (h *Handler) sendSessionLoaded(conn *websocket.Conn, sess *session.Session)
 		MessageCount: len(sess.Messages),
 		Preview:      firstUserPreview(sess.Messages),
 	}
-	return h.sendMessage(conn, MsgTypeSessionLoaded, SessionLoadedPayload{
+	if err := h.sendMessage(conn, MsgTypeSessionLoaded, SessionLoadedPayload{
 		SessionID: sess.ID,
 		Summary:   summary,
 		Messages:  chatMsgs,
 		Model:     h.ModelName(),
 		Workdir:   h.workdir,
-	})
+	}); err != nil {
+		return err
+	}
+	// 会话加载完成后推送当前权限模式（状态栏展示）
+	_ = h.sendPermissionMode(conn)
+	return nil
 }
 
 // buildChatMessages 把 llm.Message 列表转换为前端 ChatMessage 列表，
@@ -1000,6 +1302,49 @@ func firstUserPreview(messages []llm.Message) string {
 		}
 	}
 	return "(空会话)"
+}
+
+// writeRuleToConfig 将一条权限规则追加到指定 setting.json 文件中。
+// 使用"读取-合并-写回"策略，保留文件中已有的其他配置字段。
+// 文件不存在时自动创建（含目录）；写入失败时返回错误。
+func writeRuleToConfig(configPath string, rule config.RuleConfig) error {
+	// 确保目录存在
+	dir := filepath.Dir(configPath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("创建配置目录失败: %w", err)
+	}
+
+	// 读取现有配置（文件不存在时使用空对象）
+	var raw map[string]json.RawMessage
+	if data, err := os.ReadFile(configPath); err == nil {
+		_ = json.Unmarshal(data, &raw)
+	}
+	if raw == nil {
+		raw = make(map[string]json.RawMessage)
+	}
+
+	// 解析现有 permissions
+	var perms config.PermissionsConfig
+	if permRaw, ok := raw["permissions"]; ok {
+		_ = json.Unmarshal(permRaw, &perms)
+	}
+
+	// 追加新规则
+	perms.Rules = append(perms.Rules, rule)
+
+	// 写回 permissions 字段
+	permData, err := json.Marshal(perms)
+	if err != nil {
+		return fmt.Errorf("序列化 permissions 失败: %w", err)
+	}
+	raw["permissions"] = json.RawMessage(permData)
+
+	// 整体写回文件
+	data, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return fmt.Errorf("序列化配置失败: %w", err)
+	}
+	return os.WriteFile(configPath, data, 0644)
 }
 
 // ---- 流式状态机 ----

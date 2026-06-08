@@ -8,6 +8,9 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/MeiCorl/CodePilot/src/internal/security"
+	"github.com/MeiCorl/CodePilot/src/internal/tool"
 )
 
 // helper：新建一个 sandbox 目录并写入测试文件，返回 sandbox 路径。
@@ -32,7 +35,8 @@ func TestReadFileBasic(t *testing.T) {
 		"hello.txt": "first\nsecond\nthird\n",
 	})
 	tool := NewReadFileTool(sandbox)
-	out, err := tool.Execute(context.Background(), json.RawMessage(`{"file_path": "hello.txt"}`))
+	ctx := withSandedPath(t, sandbox, "hello.txt")
+	out, err := tool.Execute(ctx, json.RawMessage(`{"file_path": "hello.txt"}`))
 	if err != nil {
 		t.Fatalf("执行失败: %v", err)
 	}
@@ -60,7 +64,8 @@ func TestReadFileOffsetLimit(t *testing.T) {
 	}
 	sandbox := setupSandbox(t, map[string]string{"paged.txt": b.String()})
 	tool := NewReadFileTool(sandbox)
-	out, err := tool.Execute(context.Background(), json.RawMessage(`{"file_path":"paged.txt","offset":10,"limit":5}`))
+	ctx := withSandedPath(t, sandbox, "paged.txt")
+	out, err := tool.Execute(ctx, json.RawMessage(`{"file_path":"paged.txt","offset":10,"limit":5}`))
 	if err != nil {
 		t.Fatalf("执行失败: %v", err)
 	}
@@ -88,7 +93,8 @@ func TestReadFileBinaryRejection(t *testing.T) {
 		t.Fatalf("准备 PNG 失败: %v", err)
 	}
 	tool := NewReadFileTool(sandbox)
-	_, err := tool.Execute(context.Background(), json.RawMessage(`{"file_path":"image.png"}`))
+	ctx := withSandedPath(t, sandbox, "image.png")
+	_, err := tool.Execute(ctx, json.RawMessage(`{"file_path":"image.png"}`))
 	if err == nil {
 		t.Fatal("二进制文件应被拒绝")
 	}
@@ -101,7 +107,8 @@ func TestReadFileBinaryRejection(t *testing.T) {
 func TestReadFileNotFound(t *testing.T) {
 	sandbox := t.TempDir()
 	tool := NewReadFileTool(sandbox)
-	_, err := tool.Execute(context.Background(), json.RawMessage(`{"file_path":"nonexistent.txt"}`))
+	ctx := withSandedPath(t, sandbox, "nonexistent.txt")
+	_, err := tool.Execute(ctx, json.RawMessage(`{"file_path":"nonexistent.txt"}`))
 	if err == nil {
 		t.Fatal("应返回错误")
 	}
@@ -110,7 +117,7 @@ func TestReadFileNotFound(t *testing.T) {
 	}
 }
 
-// TestReadFileEmptyPath 验证 file_path 为空报错。
+// TestReadFileEmptyPath 验证 file_path 为空时报"file_path 不能为空"（Middleware 透传空 path）。
 func TestReadFileEmptyPath(t *testing.T) {
 	sandbox := t.TempDir()
 	tool := NewReadFileTool(sandbox)
@@ -120,16 +127,23 @@ func TestReadFileEmptyPath(t *testing.T) {
 	}
 }
 
-// TestReadFilePathOutside 验证 sandbox 越界被拦截。
-func TestReadFilePathOutside(t *testing.T) {
+// TestReadFile_OutsideViaMiddleware 验证 sandbox 越界被 Middleware 拦截。
+//
+// 工具沙箱改由 Middleware 强制接管后，工具侧不再自行做路径校验；
+// 越界场景通过直接调 SandboxMiddleware 验证 ErrPathOutsideSandbox 行为。
+func TestReadFile_OutsideViaMiddleware(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows 上无 etc/passwd, 跳过")
 	}
 	sandbox := t.TempDir()
-	tool := NewReadFileTool(sandbox)
-	_, err := tool.Execute(context.Background(), json.RawMessage(`{"file_path":"../../../etc/passwd"}`))
+	mw := security.SandboxMiddleware(sandbox, nil)
+	_, err := mw(context.Background(), "ReadFile",
+		json.RawMessage(`{"file_path":"../../../etc/passwd"}`), tool.PermRead)
 	if err == nil {
-		t.Fatal("越界路径应被拦截")
+		t.Fatal("越界路径应被 Middleware 拦截")
+	}
+	if !errorsIs(err, security.ErrPathOutsideSandbox) {
+		t.Errorf("错误应为 ErrPathOutsideSandbox, 实际: %v", err)
 	}
 }
 

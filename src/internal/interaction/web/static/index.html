@@ -109,6 +109,35 @@
                         <span class="inputbar-stat-label">model</span>
                         <span class="inputbar-stat-value" id="model-name">--</span>
                     </div>
+                    <div class="inputbar-stat is-clickable" id="perm-stat" title="点击切换权限模式">
+                        <span class="inputbar-stat-label">permission</span>
+                        <span class="inputbar-stat-value" id="perm-mode">--</span>
+                        <span class="perm-chevron" aria-hidden="true">▾</span>
+                        <!-- 权限模式下拉：3 选 1（严格 / 默认 / 放行），默认 hidden -->
+                        <div class="perm-mode-dropdown" id="perm-mode-dropdown" hidden role="menu" aria-label="权限模式">
+                            <button class="perm-mode-option" data-mode="strict" type="button" role="menuitem">
+                                <span class="perm-mode-option-icon">🔒</span>
+                                <span class="perm-mode-option-body">
+                                    <span class="perm-mode-option-label">严格</span>
+                                    <span class="perm-mode-option-desc">写操作与越界路径全部需确认</span>
+                                </span>
+                            </button>
+                            <button class="perm-mode-option" data-mode="default" type="button" role="menuitem">
+                                <span class="perm-mode-option-icon">🛡</span>
+                                <span class="perm-mode-option-body">
+                                    <span class="perm-mode-option-label">默认</span>
+                                    <span class="perm-mode-option-desc">Bash 与越界路径需确认</span>
+                                </span>
+                            </button>
+                            <button class="perm-mode-option" data-mode="permissive" type="button" role="menuitem">
+                                <span class="perm-mode-option-icon">🔓</span>
+                                <span class="perm-mode-option-body">
+                                    <span class="perm-mode-option-label">放行</span>
+                                    <span class="perm-mode-option-desc">除黑名单外全部自动放行</span>
+                                </span>
+                            </button>
+                        </div>
+                    </div>
                     <div class="inputbar-stat" id="sp-stat" title="System Prompt token 估算（悬停查看各 Source 小计）">
                         <span class="inputbar-stat-label">system prompt</span>
                         <span class="inputbar-stat-value" id="sp-tokens">--</span>

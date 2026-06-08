@@ -1,3 +1,8 @@
+// Package builtin 提供 CodePilot 的内置工具集。
+//
+// 本文件实现 Glob 工具：按 glob 模式查找匹配的文件路径，支持 ** 递归。
+// 沙箱解析由 ToolHandler.SandboxMiddleware 统一处理（path 参数）；
+// absBase 来自 ctx，walk 出的子路径天然在 sandbox 内，仅对 symlink 做兜底。
 package builtin
 
 import (
@@ -11,8 +16,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/MeiCorl/CodePilot/src/internal/security"
 	"github.com/MeiCorl/CodePilot/src/internal/tool"
-	"github.com/MeiCorl/CodePilot/src/internal/tool/safety"
 	"github.com/bmatcuk/doublestar/v4"
 )
 
@@ -29,16 +34,22 @@ type globInput struct {
 	Path    string `json:"path" jsonschema:"description=基准目录，相对工作目录解析，默认工作目录根"`
 }
 
-var _ = globInput{} // 见 schema.go
+// globSchema 见 schema.go。
+var _ = globInput{}
 
 // GlobTool 是 Glob 工具的实现。
+//
+// 沙箱解析由 ToolHandler.SandboxMiddleware 统一处理；absBase 来自 ctx。
 type GlobTool struct {
 	tool.BaseTool
-	WorkingDirectory string
 }
 
 // NewGlobTool 构造 Glob 工具实例。
+//
+// workingDir 参数保留签名以兼容 RegisterWithOptions 调用点（main.go），
+// 内部不使用——沙箱配置由 ToolHandler.RegisterMiddleware 注入。
 func NewGlobTool(workingDir string) *GlobTool {
+	_ = workingDir
 	return &GlobTool{
 		BaseTool: tool.BaseTool{
 			ToolName:        GlobName,
@@ -46,7 +57,6 @@ func NewGlobTool(workingDir string) *GlobTool {
 			ToolInputSchema: globSchema,
 			ToolPermission:  tool.PermRead,
 		},
-		WorkingDirectory: workingDir,
 	}
 }
 
@@ -64,12 +74,9 @@ func (t *GlobTool) Execute(ctx context.Context, input json.RawMessage) (string, 
 		return "", err
 	}
 
-	// 基准目录沙箱校验
-	base := in.Path
-	if base == "" {
-		base = t.WorkingDirectory
-	}
-	absBase, err := safety.ResolveInSandbox(base, t.WorkingDirectory)
+	// 沙箱解析：由 ToolHandler.SandboxMiddleware 完成；absBase 来自 ctx。
+	// path 为空时 Middleware 已默认填入 workdir，此处不再处理。
+	absBase, err := resolvePathFromContext(ctx, "path")
 	if err != nil {
 		return "", err
 	}
@@ -95,13 +102,18 @@ func (t *GlobTool) Execute(ctx context.Context, input json.RawMessage) (string, 
 		if d != nil && d.IsDir() {
 			return nil
 		}
-		abs, err := filepath.Abs(filepath.Join(absBase, p))
-		if err != nil {
-			return nil
-		}
-		// 结果二次沙箱校验
-		if _, err := safety.ResolveInSandbox(abs, t.WorkingDirectory); err != nil {
-			return nil
+		// absBase 已在 sandbox 内（含 symlink 解析），walk 出的子路径
+		// 天然在 sandbox 内；对 symlink 单独兜底以防 walk 期间新建的链。
+		abs := filepath.Join(absBase, p)
+		if d != nil && d.Type()&os.ModeSymlink != 0 {
+			real, err := filepath.EvalSymlinks(abs)
+			if err != nil {
+				return nil
+			}
+			if !security.IsPathInside(real, absBase) {
+				// symlink 指向 sandbox 外，跳过该匹配项
+				return nil
+			}
 		}
 		matches = append(matches, abs)
 		return nil

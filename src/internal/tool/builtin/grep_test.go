@@ -15,8 +15,9 @@ func TestGrepBasic(t *testing.T) {
 		"b.txt": "no match here\n",
 	})
 	tool := NewGrepTool(sandbox)
+	ctx := withSandedPathByKey(t, sandbox, sandbox, "path")
 	input, _ := json.Marshal(map[string]string{"pattern": "TODO", "path": sandbox})
-	out, err := tool.Execute(context.Background(), input)
+	out, err := tool.Execute(ctx, input)
 	if err != nil {
 		t.Fatalf("执行失败: %v", err)
 	}
@@ -39,12 +40,13 @@ func TestGrepIncludeFilter(t *testing.T) {
 		"y.go":  "no marker\n",
 	})
 	tool := NewGrepTool(sandbox)
+	ctx := withSandedPathByKey(t, sandbox, sandbox, "path")
 	input, _ := json.Marshal(map[string]string{
 		"pattern": "MARKER",
 		"include": "*.go",
 		"path":    sandbox,
 	})
-	out, err := tool.Execute(context.Background(), input)
+	out, err := tool.Execute(ctx, input)
 	if err != nil {
 		t.Fatalf("执行失败: %v", err)
 	}
@@ -65,8 +67,9 @@ func TestGrepNoMatch(t *testing.T) {
 		"a.txt": "alpha\nbeta\n",
 	})
 	tool := NewGrepTool(sandbox)
+	ctx := withSandedPathByKey(t, sandbox, sandbox, "path")
 	input, _ := json.Marshal(map[string]string{"pattern": "XYZNOTHING", "path": sandbox})
-	out, err := tool.Execute(context.Background(), input)
+	out, err := tool.Execute(ctx, input)
 	if err != nil {
 		t.Fatalf("执行失败: %v", err)
 	}
@@ -81,7 +84,8 @@ func TestGrepInvalidRegex(t *testing.T) {
 	tool := NewGrepTool(sandbox)
 	// Go regexp 不允许未闭合的 [
 	input, _ := json.Marshal(map[string]string{"pattern": "[unclosed", "path": sandbox})
-	_, err := tool.Execute(context.Background(), input)
+	ctx := withSandedPathByKey(t, sandbox, sandbox, "path")
+	_, err := tool.Execute(ctx, input)
 	if err == nil {
 		t.Fatal("非法正则应报错")
 	}
@@ -106,8 +110,9 @@ func TestGrepOutputFormat(t *testing.T) {
 		"f.txt": "hit\n",
 	})
 	tool := NewGrepTool(sandbox)
+	ctx := withSandedPathByKey(t, sandbox, sandbox, "path")
 	input, _ := json.Marshal(map[string]string{"pattern": "hit", "path": sandbox})
-	out, err := tool.Execute(context.Background(), input)
+	out, err := tool.Execute(ctx, input)
 	if err != nil {
 		t.Fatalf("执行失败: %v", err)
 	}

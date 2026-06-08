@@ -16,7 +16,6 @@ import (
 	"strings"
 
 	"github.com/MeiCorl/CodePilot/src/internal/tool"
-	"github.com/MeiCorl/CodePilot/src/internal/tool/safety"
 )
 
 // ReadFileName 是 ReadFile 工具的唯一标识（大驼峰格式）。
@@ -34,26 +33,30 @@ type readFileInput struct {
 	Limit    int    `json:"limit" jsonschema:"description=最多返回的行数，默认 2000"`
 }
 
-// readFileSchema 是 ReadFile 的 JSON Schema（见 schema.go）。
-var _ = readFileInput{} // input struct 仅为文档与 JSON 解析用，类型定义保留便于 IDE 跳转
+// readFileSchema 见 schema.go；input struct 仅为 JSON 解析用，类型定义保留便于 IDE 跳转。
+var _ = readFileInput{}
 
 // ReadFileTool 是 ReadFile 工具的实现。
+//
+// 沙箱解析由 ToolHandler.SandboxMiddleware 统一处理，工具侧不再调用
+// security.ResolveInSandbox；Execute 入口从 ctx 拿已校验的 absPath。
 type ReadFileTool struct {
 	tool.BaseTool
-	// WorkingDirectory 是路径沙箱根目录，所有 file_path 必须落在其内。
-	WorkingDirectory string
 }
 
 // NewReadFileTool 构造 ReadFile 工具实例。
+//
+// workingDir 参数保留签名以兼容 RegisterWithOptions 调用点（main.go），
+// 内部不使用——沙箱配置由 ToolHandler.RegisterMiddleware 注入。
 func NewReadFileTool(workingDir string) *ReadFileTool {
+	_ = workingDir
 	return &ReadFileTool{
 		BaseTool: tool.BaseTool{
 			ToolName:        ReadFileName,
 			ToolDescription: "读取文件内容并按行返回（每行带行号 L<n>:）。支持 offset/limit 分页读取大文件。无法读取二进制文件、不存在的文件或沙箱外的路径。优先使用此内置工具而非 Bash 命令（如 cat/head/tail）来读取文件。",
-			ToolInputSchema: readFileSchema,
+			ToolInputSchema: json.RawMessage(readFileSchema),
 			ToolPermission:  tool.PermRead,
 		},
-		WorkingDirectory: workingDir,
 	}
 }
 
@@ -67,13 +70,13 @@ func (t *ReadFileTool) Execute(ctx context.Context, input json.RawMessage) (stri
 		return "", errors.New("file_path 不能为空")
 	}
 
-	// 路径沙箱校验
-	absPath, err := safety.ResolveInSandbox(in.FilePath, t.WorkingDirectory)
+	// 沙箱解析：由 ToolHandler.SandboxMiddleware 完成；absPath 来自 ctx。
+	// 未拿到 PathResolver 视为内部错误（工具未走 ToolHandler）。
+	absPath, err := resolvePathFromContext(ctx, "file_path")
 	if err != nil {
 		return "", err
 	}
 
-	// ctx 取消检查
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}

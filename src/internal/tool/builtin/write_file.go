@@ -1,3 +1,7 @@
+// Package builtin 提供 CodePilot 的内置工具集。
+//
+// 本文件实现 WriteFile 工具：覆盖式写入文件（不存在则创建）；
+// 若父目录不存在会自动创建（mkdir -p 语义）。
 package builtin
 
 import (
@@ -13,7 +17,6 @@ import (
 
 	"github.com/MeiCorl/CodePilot/src/internal/logger"
 	"github.com/MeiCorl/CodePilot/src/internal/tool"
-	"github.com/MeiCorl/CodePilot/src/internal/tool/safety"
 )
 
 // WriteFileName 是 WriteFile 工具的唯一标识（大驼峰格式）。
@@ -25,12 +28,14 @@ type writeFileInput struct {
 	Content  string `json:"content" jsonschema:"required,description=写入文件的完整内容（覆盖式写入）"`
 }
 
-var _ = writeFileInput{} // 见 schema.go
+// writeFileSchema 见 schema.go。
+var _ = writeFileInput{}
 
 // WriteFileTool 是 WriteFile 工具的实现。
+//
+// 沙箱解析由 ToolHandler.SandboxMiddleware 统一处理；absPath 来自 ctx。
 type WriteFileTool struct {
 	tool.BaseTool
-	WorkingDirectory string
 	// DiffSink 用于在执行成功后把 before/after 推送给 WebUI 用于 diff 弹窗。
 	// 可为 nil（主流程未注入或单测场景），nil 时跳过写入不 panic。
 	// 类型为 tool.FileDiffSink（定义在 tool 包，避免 builtin 反向依赖 web）。
@@ -38,7 +43,11 @@ type WriteFileTool struct {
 }
 
 // NewWriteFileTool 构造 WriteFile 工具实例。
+//
+// workingDir 参数保留签名以兼容 RegisterWithOptions 调用点（main.go），
+// 内部不使用——沙箱配置由 ToolHandler.RegisterMiddleware 注入。
 func NewWriteFileTool(workingDir string) *WriteFileTool {
+	_ = workingDir
 	return &WriteFileTool{
 		BaseTool: tool.BaseTool{
 			ToolName:        WriteFileName,
@@ -46,7 +55,6 @@ func NewWriteFileTool(workingDir string) *WriteFileTool {
 			ToolInputSchema: writeFileSchema,
 			ToolPermission:  tool.PermWrite,
 		},
-		WorkingDirectory: workingDir,
 	}
 }
 
@@ -67,8 +75,10 @@ func (t *WriteFileTool) Execute(ctx context.Context, input json.RawMessage) (str
 		return "", errors.New("file_path 不能为空")
 	}
 
-	// 路径沙箱校验（WriteFile 的目标文件可尚不存在，沙箱仅校验 parent dir）
-	absPath, err := safety.ResolveInSandbox(in.FilePath, t.WorkingDirectory)
+	// 沙箱解析：由 ToolHandler.SandboxMiddleware 完成；absPath 来自 ctx。
+	// absPath 已在 sandbox 内（含 symlink 解析），其父目录天然在 sandbox 内，
+	// os.MkdirAll(dir) 不会越界创建——无需再做 sandbox 校验。
+	absPath, err := resolvePathFromContext(ctx, "file_path")
 	if err != nil {
 		return "", err
 	}

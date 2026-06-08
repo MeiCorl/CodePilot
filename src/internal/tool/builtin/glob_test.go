@@ -9,15 +9,17 @@ import (
 )
 
 // TestGlobRecursive 验证 ** 递归匹配。
+// path 为空时 Middleware 默认 workdir（即 sandbox），所以 ctx 中 path=sandbox。
 func TestGlobRecursive(t *testing.T) {
 	sandbox := setupSandbox(t, map[string]string{
-		"a/x.go":        "",
-		"a/b/y.go":      "",
-		"a/b/c/z.go":    "",
+		"a/x.go":         "",
+		"a/b/y.go":       "",
+		"a/b/c/z.go":     "",
 		"a/b/c/other.txt": "",
 	})
 	tool := NewGlobTool(sandbox)
-	out, err := tool.Execute(context.Background(), json.RawMessage(`{"pattern":"a/**/*.go"}`))
+	ctx := withSandedPathByKey(t, sandbox, sandbox, "path")
+	out, err := tool.Execute(ctx, json.RawMessage(`{"pattern":"a/**/*.go"}`))
 	if err != nil {
 		t.Fatalf("执行失败: %v", err)
 	}
@@ -39,12 +41,13 @@ func TestGlobRecursive(t *testing.T) {
 // TestGlobSimplePattern 验证基本 *.ext 模式。
 func TestGlobSimplePattern(t *testing.T) {
 	sandbox := setupSandbox(t, map[string]string{
-		"f1.go": "",
-		"f2.go": "",
+		"f1.go":  "",
+		"f2.go":  "",
 		"f3.txt": "",
 	})
 	tool := NewGlobTool(sandbox)
-	out, err := tool.Execute(context.Background(), json.RawMessage(`{"pattern":"*.go"}`))
+	ctx := withSandedPathByKey(t, sandbox, sandbox, "path")
+	out, err := tool.Execute(ctx, json.RawMessage(`{"pattern":"*.go"}`))
 	if err != nil {
 		t.Fatalf("执行失败: %v", err)
 	}
@@ -61,7 +64,8 @@ func TestGlobSimplePattern(t *testing.T) {
 func TestGlobNoMatch(t *testing.T) {
 	sandbox := t.TempDir()
 	tool := NewGlobTool(sandbox)
-	out, err := tool.Execute(context.Background(), json.RawMessage(`{"pattern":"*.nonexistent"}`))
+	ctx := withSandedPathByKey(t, sandbox, sandbox, "path")
+	out, err := tool.Execute(ctx, json.RawMessage(`{"pattern":"*.nonexistent"}`))
 	if err != nil {
 		t.Fatalf("无匹配不应报错: %v", err)
 	}
@@ -85,10 +89,11 @@ func TestGlobBasePath(t *testing.T) {
 	sandbox := setupSandbox(t, map[string]string{
 		"sub/f1.go": "",
 		"sub/f2.go": "",
-		"f3.go":      "",
+		"f3.go":     "",
 	})
 	tool := NewGlobTool(sandbox)
-	out, err := tool.Execute(context.Background(), json.RawMessage(`{"pattern":"*.go","path":"sub"}`))
+	ctx := withSandedPathByKey(t, sandbox, "sub", "path")
+	out, err := tool.Execute(ctx, json.RawMessage(`{"pattern":"*.go","path":"sub"}`))
 	if err != nil {
 		t.Fatalf("执行失败: %v", err)
 	}

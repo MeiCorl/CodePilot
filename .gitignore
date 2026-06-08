@@ -1,2 +1,3 @@
 *.exe
 .playwright-mcp/*
+*_test.go

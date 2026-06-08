@@ -14,16 +14,16 @@
 | 指标     | 数值                                                    |
 | ------ | ----------------------------------------------------- |
 | 计划总步骤数 | 12（含子步骤后实际更多）                                         |
-| 已完成步骤数 | 8（Step 1 / Step 1.1 / Step 1.2 / Step 1.3 / Step 1.4 / Step 2 / Step 3 / Step 4）    |
+| 已完成步骤数 | 9（Step 1 / Step 1.1 / Step 1.2 / Step 1.3 / Step 1.4 / Step 2 / Step 3 / Step 4 / Step 5）    |
 | 当前最新版本 | V1.0.6                                                |
-| 下一步骤   | Step 5 — 权限系统设计                             |
+| 下一步骤   | Step 6 — MCP 协议实现                             |
 | 最近更新   | 2026-06-07                                            |
 
 
 进度条：
 
 ```
-[███████████████████░░░░░░░░░░] 8/12 步骤完成（67%）
+[████████████████████████░░░░] 9/12 步骤完成（75%）
 ```
 
 ---
@@ -158,6 +158,24 @@
   11. **配置可关闭**：`prompt.Builder.SetEnabled(false)` 短路所有 Source，返回空 SystemPrompt（保持与早期会话兼容）
   12. **会话恢复兼容**：System Prompt 不持久化到 session JSON，每次启动重新 assemble；旧 session（Step 3 时代含 tool_use/tool_result）正常加载与渲染（`TestStep4_LoadLegacySessionCompat` 覆盖）
 
+### Step 5 — 权限系统设计
+
+- **完成时间**：2026-06-07
+- **设计文档**：[docs/step5-权限系统设计/](../docs/step5-权限系统设计/)
+- **Task 完成数**：8 / 8
+- **核心交付能力**：
+  1. **三层权限模式**：`strict`（严格）/ `default`（默认）/ `permissive`（放行）三档切换，每档定义不同级别的自动放行与拦截策略
+  2. **可配置的允许/拒绝/询问规则**：在 `setting.json` 中按「工具名 + 参数模式」声明 `allow` / `deny` / `ask` 动作，支持路径 glob 匹配和 Bash 命令前缀匹配
+  3. **多层配置合并**：全局配置（`~/.codepilot/setting.json`）+ 项目级配置（`<cwd>/.codepilot/setting.json`）+ 会话级临时规则（内存），按优先级合并
+  4. **人在回路（HITL）确认**：当规则未命中或命中 `ask` 时，通过 WebSocket `permission_request/response` 协议暂停 Agent Loop 等待用户确认
+  5. **三种授权范围**：本次允许（OneTime）/ 本会话允许（Session，追加内存规则）/ 永久允许（Permanent，写入 `setting.json`）
+  6. **权限拒绝优雅降级**：权限拒绝作为 `ToolResultBlock{IsError: true}` 返回给 LLM，LLM 可自主调整策略继续工作
+  7. **危险命令黑名单增强**：迁移至 `internal/security/blacklist.go`，保留 8 条原有规则 + 新增 3 条远程脚本下载执行规则（`curl|sh` / `wget|bash` / `sudo` 变体），不可被配置绕过
+  8. **路径沙箱策略化**：迁移至 `internal/security/sandbox.go`，新增 `IsPathOutsideSandbox` 查询函数，越界路径根据档位决策（Strict→Deny / Default→Ask / Permissive→Allow），工具内部 `ResolveInSandbox` 硬兜底保留形成双层防护
+  9. **安全层统一归口**：原 `internal/tool/safety/` 包整体迁移至 `internal/security/`，统一管理策略模型、检查器、拦截器、黑名单、路径沙箱
+  10. **WebUI 权限确认对话框**：展示工具名、参数摘要、触发原因 + 四按钮（拒绝/本次允许/本会话允许/永久允许）+ 60 秒倒计时 + 状态栏权限模式展示
+  11. **92 个测试用例全部通过**：含 8 个端到端集成场景（默认模式/严格模式/自定义规则/多层配置/永久允许/黑名单/双层防护/向后兼容）+ 并发安全 + 性能基准 + 超时取消
+
 ---
 
 ## 🕓 待完成步骤
@@ -167,7 +185,6 @@
 
 | 编号  | 步骤名                   | 所属架构层 | 状态    | 计划目录                             |
 | --- | --------------------- | ----- | ----- | -------------------------------- |
-| 5   | 权限系统设计                | 安全层   | ⏳ 待开始 | `docs/step5-权限系统设计/`             |
 | 6   | MCP 协议实现              | 工具层   | ⏳ 待开始 | `docs/step6-MCP协议实现/`            |
 | 7   | 上下文管理                 | 记忆层   | ⏳ 待开始 | `docs/step7-上下文管理/`              |
 | 8   | 记忆系统                  | 记忆层   | ⏳ 待开始 | `docs/step8-记忆系统/`               |
@@ -186,11 +203,11 @@
 
 | 架构层       | 已落地                                                    | 待落地                                         |
 | --------- | ----------------------------------------------------- | ------------------------------------------- |
-| 第 1 层：交互层 | WebUI（HTTP + WebSocket + 富文本渲染 + 流式 Markdown 实时渲染 + SP 可观测性 + 开发者模式 Export + 工具块「查看改动」双栏 diff 弹窗） | 完整命令系统（Step 9）、Skill 系统（Step 10）            |
+| 第 1 层：交互层 | WebUI（HTTP + WebSocket + 富文本渲染 + 流式 Markdown 实时渲染 + SP 可观测性 + 开发者模式 Export + 工具块「查看改动」双栏 diff 弹窗 + 权限确认对话框 + 状态栏权限模式展示） | 完整命令系统（Step 9）、Skill 系统（Step 10）            |
 | 第 2 层：引擎层 | 对话管理 + Agent Loop（ReAct 循环迭代 + 多工具并行 + 迭代上限 + 溢出保护）、完整 System Prompt（Builder + 4 Source + 模板变量 + Anthropic 缓存切片） | —                                            |
 | 第 3 层：工具层 | 工具抽象 + Registry + 6 内置工具（ReadFile/WriteFile/EditFile/Bash/Glob/Grep）+ 路径沙箱 + Bash 黑名单 + 批量执行 + 进程内 FileDiffStore | MCP（Step 6）、Hook（Step 11）、SubAgent（Step 12） |
 | 第 4 层：记忆层 | 会话持久化、上下文滑动窗口                                        | 高级上下文管理（Step 7）、自动记忆（Step 8）                |
-| 第 5 层：安全层 | 路径沙箱、Bash 危险命令黑名单                                    | 完整权限系统（Step 5，含 HITL 确认）                    |
+| 第 5 层：安全层 | 完整权限系统（三层模式 + 可配置规则 + 多层配置合并 + HITL 确认 + 权限拦截器 + 危险命令黑名单增强 + 路径沙箱策略化 + 双层防护） | —                                            |
 
 
 ---

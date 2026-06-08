@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/MeiCorl/CodePilot/src/llm"
+	"github.com/MeiCorl/CodePilot/src/internal/security"
 	"github.com/MeiCorl/CodePilot/src/internal/tool"
 	"github.com/MeiCorl/CodePilot/src/internal/tool/builtin"
 )
@@ -1000,6 +1001,9 @@ L2: world
 	r := tool.NewRegistry()
 	builtin.RegisterWithOptions(r, tmp, 5*time.Second)
 	h := NewToolHandler(r, 5*time.Second, tmp)
+	// 注册 SandboxMiddleware：ReadFile/WriteFile 等路径类工具需走 Middleware
+	// 才能拿到 PathResolver。生产环境由 main.go 装配。
+	h.RegisterMiddleware(security.SandboxMiddleware(tmp, nil))
 
 	// 第一次 RunTurn：LLM 调 Bash 执行 `rm -rf /`
 	p1 := &scriptedProvider{

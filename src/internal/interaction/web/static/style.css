@@ -1148,14 +1148,18 @@ body {
     margin: 0 1px;
 }
 
-/* 右侧栏：3 个 stat（model / system prompt / ctx left）在左列纵向堆叠，
- * 发送按钮在右列跨 3 行与 stat 列等高。
+/* 右侧栏：4 个 stat（model / permission / system prompt / ctx left）在左列纵向堆叠，
+ * 发送按钮在右列跨 4 行与 stat 列等高。
  *
  * 为什么用 grid 而不是 column flex：
  * 原 column flex 布局在 Step 4 新增 sp stat 后变成 4 个子项，
  * 而 inputbar 高度只够放下 3 个 stat，发送按钮被压缩并挤出 inputbar
  * 底部（视口外不可见）。改 grid 让按钮天然占满右列整高，
- * 不再受 4 子项堆叠影响。 */
+ * 不再受 4 子项堆叠影响。
+ *
+ * Step 5 修复：grid-template-rows 从 repeat(3, ...) 改为 repeat(4, ...)，
+ * 否则第 4 个 stat (ctx left) 会落到隐式自动行，stat 列总高度超过 send-btn
+ * 覆盖的 3 行，send 按钮无法对齐 inputbar 底部。 */
 .inputbar-side {
     /* 加宽 40px：让 model 名称（如 "MiniMax-M3"）不溢出，
      * 同时容纳 "system prompt" 全称标签 + value。 */
@@ -1163,12 +1167,12 @@ body {
     flex-shrink: 0;
     display: grid;
     grid-template-columns: 1fr 80px;
-    grid-template-rows: repeat(3, minmax(0, 1fr));
+    grid-template-rows: repeat(4, minmax(0, 1fr));
     gap: var(--sp-2);
     min-height: 0;
 }
 
-/* 3 个 stat 全部落在第 1 列（grid-column 默认是 auto，会被布局成 col1..col3 错列） */
+/* 4 个 stat 全部落在第 1 列（grid-column 默认是 auto，会被布局成 col1..col4 错列） */
 .inputbar-side > .inputbar-stat {
     grid-column: 1;
     min-width: 0;          /* 允许 stat 在窄空间下内部 flex 子项收缩 */
@@ -1205,6 +1209,128 @@ body {
 .inputbar-stat[data-status="error"]    .inputbar-stat-value { color: var(--error); }
 .inputbar-stat[data-status="idle"]     .inputbar-stat-value { color: var(--success); }
 
+/* ===== Step 5 增强：权限模式可点击切换 ===== */
+/* 可点击 stat 容器：cursor 变化、悬停高亮、激活态。覆盖所有带 .is-clickable 的 stat。 */
+.inputbar-stat.is-clickable {
+    cursor: pointer;
+    position: relative;       /* 为下拉 absolute 定位提供锚点 */
+    transition: border-color var(--dur-fast) var(--ease-out),
+                background var(--dur-fast) var(--ease-out);
+}
+
+.inputbar-stat.is-clickable:hover {
+    border-color: var(--accent);
+    background: var(--bg-hover);
+}
+
+.inputbar-stat.is-clickable.is-open {
+    border-color: var(--accent);
+    background: var(--bg-active);
+    box-shadow: 0 0 0 1px var(--accent-dim);
+}
+
+/* 右侧 chevron：仅在可点击 stat 上显示，指示「可展开」 */
+.perm-chevron {
+    margin-left: 2px;
+    font-size: 10px;
+    color: var(--fg-faint);
+    transition: color var(--dur-fast) var(--ease-out),
+                transform var(--dur-fast) var(--ease-out);
+    user-select: none;
+}
+
+.inputbar-stat.is-clickable:hover .perm-chevron,
+.inputbar-stat.is-clickable.is-open .perm-chevron {
+    color: var(--accent-bright);
+}
+
+/* 展开时 chevron 旋转 180°，给用户视觉反馈「当前是展开态」 */
+.inputbar-stat.is-clickable.is-open .perm-chevron {
+    transform: rotate(180deg);
+}
+
+/* 权限模式下拉：absolute 定位到 perm-stat 下方 + 略向左溢出，确保不被 inputbar 截断 */
+.perm-mode-dropdown {
+    position: absolute;
+    bottom: calc(100% + 6px);
+    right: 0;
+    min-width: 220px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--r-md);
+    box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.45);
+    overflow: hidden;
+    z-index: 20;
+    padding: 4px;
+}
+
+/* 修复：[hidden] 在 display:flex/block 容器上会被覆盖，需要更高特异性 */
+.perm-mode-dropdown[hidden] {
+    display: none;
+}
+
+/* 单个选项按钮：横向 icon + 文案+描述 */
+.perm-mode-option {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-3);
+    width: 100%;
+    padding: var(--sp-2) var(--sp-3);
+    background: transparent;
+    border: none;
+    border-radius: var(--r-sm);
+    color: var(--fg);
+    font-family: var(--font-mono);
+    font-size: var(--fs-xs);
+    text-align: left;
+    cursor: pointer;
+    transition: background var(--dur-fast) var(--ease-out);
+}
+
+.perm-mode-option:hover {
+    background: var(--bg-hover);
+}
+
+/* 当前选中档位：左侧 2px 琥珀金竖条 + 极淡背景色 */
+.perm-mode-option.is-current {
+    background: var(--accent-dim);
+    box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.perm-mode-option.is-current:hover {
+    background: var(--accent-glow);
+}
+
+.perm-mode-option-icon {
+    font-size: 16px;
+    line-height: 1;
+    flex-shrink: 0;
+    width: 18px;
+    text-align: center;
+}
+
+.perm-mode-option-body {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+    flex: 1;
+}
+
+.perm-mode-option-label {
+    color: var(--fg);
+    font-size: var(--fs-sm);
+    font-weight: 600;
+    letter-spacing: 0.02em;
+}
+
+.perm-mode-option-desc {
+    color: var(--fg-dim);
+    font-size: 11px;
+    letter-spacing: 0.02em;
+    line-height: 1.4;
+}
+
 /* 上下文剩余进度条 */
 .ctx-bar {
     height: 3px;
@@ -1221,7 +1347,8 @@ body {
 .ctx-bar-fill[data-warning="true"] { background: var(--error); }
 
 .send-btn, .abort-btn {
-    /* grid item 跨 3 行：覆盖旧 flex 行为，让按钮高度 = 3 个 stat + 2 个 gap */
+    /* grid item 跨 4 行：覆盖旧 flex 行为，让按钮高度 = 4 个 stat + 3 个 gap，
+     * 与 stat 列严格等高，保证按钮底缘对齐 inputbar 底缘。 */
     flex: none;
     grid-column: 2;
     grid-row: 1 / -1;
@@ -2039,4 +2166,263 @@ body {
 }
 .diff-line-has-inline.diff-line-del {
     box-shadow: inset 3px 0 0 var(--error, #e06c75);
+}
+
+/* ==========================================================================
+ * Step 5：权限确认对话框
+ * HITL（Human-in-the-Loop）弹窗，用于工具执行前的用户确认。
+ * 设计原则：
+ *   - 不允许 Esc / 点击遮罩关闭，防止用户误操作绕过安全确认
+ *   - 60 秒倒计时，超时自动拒绝
+ *   - 四个操作按钮：拒绝 / 本次允许 / 本会话允许 / 永久允许
+ *   - 深色背景 + 琥珀金强调色，与全局设计系统一致
+ * ========================================================================== */
+
+/* 整层遮罩：fixed 全屏居中，z-index 高于 diff-modal(200) */
+.perm-modal {
+    position: fixed;
+    inset: 0;
+    z-index: 300;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(10, 10, 11, 0.78);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    animation: perm-modal-fade-in 0.18s ease-out;
+}
+
+@keyframes perm-modal-fade-in {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+}
+
+/* 内容卡片：宽度固定 440px，深色背景 */
+.perm-modal-card {
+    width: 440px;
+    max-width: 92vw;
+    background: var(--bg-elevated, #131316);
+    border: 1px solid var(--border-strong, #2a2c30);
+    border-radius: var(--r-xl, 10px);
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(200, 169, 106, 0.06);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+/* 头部：权限图标 + "权限确认" 标题 */
+.perm-modal-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 16px 20px 12px;
+    border-bottom: 1px solid var(--border, #1a1b1e);
+}
+
+.perm-modal-icon {
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(200, 169, 106, 0.12);
+    border: 1px solid rgba(200, 169, 106, 0.24);
+    border-radius: var(--r-md, 6px);
+    flex-shrink: 0;
+}
+
+.perm-modal-icon svg {
+    width: 16px;
+    height: 16px;
+    stroke: var(--accent, #c8a96a);
+    fill: none;
+}
+
+.perm-modal-title {
+    font-size: var(--fs-base, 16px);
+    font-weight: 600;
+    color: var(--fg, #e8e8e8);
+    letter-spacing: 0.01em;
+}
+
+/* 中部内容区：工具名 + 参数摘要 + 触发原因 */
+.perm-modal-body {
+    padding: 16px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.perm-modal-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.perm-modal-label {
+    font-size: var(--fs-xs, 13px);
+    color: var(--fg-dim, #5a5d63);
+    font-weight: 500;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+}
+
+.perm-modal-value {
+    font-size: var(--fs-sm, 14px);
+    color: var(--fg, #e8e8e8);
+    line-height: 1.5;
+    word-break: break-all;
+}
+
+.perm-modal-tool-name {
+    font-family: var(--font-mono, 'JetBrains Mono', monospace);
+    font-size: var(--fs-sm, 14px);
+    font-weight: 600;
+    color: var(--accent, #c8a96a);
+    background: rgba(200, 169, 106, 0.08);
+    border: 1px solid rgba(200, 169, 106, 0.18);
+    border-radius: var(--r-sm, 4px);
+    padding: 4px 10px;
+    display: inline-block;
+    width: fit-content;
+}
+
+.perm-modal-reason {
+    font-size: var(--fs-xs, 13px);
+    color: var(--fg-muted, #8a8d93);
+    font-style: italic;
+    padding-left: 8px;
+    border-left: 2px solid var(--fg-faint, #3a3d43);
+}
+
+/* Step 5 增强：工作目录（轻量展示，与 target_path 配合让用户看出"在工作目录外"） */
+.perm-modal-workdir {
+    font-family: var(--font-mono, 'JetBrains Mono', monospace);
+    color: var(--fg-muted, #8a8d93);
+    font-size: var(--fs-xs, 13px);
+}
+
+/* Step 5 增强：目标路径（高亮，琥珀金边框突出"路径类操作"） */
+.perm-modal-path {
+    background: rgba(200, 169, 106, 0.06);
+    border-left: 3px solid var(--accent, #c8a96a);
+    padding: 8px 10px;
+    border-radius: var(--r-sm, 4px);
+}
+
+.perm-modal-target-path {
+    font-family: var(--font-mono, 'JetBrains Mono', monospace);
+    font-size: var(--fs-sm, 14px);
+    font-weight: 500;
+    color: var(--accent, #c8a96a);
+    word-break: break-all;
+}
+
+/* Step 5 增强：matched_rule 命中规则展示 */
+.perm-modal-matched {
+    opacity: 0.85;
+    font-size: var(--fs-xs, 13px);
+}
+
+.perm-modal-matched .perm-modal-value {
+    font-family: var(--font-mono, 'JetBrains Mono', monospace);
+    color: var(--fg-dim, #5a5d63);
+}
+
+/* Step 5 增强："永久放行范围"提示文案 */
+.perm-modal-hint {
+    padding: 8px 20px 0;
+    font-size: var(--fs-xs, 13px);
+    color: var(--fg-muted, #8a8d93);
+    background: rgba(97, 175, 239, 0.06);
+    border-top: 1px dashed var(--border, #1a1b1e);
+    font-style: italic;
+}
+
+/* 底部按钮区：四个按钮横排 */
+.perm-modal-actions {
+    display: flex;
+    gap: 8px;
+    padding: 12px 20px 16px;
+    border-top: 1px solid var(--border, #1a1b1e);
+}
+
+.perm-btn {
+    flex: 1;
+    padding: 8px 12px;
+    border-radius: var(--r-md, 6px);
+    font-size: var(--fs-xs, 13px);
+    font-weight: 600;
+    cursor: pointer;
+    border: 1px solid transparent;
+    transition: all var(--dur-fast, 120ms) var(--ease-out, cubic-bezier(0.16, 1, 0.3, 1));
+    white-space: nowrap;
+    text-align: center;
+}
+
+/* 拒绝按钮：红色系 */
+.perm-btn-deny {
+    background: rgba(224, 108, 117, 0.10);
+    border-color: rgba(224, 108, 117, 0.28);
+    color: var(--error, #e06c75);
+}
+.perm-btn-deny:hover {
+    background: rgba(224, 108, 117, 0.20);
+    border-color: rgba(224, 108, 117, 0.44);
+}
+
+/* 本次允许：中性灰色 */
+.perm-btn-once {
+    background: var(--bg-active, #1f1f23);
+    border-color: var(--border-strong, #2a2c30);
+    color: var(--fg-muted, #8a8d93);
+}
+.perm-btn-once:hover {
+    background: var(--bg-hover, #18181b);
+    border-color: var(--fg-dim, #5a5d63);
+    color: var(--fg, #e8e8e8);
+}
+
+/* 本会话允许：蓝色系 */
+.perm-btn-session {
+    background: rgba(97, 175, 239, 0.10);
+    border-color: rgba(97, 175, 239, 0.28);
+    color: var(--thinking, #61afef);
+}
+.perm-btn-session:hover {
+    background: rgba(97, 175, 239, 0.20);
+    border-color: rgba(97, 175, 239, 0.44);
+}
+
+/* 永久允许：琥珀金色系 */
+.perm-btn-permanent {
+    background: rgba(200, 169, 106, 0.12);
+    border-color: rgba(200, 169, 106, 0.28);
+    color: var(--accent, #c8a96a);
+}
+.perm-btn-permanent:hover {
+    background: rgba(200, 169, 106, 0.22);
+    border-color: rgba(200, 169, 106, 0.48);
+}
+
+/* 倒计时区域 */
+.perm-modal-countdown {
+    padding: 0 20px 12px;
+    text-align: center;
+}
+
+.perm-modal-countdown-text {
+    font-size: 12px;
+    color: var(--fg-faint, #3a3d43);
+    letter-spacing: 0.02em;
+}
+
+.perm-modal-countdown-text.urgent {
+    color: var(--error, #e06c75);
+    animation: perm-countdown-pulse 1s ease-in-out infinite;
+}
+
+@keyframes perm-countdown-pulse {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.5; }
 }

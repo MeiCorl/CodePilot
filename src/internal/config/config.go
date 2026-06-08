@@ -41,6 +41,9 @@ type Config struct {
 	// ContextSafetyMargin 为上下文安全余量（token 数），默认 4096。
 	// 当剩余 token 低于此值时，Agent Loop 注入提示让模型总结当前进展并回复用户。
 	ContextSafetyMargin int `json:"context_safety_margin,omitempty"`
+	// Permissions 为权限系统配置，控制工具调用的安全策略。
+	// 留空等效于 mode=default 且无自定义规则，向后兼容旧配置。
+	Permissions PermissionsConfig `json:"permissions,omitempty"`
 }
 
 // ToolsConfig 是工具系统的配置项。
@@ -50,6 +53,27 @@ type Config struct {
 type ToolsConfig struct {
 	// Enabled 为启用的工具名白名单，Name 必须与 Tool.Name() 一致
 	Enabled []string `json:"enabled,omitempty"`
+}
+
+// PermissionsConfig 是权限系统的配置项，对应 setting.json 中 "permissions" 对象。
+// 支持在全局配置（~/.codepilot/setting.json）和项目级配置（<cwd>/.codepilot/setting.json）中声明。
+type PermissionsConfig struct {
+	// Mode 为权限模式：strict / default / permissive。空字符串等效于 "default"。
+	Mode string `json:"mode,omitempty"`
+	// Rules 为自定义规则列表，按列表顺序匹配，命中第一条即返回。
+	Rules []RuleConfig `json:"rules,omitempty"`
+}
+
+// RuleConfig 对应 setting.json 中单条权限规则的 JSON 结构。
+type RuleConfig struct {
+	// Tool 为目标工具名（大驼峰，如 Bash、WriteFile），"*" 匹配所有工具。
+	Tool string `json:"tool"`
+	// Pattern 为参数匹配模式（路径 glob 或 Bash 命令前缀），"*" 匹配所有参数。
+	Pattern string `json:"pattern"`
+	// Action 为命中后的动作：allow / deny / ask。
+	Action string `json:"action"`
+	// Reason 为可选的可读说明，用于日志和 HITL 对话框展示。
+	Reason string `json:"reason,omitempty"`
 }
 
 // 合法的供应商列表

@@ -13,7 +13,7 @@ import (
 // 比 builtin 包内 fakeDiffSink 更通用：可被 WriteFile/EditFile 共用。
 type fakeDiffSink struct {
 	entries map[string]tool.FileDiffEntry // toolUseID -> entry
-	reject  bool                           // 模拟"容量超限"
+	reject  bool                          // 模拟"容量超限"
 }
 
 func newFakeDiffSink() *fakeDiffSink {
@@ -37,7 +37,7 @@ func TestWriteFile_DiffSink_RecordAfterSuccess(t *testing.T) {
 	sink := newFakeDiffSink()
 	tw.SetDiffSink(sink)
 
-	ctx := tool.WithToolUseID(context.Background(), "wu-1")
+	ctx := tool.WithToolUseID(withSandedPath(t, sandbox, "new.txt"), "wu-1")
 	input := json.RawMessage(`{"file_path":"new.txt","content":"hello"}`)
 	if _, err := tw.Execute(ctx, input); err != nil {
 		t.Fatalf("执行失败: %v", err)
@@ -68,7 +68,7 @@ func TestWriteFile_DiffSink_OverwriteBefore(t *testing.T) {
 	tw.SetDiffSink(sink)
 
 	// 首次写入
-	ctx1 := tool.WithToolUseID(context.Background(), "wu-first")
+	ctx1 := tool.WithToolUseID(withSandedPath(t, sandbox, "a.txt"), "wu-first")
 	if _, err := tw.Execute(ctx1, json.RawMessage(`{"file_path":"a.txt","content":"v1"}`)); err != nil {
 		t.Fatalf("首次执行失败: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestWriteFile_DiffSink_OverwriteBefore(t *testing.T) {
 	}
 
 	// 二次覆盖
-	ctx2 := tool.WithToolUseID(context.Background(), "wu-second")
+	ctx2 := tool.WithToolUseID(withSandedPath(t, sandbox, "a.txt"), "wu-second")
 	if _, err := tw.Execute(ctx2, json.RawMessage(`{"file_path":"a.txt","content":"v2"}`)); err != nil {
 		t.Fatalf("二次执行失败: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestWriteFile_DiffSink_NilSinkSafe(t *testing.T) {
 	sandbox := t.TempDir()
 	tw := NewWriteFileTool(sandbox)
 	// 显式不调 SetDiffSink，DiffSink 字段为 nil
-	ctx := tool.WithToolUseID(context.Background(), "wu-x")
+	ctx := tool.WithToolUseID(withSandedPath(t, sandbox, "x.txt"), "wu-x")
 	if _, err := tw.Execute(ctx, json.RawMessage(`{"file_path":"x.txt","content":"y"}`)); err != nil {
 		t.Fatalf("sink 为 nil 时执行仍应成功: %v", err)
 	}
@@ -110,8 +110,9 @@ func TestWriteFile_DiffSink_NoToolUseID(t *testing.T) {
 	sink := newFakeDiffSink()
 	tw.SetDiffSink(sink)
 
-	// 故意不注入 toolUseID
-	if _, err := tw.Execute(context.Background(), json.RawMessage(`{"file_path":"x.txt","content":"y"}`)); err != nil {
+	// ctx 含 PathResolver 但故意不注入 toolUseID
+	ctx := withSandedPath(t, sandbox, "x.txt")
+	if _, err := tw.Execute(ctx, json.RawMessage(`{"file_path":"x.txt","content":"y"}`)); err != nil {
 		t.Fatalf("执行失败: %v", err)
 	}
 	if sink.count() != 0 {
@@ -127,7 +128,7 @@ func TestWriteFile_DiffSink_RejectDoesNotAffectReturn(t *testing.T) {
 	sink.reject = true // 模拟"容量超限" → Set 返回 false
 	tw.SetDiffSink(sink)
 
-	ctx := tool.WithToolUseID(context.Background(), "wu-rj")
+	ctx := tool.WithToolUseID(withSandedPath(t, sandbox, "x.txt"), "wu-rj")
 	out, err := tw.Execute(ctx, json.RawMessage(`{"file_path":"x.txt","content":"y"}`))
 	if err != nil {
 		t.Fatalf("sink 拒绝时主流程仍应成功, 实际 err: %v", err)

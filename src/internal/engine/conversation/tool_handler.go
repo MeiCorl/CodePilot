@@ -12,6 +12,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/MeiCorl/CodePilot/src/internal/logger"
+	"github.com/MeiCorl/CodePilot/src/internal/security"
 	"github.com/MeiCorl/CodePilot/src/llm"
 	"github.com/MeiCorl/CodePilot/src/internal/tool"
 )
@@ -78,6 +79,13 @@ type ToolHandler struct {
 	timeout time.Duration
 	// workdir 为路径沙箱的工作目录；为空时取当前进程 cwd
 	workdir string
+	// interceptor 为权限拦截器；为 nil 时不做权限检查（向后兼容）
+	interceptor *security.Interceptor
+	// middlewares 为 Tool Execute 前的中间件链，按注册顺序执行。
+	// 任一中间件返回 err 即终止后续中间件与工具执行，err 透传给 LLM。
+	// 当前用于 SandboxMiddleware（路径类工具的硬兜底沙箱），后续可扩展
+	// 日志/指标/追踪等横切关注点。
+	middlewares []security.MiddlewareFunc
 	// onStart 工具开始执行时回调，可为 nil
 	onStart func(ToolExecutionEvent)
 	// onEnd 工具执行结束（成功/失败/超时/取消）时回调，可为 nil
@@ -100,6 +108,27 @@ func NewToolHandler(registry *tool.Registry, timeout time.Duration, workdir stri
 		timeout:  timeout,
 		workdir:  workdir,
 	}
+}
+
+// SetInterceptor 设置权限拦截器。
+// 传入 nil 表示禁用权限检查（向后兼容无权限系统的旧代码路径）。
+// 应在 main.go 顶层构造后、启动服务前调用。
+func (h *ToolHandler) SetInterceptor(i *security.Interceptor) {
+	h.interceptor = i
+}
+
+// RegisterMiddleware 追加一个中间件到执行链。
+// 多个中间件按追加顺序串行执行；任一中间件返回 err 即终止后续中间件与工具执行。
+// 应在 main.go 顶层构造后、启动服务前调用；运行中追加需自行评估并发安全。
+//
+// 典型用法：toolHandler.RegisterMiddleware(security.SandboxMiddleware(workdir, checker))
+func (h *ToolHandler) RegisterMiddleware(mw security.MiddlewareFunc) {
+	if mw == nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.middlewares = append(h.middlewares, mw)
 }
 
 // SetOnStart 注册工具开始事件回调。传入 nil 表示清空。
@@ -179,6 +208,46 @@ func (h *ToolHandler) doExecute(ctx context.Context, toolUse llm.ToolUseBlock) (
 	t, ok := h.lookup(toolUse.Name)
 	if !ok {
 		return "", &ErrToolNotFound{Name: toolUse.Name}
+	}
+
+	// 权限拦截：在工具执行前检查权限。
+	// 拦截器决定放行/拒绝/需要用户确认；被拒绝时直接返回错误，
+	// 作为 ToolResultBlock{IsError: true} 回传给 LLM，不触发 Agent Loop 终止。
+	if h.interceptor != nil {
+		result, err := h.interceptor.Check(execCtx, toolUse.Name, toolUse.Input, t.Permission())
+		if err != nil {
+			logger.Warn("权限拦截器检查异常",
+				zap.String("tool", toolUse.Name),
+				zap.Error(err),
+			)
+			return "", fmt.Errorf("权限检查异常: %w", err)
+		}
+		if result != nil {
+			// result != nil 表示被拦截
+			return "", fmt.Errorf("%s", result.Decision.Reason)
+		}
+		// result == nil 表示放行，继续执行工具
+	}
+
+	// Middleware 链：权限拦截后、工具 Execute 前执行。
+	// 当前内置 SandboxMiddleware（路径类工具的硬兜底沙箱解析），
+	// 解析结果通过 ctx 注入的 PathResolver 传给工具，工具不再自行校验。
+	// 任一中间件返回 err 即终止后续中间件与工具执行，err 透传给 LLM。
+	if len(h.middlewares) > 0 {
+		h.mu.RLock()
+		mws := h.middlewares
+		h.mu.RUnlock()
+		for _, mw := range mws {
+			mwCtx, err := mw(execCtx, toolUse.Name, toolUse.Input, t.Permission())
+			if err != nil {
+				logger.Warn("中间件拦截工具执行",
+					zap.String("tool", toolUse.Name),
+					zap.Error(err),
+				)
+				return "", err
+			}
+			execCtx = mwCtx
+		}
 	}
 
 	// 权限分级仅做信息记录，强制拦截由工具自身 + safety 包负责。

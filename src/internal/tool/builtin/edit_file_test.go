@@ -1,7 +1,6 @@
 package builtin
 
 import (
-	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -20,7 +19,8 @@ func TestEditFile_ReplaceOnce(t *testing.T) {
 		t.Fatalf("种子文件写入失败: %v", err)
 	}
 	tool := NewEditFileTool(sandbox)
-	out, err := tool.Execute(context.Background(),
+	ctx := withSandedPath(t, sandbox, "a.txt")
+	out, err := tool.Execute(ctx,
 		json.RawMessage(`{"file_path":"a.txt","old_string":"world","new_string":"Go"}`))
 	if err != nil {
 		t.Fatalf("执行失败: %v", err)
@@ -40,7 +40,8 @@ func TestEditFile_NotFound(t *testing.T) {
 	target := filepath.Join(sandbox, "a.txt")
 	_ = os.WriteFile(target, []byte("hello"), 0644)
 	tool := NewEditFileTool(sandbox)
-	_, err := tool.Execute(context.Background(),
+	ctx := withSandedPath(t, sandbox, "a.txt")
+	_, err := tool.Execute(ctx,
 		json.RawMessage(`{"file_path":"a.txt","old_string":"not-in-file","new_string":"x"}`))
 	if err == nil {
 		t.Fatal("old_string 不应匹配时应当返回 error")
@@ -53,7 +54,8 @@ func TestEditFile_NotUnique(t *testing.T) {
 	target := filepath.Join(sandbox, "a.txt")
 	_ = os.WriteFile(target, []byte("aaa\naaa\n"), 0644)
 	tool := NewEditFileTool(sandbox)
-	_, err := tool.Execute(context.Background(),
+	ctx := withSandedPath(t, sandbox, "a.txt")
+	_, err := tool.Execute(ctx,
 		json.RawMessage(`{"file_path":"a.txt","old_string":"aaa","new_string":"bbb"}`))
 	if err == nil {
 		t.Fatal("多处匹配应返回 error")
@@ -66,7 +68,8 @@ func TestEditFile_DeleteWithEmptyNew(t *testing.T) {
 	target := filepath.Join(sandbox, "a.txt")
 	_ = os.WriteFile(target, []byte("header\nmiddle\nfooter\n"), 0644)
 	tool := NewEditFileTool(sandbox)
-	_, err := tool.Execute(context.Background(),
+	ctx := withSandedPath(t, sandbox, "a.txt")
+	_, err := tool.Execute(ctx,
 		json.RawMessage(`{"file_path":"a.txt","old_string":"middle\n","new_string":""}`))
 	if err != nil {
 		t.Fatalf("执行失败: %v", err)
@@ -81,7 +84,8 @@ func TestEditFile_DeleteWithEmptyNew(t *testing.T) {
 func TestEditFile_EmptyOldString(t *testing.T) {
 	sandbox := t.TempDir()
 	tool := NewEditFileTool(sandbox)
-	_, err := tool.Execute(context.Background(),
+	ctx := withSandedPath(t, sandbox, "a.txt")
+	_, err := tool.Execute(ctx,
 		json.RawMessage(`{"file_path":"a.txt","old_string":"","new_string":"x"}`))
 	if err == nil {
 		t.Fatal("空 old_string 应返回 error")
@@ -98,7 +102,7 @@ func TestEditFile_DiffSink_RecordAfterSuccess(t *testing.T) {
 	sink := newFakeDiffSink()
 	te.SetDiffSink(sink)
 
-	ctx := tool.WithToolUseID(context.Background(), "eu-1")
+	ctx := tool.WithToolUseID(withSandedPath(t, sandbox, "a.txt"), "eu-1")
 	if _, err := te.Execute(ctx,
 		json.RawMessage(`{"file_path":"a.txt","old_string":"beta","new_string":"BETA"}`)); err != nil {
 		t.Fatalf("执行失败: %v", err)
@@ -127,7 +131,7 @@ func TestEditFile_DiffSink_NotRecordedWhenNotFound(t *testing.T) {
 	sink := newFakeDiffSink()
 	te.SetDiffSink(sink)
 
-	ctx := tool.WithToolUseID(context.Background(), "eu-nf")
+	ctx := tool.WithToolUseID(withSandedPath(t, sandbox, "a.txt"), "eu-nf")
 	_, _ = te.Execute(ctx,
 		json.RawMessage(`{"file_path":"a.txt","old_string":"nope","new_string":"x"}`))
 	if sink.count() != 0 {
@@ -142,7 +146,7 @@ func TestEditFile_DiffSink_NilSafe(t *testing.T) {
 	_ = os.WriteFile(target, []byte("abc"), 0644)
 	te := NewEditFileTool(sandbox)
 	// 显式不调 SetDiffSink
-	ctx := tool.WithToolUseID(context.Background(), "eu-nil")
+	ctx := tool.WithToolUseID(withSandedPath(t, sandbox, "a.txt"), "eu-nil")
 	if _, err := te.Execute(ctx,
 		json.RawMessage(`{"file_path":"a.txt","old_string":"abc","new_string":"xyz"}`)); err != nil {
 		t.Fatalf("sink 为 nil 时仍应成功: %v", err)
@@ -158,7 +162,9 @@ func TestEditFile_DiffSink_NoToolUseID(t *testing.T) {
 	sink := newFakeDiffSink()
 	te.SetDiffSink(sink)
 
-	if _, err := te.Execute(context.Background(),
+	// 这里 ctx 含 PathResolver 但不注入 toolUseID
+	ctx := withSandedPath(t, sandbox, "a.txt")
+	if _, err := te.Execute(ctx,
 		json.RawMessage(`{"file_path":"a.txt","old_string":"abc","new_string":"xyz"}`)); err != nil {
 		t.Fatalf("执行失败: %v", err)
 	}
@@ -194,7 +200,8 @@ func TestRegisterWithOptions_InjectSink(t *testing.T) {
 
 	// 通过 Registry 拿到的就是注入 sink 的实例，执行后应能收到 entry
 	wfTool, _ := r.Get(WriteFileName)
-	ctx := tool.WithToolUseID(context.Background(), "wu-int")
+	sandbox := t.TempDir()
+	ctx := tool.WithToolUseID(withSandedPath(t, sandbox, "a.txt"), "wu-int")
 	if _, err := wfTool.Execute(ctx,
 		json.RawMessage(`{"file_path":"a.txt","content":"hi"}`)); err != nil {
 		t.Fatalf("通过 Registry 调 WriteFile 失败: %v", err)

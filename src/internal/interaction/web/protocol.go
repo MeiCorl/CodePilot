@@ -23,6 +23,12 @@ const (
 	// 对应的 WriteFile / EditFile 工具调用的文件 diff（before/after）。
 	// 服务端响应 MsgTypeFileDiff 同名字段。
 	MsgTypeGetFileDiff = "get_file_diff"
+	// MsgTypePermissionResponse 由前端权限确认对话框触发，携带用户的决策回传后端。
+	MsgTypePermissionResponse = "permission_response"
+	// MsgTypeSetPermissionMode 由前端「权限模式」下拉切换触发，
+	// 携带目标档位（strict/default/permissive）请求后端运行时切换。
+	// 后端会更新 Checker.SetMode() 并通过 MsgTypePermissionMode 回推新档位。
+	MsgTypeSetPermissionMode = "set_permission_mode"
 )
 
 // 服务端 → 客户端 消息类型常量。
@@ -41,6 +47,10 @@ const (
 	// MsgTypeFileDiff 是 get_file_diff 请求的响应消息。
 	// Found=false 时 Reason 标识原因（"not_found" / "too_large"），Before/After 为空。
 	MsgTypeFileDiff = "file_diff"
+	// MsgTypePermissionRequest 由后端推送给前端，请求用户确认工具执行权限。
+	MsgTypePermissionRequest = "permission_request"
+	// MsgTypePermissionMode 由后端推送，告知前端当前权限模式及规则概要。
+	MsgTypePermissionMode = "permission_mode"
 )
 
 // 流式结束原因与 Agent 状态的取值常量。
@@ -258,6 +268,68 @@ type AgentIterationPayload struct {
 	Current int `json:"current"`
 	// Max 为最大迭代次数
 	Max int `json:"max"`
+}
+
+// ---------------------------------------------------------------------------
+// HITL 权限确认相关 Payload
+// ---------------------------------------------------------------------------
+
+// PermissionRequestPayload 后端 → 前端：请求用户确认工具执行权限。
+// 后端在 Agent Loop 中遇到需要用户确认的工具调用时发送此消息，
+// 前端弹出权限确认对话框，用户操作后发送 permission_response 回传。
+type PermissionRequestPayload struct {
+	// ID 为本次权限确认请求的唯一标识，用于与 response 配对。
+	ID string `json:"id"`
+	// ToolName 为待确认的工具名（大驼峰，如 Bash / WriteFile）。
+	ToolName string `json:"tool_name"`
+	// ParamsSummary 为工具参数的可读摘要（如 "command: git push origin main"）。
+	ParamsSummary string `json:"params_summary"`
+	// Reason 为触发确认的原因说明。
+	Reason string `json:"reason"`
+	// MatchedRule 为命中的规则信息（可能为 nil，表示档位默认策略触发）。
+	MatchedRule *PermissionMatchedRule `json:"matched_rule,omitempty"`
+	// TargetPath 为路径类工具触发确认时的目标路径（原始输入）。
+	// 前端用于"目标路径"独立一栏展示；用户选"永久允许"时由后端
+	// 据此生成目录级 glob Pattern（父目录 + /*）。
+	TargetPath string `json:"target_path,omitempty"`
+	// Workdir 为当前工作目录绝对路径，前端展示用。
+	Workdir string `json:"workdir,omitempty"`
+}
+
+// PermissionMatchedRule 权限请求中携带的匹配规则信息，供前端展示。
+type PermissionMatchedRule struct {
+	Tool    string `json:"tool"`
+	Pattern string `json:"pattern"`
+	Action  string `json:"action"`
+}
+
+// PermissionResponsePayload 前端 → 后端：用户对权限确认请求的响应。
+type PermissionResponsePayload struct {
+	// ID 对应 permission_request 的 ID。
+	ID string `json:"id"`
+	// Allowed 表示用户是否允许本次操作。
+	Allowed bool `json:"allowed"`
+	// Scope 为授权范围：once（仅本次）/ session（本会话）/ permanent（永久）。
+	Scope string `json:"scope"`
+}
+
+// PermissionModePayload 后端 → 前端：告知当前权限模式及规则概要。
+// 在会话启动时和权限模式变更时推送，前端据此更新状态栏展示。
+type PermissionModePayload struct {
+	// Mode 为当前权限模式：strict / default / permissive。
+	Mode string `json:"mode"`
+	// RuleCount 为配置级规则数量。
+	RuleCount int `json:"rule_count"`
+	// SessionRuleCount 为会话级临时规则数量。
+	SessionRuleCount int `json:"session_rule_count"`
+}
+
+// SetPermissionModePayload 前端 → 后端：用户通过「权限模式」下拉请求切换档位。
+// Mode 必须是合法档位（strict/default/permissive），非法值后端忽略并保持原档位。
+// 切换成功后后端通过 MsgTypePermissionMode 回推新档位，前端无需本地更新。
+type SetPermissionModePayload struct {
+	// Mode 为目标档位。
+	Mode string `json:"mode"`
 }
 
 // Encode 编码消息为 JSON 字节。
