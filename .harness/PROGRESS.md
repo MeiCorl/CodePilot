@@ -207,8 +207,8 @@
 | --- | --------------------- | ----- | ------- | -------------------------------- |
 | 7   | 上下文管理                 | 记忆层   | ⏳ 待开始   | `docs/step7-上下文管理/`              |
 | 8   | 记忆系统                  | 记忆层   | ⏳ 待开始   | `docs/step8-记忆系统/`               |
-| 9   | 快捷命令系统                | 交互层   | ⏳ 待开始   | `docs/step9-快捷命令系统/`             |
-| 10  | Skill 系统              | 交互层   | ⏳ 待开始   | `docs/step10-Skill系统/`           |
+| 9   | 快捷命令系统                | 工具层   | ⏳ 待开始   | `docs/step9-快捷命令系统/`             |
+| 10  | Skill 系统              | 工具层   | ⏳ 待开始   | `docs/step10-Skill系统/`           |
 | 11  | Hook 系统               | 工具层   | ⏳ 待开始   | `docs/step11-Hook系统/`            |
 | 12  | SubAgent              | 工具层   | ⏳ 待开始   | `docs/step12-SubAgent/`          |
 
@@ -222,9 +222,9 @@
 
 | 架构层       | 已落地                                                    | 待落地                                         |
 | --------- | ----------------------------------------------------- | ------------------------------------------- |
-| 第 1 层：交互层 | WebUI（HTTP + WebSocket + 富文本渲染 + 流式 Markdown 实时渲染 + SP 可观测性 + 开发者模式 Export + 工具块「查看改动」双栏 diff 弹窗 + 权限确认对话框 + 状态栏权限模式展示 + MCP server 来源徽标 + MCP 健康状态区） | 完整命令系统（Step 9）、Skill 系统（Step 10）            |
+| 第 1 层：交互层 | WebUI（HTTP + WebSocket + 富文本渲染 + 流式 Markdown 实时渲染 + SP 可观测性 + 开发者模式 Export + 工具块「查看改动」双栏 diff 弹窗 + 权限确认对话框 + 状态栏权限模式展示 + MCP server 来源徽标 + MCP 健康状态区） | —            |
 | 第 2 层：引擎层 | 对话管理 + Agent Loop（ReAct 循环迭代 + 多工具并行 + 迭代上限 + 溢出保护）、完整 System Prompt（Builder + 4 Source + 模板变量 + Anthropic 缓存切片） | —                                            |
-| 第 3 层：工具层 | 工具抽象 + Registry + 6 内置工具（ReadFile/WriteFile/EditFile/Bash/Glob/Grep）+ 路径沙箱 + Bash 黑名单 + 批量执行 + 进程内 FileDiffStore + **MCP 客户端**（JSON-RPC 2.0 + stdio/HTTP 双传输 + Session 三阶段握手 + 连接池 + 适配器自动注册 + 指数退避重连 + 10 个 E2E 集成用例全绿 + 真实启动冒烟 healthy=2 tools=4） | Hook（Step 11）、SubAgent（Step 12） |
+| 第 3 层：工具层 | 工具抽象 + Registry + 6 内置工具（ReadFile/WriteFile/EditFile/Bash/Glob/Grep）+ 路径沙箱 + Bash 黑名单 + 批量执行 + 进程内 FileDiffStore + **MCP 客户端**（JSON-RPC 2.0 + stdio/HTTP 双传输 + Session 三阶段握手 + 连接池 + 适配器自动注册 + 指数退避重连 + 10 个 E2E 集成用例全绿 + 真实启动冒烟 healthy=2 tools=4） | 快捷命令系统（Step 9）、Skill 系统（Step 10）、Hook（Step 11）、SubAgent（Step 12） |
 | 第 4 层：记忆层 | 会话持久化、上下文滑动窗口                                        | 高级上下文管理（Step 7）、自动记忆（Step 8）                |
 | 第 5 层：安全层 | 完整权限系统（三层模式 + 可配置规则 + 多层配置合并 + HITL 确认 + 权限拦截器 + 危险命令黑名单增强 + 路径沙箱策略化 + 双层防护） | —                                            |
 
