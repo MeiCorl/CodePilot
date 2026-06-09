@@ -32,7 +32,7 @@
             <div class="topbar-brand">
                 <span class="topbar-logo" aria-hidden="true">CP</span>
                 <span>CodePilot</span>
-                <span class="topbar-version" id="version-badge" title="当前版本">v1.2.1</span>
+                <span class="topbar-version" id="version-badge" title="当前版本">v1.2.2</span>
             </div>
 
             <span class="topbar-divider" aria-hidden="true"></span>
@@ -146,6 +146,13 @@
                     <div class="inputbar-stat">
                         <span class="inputbar-stat-label">ctx left</span>
                         <span class="inputbar-stat-value" id="ctx-percent">100%</span>
+                    </div>
+                    <!-- Step 8: MCP 状态区 - 显示已连接 server 数量 + 圆点;hover 列表 -->
+                    <div class="inputbar-stat" id="mcp-stat" title="MCP server 健康状态（悬停查看详情）">
+                        <span class="inputbar-stat-label">mcp</span>
+                        <span class="inputbar-stat-value" id="mcp-summary">--</span>
+                        <span class="mcp-dots" id="mcp-dots" aria-hidden="true"></span>
+                        <div class="mcp-tooltip" id="mcp-tooltip" hidden role="tooltip" aria-label="MCP server 列表"></div>
                     </div>
                     <button id="send-btn" class="send-btn" type="button" title="发送 (Enter)">
                         <span>Send</span>

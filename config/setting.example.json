@@ -7,11 +7,100 @@
     "timeout": 180,
     "max_retries": 2,
     "tools": {
-        "enabled": ["read_file", "write_file", "bash", "glob", "grep"]
+        "enabled": ["ReadFile", "WriteFile", "EditFile", "Bash", "Glob", "Grep"]
     },
     "tool_execution_timeout_seconds": 30,
     "tool_working_directory": "",
     "context_window_size": 200000,
     "max_agent_loop_iterations": 50,
-    "context_safety_margin": 4096
+    "context_safety_margin": 4096,
+
+    "permissions": {
+        "mode": "default",
+        "rules": [
+            {
+                "tool": "Bash",
+                "pattern": "git *",
+                "action": "allow",
+                "reason": "Git 命令安全放行"
+            },
+            {
+                "tool": "Bash",
+                "pattern": "go test *",
+                "action": "allow",
+                "reason": "Go 测试命令放行"
+            },
+            {
+                "tool": "Bash",
+                "pattern": "ls *",
+                "action": "allow",
+                "reason": "列表查看放行"
+            },
+            {
+                "tool": "WriteFile",
+                "pattern": "*.go",
+                "action": "allow",
+                "reason": "Go 源文件写入放行"
+            },
+            {
+                "tool": "WriteFile",
+                "pattern": "*.md",
+                "action": "allow",
+                "reason": "Markdown 文件写入放行"
+            },
+            {
+                "tool": "Bash",
+                "pattern": "rm *",
+                "action": "deny",
+                "reason": "禁止 rm 删除命令"
+            },
+            {
+                "tool": "Bash",
+                "pattern": "sudo *",
+                "action": "deny",
+                "reason": "禁止 sudo 提权"
+            },
+            {
+                "tool": "mcp__*__*",
+                "pattern": "*",
+                "action": "ask",
+                "reason": "MCP 外部工具需确认"
+            }
+        ]
+    },
+
+    "mcp": {
+        "handshake_timeout_seconds": 30,
+        "list_tools_cache_ttl_seconds": 60,
+        "servers": [
+            {
+                "name": "filesystem",
+                "type": "stdio",
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+                "env": {},
+                "timeout": 30
+            },
+            {
+                "name": "github",
+                "type": "stdio",
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-github"],
+                "env": {
+                    "GITHUB_PERSONAL_ACCESS_TOKEN": "ghp_replace_with_your_token"
+                },
+                "timeout": 60,
+                "disabled": false
+            },
+            {
+                "name": "remote-mcp",
+                "type": "http",
+                "url": "https://example.com/mcp",
+                "headers": {
+                    "Authorization": "Bearer your-token-here"
+                },
+                "timeout": 30
+            }
+        ]
+    }
 }

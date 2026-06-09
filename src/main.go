@@ -31,12 +31,15 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/MeiCorl/CodePilot/src/internal/config"
+	mcpconfig "github.com/MeiCorl/CodePilot/src/internal/mcp/config"
+	"github.com/MeiCorl/CodePilot/src/internal/mcp/adapter"
+	"github.com/MeiCorl/CodePilot/src/internal/mcp/session"
 	"github.com/MeiCorl/CodePilot/src/internal/engine/conversation"
 	"github.com/MeiCorl/CodePilot/src/internal/engine/prompt"
 	"github.com/MeiCorl/CodePilot/src/internal/engine/prompt/sources"
 	"github.com/MeiCorl/CodePilot/src/internal/interaction/web"
 	"github.com/MeiCorl/CodePilot/src/internal/logger"
-	"github.com/MeiCorl/CodePilot/src/internal/memory/session"
+	memsession "github.com/MeiCorl/CodePilot/src/internal/memory/session"
 	"github.com/MeiCorl/CodePilot/src/internal/runtime/console"
 	"github.com/MeiCorl/CodePilot/src/internal/security"
 	"github.com/MeiCorl/CodePilot/src/llm"
@@ -92,7 +95,7 @@ func run() error {
 	}
 
 	// 4. 创建会话管理器（内部自动加载最近会话）
-	sessMgr, err := session.NewSessionManager()
+	sessMgr, err := memsession.NewSessionManager()
 	if err != nil {
 		return fmt.Errorf("创建会话管理器失败: %w", err)
 	}
@@ -162,6 +165,63 @@ func run() error {
 		zap.Int("rules", checker.RuleCount()),
 	)
 
+	// 6.6 Step 8：MCP 客户端启动。
+	// 从 cfg.MCP.Servers 解析 transports + 工厂 → 构造 Pool →
+	// 并发拉起所有 server → 把远端工具批量注册到 tool.Registry。
+	// 单 server 失败仅记日志，不阻塞 CodePilot 启动。
+	//
+	// 这里把 mcpPool 注入到 Handler（供状态栏 / mcp_status 推送使用），
+	// 在 Handler 构造后通过 setter 绑定。Adapter / Pool 失败隔离语义：
+	// 整个 mcp 段为可选项，cfg.MCP.Servers 为空时跳过整段。
+	var mcpPool *session.Pool
+	if len(cfg.MCP.Servers) > 0 {
+		mcpBuild := mcpconfig.BuildTransports(cfg, logger.L())
+		if len(mcpBuild.PoolConfigs) > 0 {
+			// 给每个 ServerConfig 注入 reconnect 工厂
+			for i := range mcpBuild.PoolConfigs {
+				if f, ok := mcpBuild.ReconnectFactory[mcpBuild.PoolConfigs[i].Name]; ok {
+					mcpBuild.PoolConfigs[i].ReconnectFactory = f
+				}
+			}
+			mcpPool = session.NewPool(logger.L())
+			initCtx, initCancel := context.WithTimeout(context.Background(), 60*time.Second)
+			if err := mcpPool.InitializeAll(initCtx, mcpBuild.PoolConfigs); err != nil {
+				logger.Warn("MCP pool 初始化返回错误（部分 server 可能未就绪）", zap.Error(err))
+			}
+			initCancel()
+			healthy := mcpPool.HealthyNames()
+			logger.Info("MCP pool 启动完成",
+				zap.Int("healthy", len(healthy)),
+				zap.Strings("healthy_names", healthy),
+				zap.Int("unhealthy", len(mcpBuild.Skipped)+len(mcpPool.Unhealthy())),
+			)
+			// 批量把远端工具注册到 tool.Registry
+			regCtx, regCancel := context.WithTimeout(context.Background(), 15*time.Second)
+			stats, regErr := adapter.RegisterAll(regCtx, mcpPool, toolRegistry, logger.L())
+			regCancel()
+			if regErr != nil {
+				logger.Warn("MCP 工具注册失败", zap.Error(regErr))
+			} else if stats != nil {
+				logger.Info("MCP 工具注册完成",
+					zap.Int("tools", stats.ToolsRegistered),
+					zap.Int("servers", stats.ServersProcessed),
+					zap.Int("skipped", stats.SkippedDuplicate),
+				)
+			}
+		}
+		if len(mcpBuild.Skipped) > 0 {
+			logger.Warn("MCP server 被跳过",
+				zap.Int("count", len(mcpBuild.Skipped)),
+			)
+			for name, reason := range mcpBuild.Skipped {
+				logger.Warn("  - skipped",
+					zap.String("server", name),
+					zap.String("reason", reason),
+				)
+			}
+		}
+	}
+
 	// 7. 构造 System Prompt Builder（Step 4：分层 SP 体系）。
 	// 4 个 Source 按注册顺序产出内容：
 	//   - static:       5 个硬编码子模块（角色/行为/代码质量/工具/安全）
@@ -181,6 +241,8 @@ func run() error {
 	handler := web.NewHandler(provider, sessMgr, cfg, defaultMaxRounds, promptBuilder, cfg.ContextWindowSize, workdir, toolRegistry, toolHandler, fileDiffStore)
 	// 注入权限拦截器 + HITL 回调（Handler 内部实现 WebSocket 交互）
 	handler.SetInterceptor(interceptor, checker)
+	// Step 8:把 MCP pool 注入 Handler,让 mcp_status 推送 + 远端工具 server 解析生效
+	handler.SetMCPPool(mcpPool)
 	server := web.NewServer(web.DefaultAddr)
 	handler.Register(server.Router())
 

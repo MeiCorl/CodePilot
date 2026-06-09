@@ -1,8 +1,6 @@
 # CodePilot
 
-**一个由 Go 驱动的终端 AI Coding Agent**
-
-通过 Web UI 与 LLM 交互，自主调用工具完成代码编写、文件操作、命令执行等复杂任务。
+**一个通过Claude Code Vibe Coding实现的AI Coding Agent，** 通过 Web UI 与 Agent 交互，自主调用工具完成代码编写、文件操作、命令执行等复杂任务。**(虽然无法与Claude Code等主流Coding Agent相提并论，但用作转入AI Agent开发练手，可帮助加强理解如何从零实现一个AI Agent）**
 
 [Go Version](https://go.dev/)
 [License](LICENSE)
@@ -29,19 +27,21 @@ CodePilot 是一个从零构建的终端 AI Coding Agent（类似 Claude Code / 
 | **ReAct 推理循环**               | 思考→决策→行动→观察的迭代循环，直到 LLM 认为任务完成                                                                       |
 | **多工具并行调用**                  | 一次 LLM 响应中包含多个工具调用时，按权限分组并行执行                                                                        |
 | **内置工具集**                    | `ReadFile`（读文件）、`WriteFile`（写文件）、`EditFile`（编辑文件）、`Bash`（命令执行）、`Glob`（文件查找）、`Grep`（内容搜索）             |
-| **工具块「查看改动」双栏 diff**        | WriteFile/EditFile 完成态工具块头部「查看改动」按钮，点击弹出双栏 diff 弹窗（Before/After 全文 + 行级 + 词级高亮）                       |
+| **工具块「查看改动」双栏 diff**         | WriteFile/EditFile 完成态工具块头部「查看改动」按钮，点击弹出双栏 diff 弹窗（Before/After 全文 + 行级 + 词级高亮）                      |
 | **迭代上限保护**                   | 默认最大 50 次迭代，达到上限后注入提示让模型优雅收尾                                                                         |
 | **上下文窗口管理**                  | Token 溢出保护，空间不足时自动提示模型总结当前进展                                                                         |
 | **分层 System Prompt**         | `Builder` 模式组装 4 个 Source（static / environment / agents_md / memory），行为规约、环境上下文、AGENTS.md 合并、自动记忆接入位 |
 | **Anthropic Prompt Caching** | SystemBlocks 多段带 `cache_control: ephemeral, ttl=5m` 标记，第二轮起命中服务端缓存降低成本与延迟                            |
 | **SP 可观测性**                  | WebUI 状态栏显示 SP 总 token 估算 + 4 层 Source 小计 tooltip，开发者模式一键导出完整 SP 快照                                  |
 | **AGENTS.md 双层合并**           | 全局 `~/.codepilot/AGENTS.md` + 项目级 `<cwd>/AGENTS.md` 按 H2 段解析，项目级同名段完全覆盖全局                            |
-| **三层权限模式**                   | `strict`（严格）/ `default`（默认）/ `permissive`（放行）三档档位，运行时可通过状态栏下拉即时切换                            |
-| **可配置允许/拒绝/询问规则**           | 在 `setting.json` 中按「工具名 + 参数模式」声明 `allow` / `deny` / `ask`，支持路径 glob 与 Bash 命令前缀匹配                       |
-| **多层配置合并**                  | 全局 + 项目级 + 会话级规则按优先级合并                                                                              |
-| **人在回路（HITL）确认**            | 工具执行前通过 WebSocket 暂停 Agent Loop 等待用户确认，支持本次 / 本会话 / 永久三种授权范围                                              |
-| **危险命令黑名单**                 | Bash 硬拦截（不可被配置绕过）：`rm -rf /`、`mkfs`、远程脚本下载执行（curl\|sh / wget\|bash）等                             |
-| **路径沙箱**                    | 工具内部 `ResolveInSandbox` 硬兜底 + 策略层 `IsPathOutsideSandbox` 双层防护                                                     |
+| **三层权限模式**                   | `strict`（严格）/ `default`（默认）/ `permissive`（放行）三档档位，运行时可通过状态栏下拉即时切换                                    |
+| **可配置允许/拒绝/询问规则**            | 在 `setting.json` 中按「工具名 + 参数模式」声明 `allow` / `deny` / `ask`，支持路径 glob 与 Bash 命令前缀匹配                   |
+| **多层配置合并**                   | 全局 + 项目级 + 会话级规则按优先级合并                                                                               |
+| **人在回路（HITL）确认**             | 工具执行前通过 WebSocket 暂停 Agent Loop 等待用户确认，支持本次 / 本会话 / 永久三种授权范围                                         |
+| **危险命令黑名单**                  | Bash 硬拦截（不可被配置绕过）：`rm -rf /`、`mkfs`、远程脚本下载执行（curl|sh / wget|bash）等                                   |
+| **路径沙箱**                     | 工具内部 `ResolveInSandbox` 硬兜底 + 策略层 `IsPathOutsideSandbox` 双层防护                                        |
+| **MCP 协议（Model Context Protocol）** | JSON-RPC 2.0 + stdio / Streamable HTTP 双传输，动态发现外部工具服务器，自动注册为 `mcp__<server>__<tool>` 命名工具，支持指数退避重连（1s/3s/9s） |
+| **MCP WebUI 可观测**              | 工具块紫色 server 来源徽标 + 状态栏 MCP 健康区（绿/黄/红/灰四色圆点 + hover tooltip）                                         |
 | **会话持久化**                    | 多会话管理 + JSON 持久化，支持会话恢复与历史回放                                                                         |
 | **优雅中断**                     | 用户中断时保留已完成迭代的消息，支持后续恢复                                                                               |
 | **异步日志系统**                   | 基于 zap 的文件日志，支持日志轮转                                                                                  |
@@ -53,7 +53,6 @@ CodePilot 是一个从零构建的终端 AI Coding Agent（类似 Claude Code / 
 
 | 功能           | 所属阶段    | 说明                                        |
 | ------------ | ------- | ----------------------------------------- |
-| **MCP 协议**   | Step 6  | Model Context Protocol，动态发现与调用外部工具服务器     |
 | **高级上下文管理**  | Step 7  | 上下文压缩（摘要）、缓存策略，优化 token 利用率               |
 | **记忆系统**     | Step 8  | 自动记忆用户偏好与项目约定，跨会话持久化（System Prompt 已留接入位） |
 | **快捷命令系统**   | Step 9  | `/help`、`/clear`、`/init` 等斜杠命令，快速触发操作     |
@@ -169,6 +168,16 @@ CodePilot/
 │   │   │   ├── sandbox.go               #   路径沙箱（ResolveInSandbox + IsPathOutsideSandbox）
 │   │   │   ├── blacklist.go             #   Bash 危险命令黑名单（不可绕过硬拦截）
 │   │   │   └── integration_test.go      #   端到端集成测试（92 个用例的合并入口）
+│   │   ├── mcp/                         # MCP 协议客户端（第 3 层工具层，Step 6）
+│   │   │   ├── jsonrpc/                 #   JSON-RPC 2.0 编解码（Request/Response/Notification + ID 生成器）
+│   │   │   ├── transport/               #   传输抽象 + stdio + Streamable HTTP 实现
+│   │   │   ├── session/                 #   会话管理（三阶段握手 + 连接池 + 缓存 + 健康检查）
+│   │   │   ├── adapter/                 #   MCP Tool → CodePilot Tool 适配器 + 自动批量注册
+│   │   │   ├── config/                  #   配置解析（setting.json mcp.servers → PoolConfig）
+│   │   │   ├── reconnect/               #   指数退避重连策略（1s/3s/9s + unhealthy 标记）
+│   │   │   ├── testdata/                #   Mock MCP Server（stdio + HTTP，用于集成测试）
+│   │   │   └── integration_test.go      #   端到端集成测试
+│   │   │   memory/                      # 记忆层（第 4 层）
 │   │   ├── memory/                      # 记忆层（第 4 层）
 │   │   │   ├── context/
 │   │   │   │   └── window.go            #   滑动窗口上下文管理
@@ -265,6 +274,9 @@ cp config/setting.example.openai.json ~/.codepilot/setting.json
 | `context_window_size`            | 上下文窗口大小（token 数）               | `200000` |
 | `max_agent_loop_iterations`      | Agent Loop 最大迭代次数              | `50`     |
 | `context_safety_margin`          | 上下文安全余量（token 数）               | `4096`   |
+| `permissions.mode`               | 权限模式：`strict` / `default` / `permissive` | `default` |
+| `permissions.rules`              | 自定义权限规则列表（详见下方说明）              | `[]`     |
+| `mcp.servers`                    | MCP 外部工具服务器列表（详见下方说明）          | `[]`     |
 
 
 ### 运行
@@ -300,14 +312,65 @@ cp config/setting.example.openai.json ~/.codepilot/setting.json
 ### 权限模式速查
 
 
-| 模式       | icon  | 工具行为                                       | 越界路径        | 适用场景                |
-| -------- | ----- | ------------------------------------------ | ----------- | ------------------- |
-| 严格 strict | 🔒  | 读放行，写/执行需确认                                | 拒绝          | 处理陌生项目、批量改动前谨慎评估     |
-| 默认 default | 🛡 | 读/写放行，Bash 执行需确认                          | 需确认         | 日常开发（推荐起始档位）         |
-| 放行 permissive | 🔓 | 除黑名单外全部自动放行                               | 放行          | 高度信任的本地项目、自动化批处理    |
+| 模式            | icon | 工具行为             | 越界路径 | 适用场景             |
+| ------------- | ---- | ---------------- | ---- | ---------------- |
+| 严格 strict     | 🔒   | 读放行，写/执行需确认      | 拒绝   | 处理陌生项目、批量改动前谨慎评估 |
+| 默认 default    | 🛡   | 读/写放行，Bash 执行需确认 | 需确认  | 日常开发（推荐起始档位）     |
+| 放行 permissive | 🔓   | 除黑名单外全部自动放行      | 放行   | 高度信任的本地项目、自动化批处理 |
 
 
 > 切换是 **运行时内存态**，重启 CodePilot 后回到 `setting.json` 中配置的档位。若需永久切换档位，编辑 `~/.codepilot/setting.json` 或 `<cwd>/.codepilot/setting.json` 中的 `permissions.mode`。
+
+### 权限规则配置
+
+在 `setting.json` 的 `permissions.rules` 中按需声明自定义规则，每条规则包含 `tool`（工具名）、`pattern`（参数匹配模式）、`action`（动作）三个字段：
+
+```json
+"permissions": {
+    "mode": "default",
+    "rules": [
+        { "tool": "Bash", "pattern": "git *", "action": "allow", "reason": "Git 命令安全放行" },
+        { "tool": "WriteFile", "pattern": "*.go", "action": "allow", "reason": "Go 源文件写入放行" },
+        { "tool": "Bash", "pattern": "rm *", "action": "deny", "reason": "禁止删除命令" },
+        { "tool": "mcp__*__*", "pattern": "*", "action": "ask", "reason": "MCP 工具需确认" }
+    ]
+}
+```
+
+- `tool` 支持精确匹配（`Bash`）和通配符（`*` 匹配所有工具，`mcp__*__*` 匹配所有 MCP 工具）
+- `pattern` 支持路径 glob（`*.go`、`/tmp/*`）和 Bash 命令前缀（`git *`）
+- `action` 取值：`allow`（放行）/ `deny`（拒绝）/ `ask`（弹确认框）
+- 规则按列表顺序匹配，命中第一条即返回
+
+### MCP 服务器配置
+
+在 `setting.json` 的 `mcp.servers` 中声明外部工具服务器，支持 stdio 和 HTTP 两种传输方式：
+
+```json
+"mcp": {
+    "servers": [
+        {
+            "name": "filesystem",
+            "type": "stdio",
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+            "timeout": 30
+        },
+        {
+            "name": "remote-api",
+            "type": "http",
+            "url": "https://example.com/mcp",
+            "headers": { "Authorization": "Bearer your-token" },
+            "timeout": 30
+        }
+    ]
+}
+```
+
+- stdio 类型：通过子进程 stdin/stdout 通信，适合本地工具服务器
+- http 类型：通过 Streamable HTTP 协议通信，适合远程服务
+- 单 server 失败不影响其他 server 和 CodePilot 启动
+- MCP 工具自动注册为 `mcp__<server>__<tool>` 命名，走完整权限链路
 
 ---
 
@@ -331,11 +394,11 @@ cp config/setting.example.openai.json ~/.codepilot/setting.json
 
 ## 📊 项目进度
 
-> 当前最新版本 **V1.0.6** · 最近更新 **2026-06-07** · 下一步骤 **Step 6 — MCP 协议实现**
+> 当前最新版本 **V1.2.0** · 最近更新 **2026-06-09** · 进行中 **Step 6 — MCP 协议实现（8/9 Task 完成）**
 > 详细进度见 [.harness/PROGRESS.md](.harness/PROGRESS.md)
 
 ```
-[████████████████████████░░░░] 75% 完成（9/12）
+[█████████████████████████░░░] ~82% 完成（9 步已完成，Step 6 进行中）
 
 ✅ Step 1    — LLM 打通
 ✅ Step 1.1  — UI 界面重构（TUI → WebUI）
@@ -346,7 +409,7 @@ cp config/setting.example.openai.json ~/.codepilot/setting.json
 ✅ Step 3    — ReAct 与 Agent Loop 实现
 ✅ Step 4    — System Prompt 设计
 ✅ Step 5    — 权限系统设计（运行时档位切换 + HITL + 危险命令黑名单 + 路径沙箱）
-⏳ Step 6    — MCP 协议实现
+🔧 Step 6    — MCP 协议实现（8/9，JSON-RPC + stdio/HTTP + 连接池 + 适配器 + 重连）
 ⏳ Step 7    — 上下文管理
 ⏳ Step 8    — 记忆系统
 ⏳ Step 9    — 快捷命令系统

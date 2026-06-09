@@ -87,6 +87,16 @@ func Close() {
 	}
 }
 
+// L 返回底层 *zap.Logger 实例，便于需要直接传递 logger 的场景
+// （如 mcp/adapter.RegisterAll、mcp/config.BuildTransports 等）。
+// Init 之前调用 L 会得到 zap.NewNop() 占位（不影响业务行为）。
+func L() *zap.Logger {
+	if globalLogger == nil {
+		return zap.NewNop()
+	}
+	return globalLogger
+}
+
 // Info 记录 Info 级别日志。
 func Info(msg string, fields ...zap.Field) {
 	if globalLogger != nil {

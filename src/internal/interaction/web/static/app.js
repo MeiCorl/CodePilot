@@ -33,6 +33,11 @@
         // Step 4：System Prompt 可观测性
         spTokens:       $('sp-tokens'),
         spBreakdown:    $('sp-breakdown'),
+        // Step 8：MCP 健康状态
+        mcpStat:        $('mcp-stat'),
+        mcpSummary:     $('mcp-summary'),
+        mcpDots:        $('mcp-dots'),
+        mcpTooltip:     $('mcp-tooltip'),
         // Step 4：开发者模式面板
         devPanel:       $('dev-panel'),
         devExportBtn:   $('dev-export-sp-btn'),
@@ -215,6 +220,8 @@
         PermissionMode:    'permission_mode',
         // Step 5 增强：用户主动切换权限模式（状态栏下拉）
         SetPermissionMode: 'set_permission_mode',
+        // Step 8：MCP server 健康状态推送
+        MCPStatus:        'mcp_status',
     };
 
     // abortMarker 与后端 agent_loop.go 中的 abortMarker 常量保持一致，
@@ -271,6 +278,7 @@
             case MsgType.FileDiff:          return onFileDiff(msg.payload);
             case MsgType.PermissionRequest: return onPermissionRequest(msg.payload);
             case MsgType.PermissionMode:    return onPermissionMode(msg.payload);
+            case MsgType.MCPStatus:         return onMCPStatus(msg.payload);
             default: console.warn('未知消息类型:', msg.type, msg.payload);
         }
     }
@@ -476,7 +484,7 @@
         // 如果不提前固化，所有迭代的文本会累积到同一个流式消息中，
         // 导致"所有分析文本在前 → 所有工具调用在后"的非交替布局。
         finalizeAssistantMessage();
-        const node = appendToolStartNode(p.tool_use_id, p.name, p.input, p.started_at);
+        const node = appendToolStartNode(p.tool_use_id, p.name, p.input, p.started_at, p.server);
         state._toolById[p.tool_use_id] = node;
         scrollToBottomIfNeeded();
     }
@@ -486,7 +494,7 @@
         let node = state._toolById[p.tool_use_id];
         if (!node) {
             // 异常路径：end 先到 start 后到（或 start 丢失），按已完成态直接插入
-            node = appendToolStartNode(p.tool_use_id, p.name, '', p.started_at);
+            node = appendToolStartNode(p.tool_use_id, p.name, '', p.started_at, p.server);
             state._toolById[p.tool_use_id] = node;
         }
         updateToolEndNode(node, p);
@@ -1252,6 +1260,7 @@
                     m.tool_call.name,
                     m.tool_call.input,
                     null,
+                    m.tool_call.server, // Step 8:历史会话中的 MCP 远端工具也带 server 来源
                 );
                 updateToolEndNode(node, {
                     tool_use_id: m.tool_call.id,
@@ -1260,6 +1269,7 @@
                     is_error:    m.tool_call.is_error,
                     duration_ms: m.tool_call.duration_ms,
                     status:      m.tool_call.status,
+                    server:      m.tool_call.server,
                 });
                 state._toolById[m.tool_call.id] = node;
             } else {
@@ -1390,7 +1400,8 @@
     // appendToolStartNode 插入"正在执行"占位块并返回 DOM 引用。
     // 参数 input 接受 string（已压缩 JSON）或 object；StartedAtIso 为 ISO 字符串
     // 或 null（null 时不显示开始时间，仅显示 running）。
-    function appendToolStartNode(toolUseId, name, input, startedAtIso) {
+    // server 可选：远端 MCP 工具时填入 server 名，会在工具块头部展示 mcp:<server> 徽标。
+    function appendToolStartNode(toolUseId, name, input, startedAtIso, server) {
         const empty = dom.messages.querySelector('.messages-empty');
         if (empty) empty.remove();
         hideThinking();
@@ -1417,6 +1428,16 @@
         nameEl.className = 'message-tool-name';
         nameEl.textContent = name;
         header.appendChild(nameEl);
+
+        // Step 8:远端 MCP 工具时,在 name 后追加 server 来源徽标
+        if (server) {
+            const mcpBadge = document.createElement('span');
+            mcpBadge.className = 'mcp-server-badge';
+            mcpBadge.dataset.mcpServer = server;
+            mcpBadge.title = 'MCP 远端工具,来源 server=' + server;
+            mcpBadge.textContent = 'mcp: ' + server;
+            header.appendChild(mcpBadge);
+        }
 
         // 操作摘要：在头部行显示工具正在执行的具体命令/路径等关键信息
         const summary = document.createElement('span');
@@ -1543,6 +1564,45 @@
             if (actions) {
                 attachViewDiffButton(actions, node.dataset.toolUseId);
             }
+        }
+
+        // Step 8:同步/更新 server 来源徽标。end 消息可能携带 server 字段(用于 start 未带 server 的兜底)
+        if (endPayload.server) {
+            ensureMCPServerBadge(node, endPayload.server);
+        }
+    }
+
+    // ensureMCPServerBadge 注入或更新工具块头部的 MCP server 徽标。
+    //
+    // 行为:
+    //   - 已有徽标(可能与新 server 不同,如网络抖动)→ 替换 text
+    //   - 无徽标 → 在 name 元素后插入一个 <span class="mcp-server-badge">
+    //   - server 为空时不操作(内置工具不应展示徽标)
+    //
+    // DOM 复用:通过 data-mcp-server 属性去重,避免重复插入。
+    function ensureMCPServerBadge(node, server) {
+        if (!node || !server) return;
+        const header = node.querySelector('.message-tool-header');
+        if (!header) return;
+        const nameEl = header.querySelector('.message-tool-name');
+        if (!nameEl) return;
+        // 找现有徽标
+        let badge = header.querySelector('.mcp-server-badge');
+        if (badge) {
+            badge.textContent = 'mcp: ' + server;
+            badge.dataset.mcpServer = server;
+            return;
+        }
+        // 在 name 元素后插入(视觉上紧跟工具名)
+        badge = document.createElement('span');
+        badge.className = 'mcp-server-badge';
+        badge.dataset.mcpServer = server;
+        badge.title = 'MCP 远端工具,来源 server=' + server;
+        badge.textContent = 'mcp: ' + server;
+        if (nameEl.nextSibling) {
+            header.insertBefore(badge, nameEl.nextSibling);
+        } else {
+            header.appendChild(badge);
         }
     }
 
@@ -2703,6 +2763,93 @@
 
         // 同步下拉中「当前档位」高亮（点击不关闭下拉时，外部状态变更也要即时反映）
         highlightCurrentPermOption(mode);
+    }
+
+    // -------------------------------------------------------------------------
+    // MCP 健康状态（Step 8）
+    // -------------------------------------------------------------------------
+    //
+    // 后端 mcp_status payload 结构:
+    //   { servers: [{ name, state, tools, reason? }], healthy_count, unhealthy_count, total_tools }
+    //
+    // 渲染策略：
+    //   1. status 文本：healthy N / unhealthy M / tools K
+    //      - 全空（未启用 MCP）：显示 "off"
+    //      - 全部 healthy：显示 "N ●"（绿色数字 + 圆点）
+    //      - 有 unhealthy：显示 "N/M ●●"（红黄圆点）
+    //   2. 圆点列：每个 server 一个圆点，按 server 状态着色
+    //   3. tooltip：hover 时显示 server 名 + 工具数 + 失败原因
+
+    // onMCPStatus 处理 mcp_status 推送。
+    function onMCPStatus(p) {
+        if (!p) return;
+        const servers = Array.isArray(p.servers) ? p.servers : [];
+        const healthyCount = (typeof p.healthy_count === 'number') ? p.healthy_count : 0;
+        const unhealthyCount = (typeof p.unhealthy_count === 'number') ? p.unhealthy_count : 0;
+        const totalTools = (typeof p.total_tools === 'number') ? p.total_tools : 0;
+
+        if (!dom.mcpSummary || !dom.mcpDots || !dom.mcpTooltip) return;
+
+        // 未启用 MCP:servers 为空数组
+        if (servers.length === 0) {
+            dom.mcpSummary.textContent = 'off';
+            dom.mcpDots.innerHTML = '';
+            dom.mcpTooltip.innerHTML = '';
+            if (dom.mcpStat) dom.mcpStat.title = 'MCP 未启用（在 setting.json 中配置 mcp.servers）';
+            return;
+        }
+
+        // 主文案
+        const unhealthySuffix = unhealthyCount > 0 ? (' / ' + unhealthyCount + '❌') : '';
+        dom.mcpSummary.textContent = healthyCount + unhealthySuffix + ' • ' + totalTools + ' 工具';
+
+        // 圆点列
+        dom.mcpDots.innerHTML = '';
+        for (const s of servers) {
+            const dot = document.createElement('span');
+            dot.className = 'mcp-dot mcp-dot-' + (s.state || 'unknown');
+            dot.dataset.server = s.name || '';
+            dot.title = (s.name || '') + ': ' + (s.state || 'unknown') +
+                (typeof s.tools === 'number' ? ' (' + s.tools + ' 工具)' : '') +
+                (s.reason ? ' — ' + s.reason : '');
+            dom.mcpDots.appendChild(dot);
+        }
+
+        // tooltip 列表
+        dom.mcpTooltip.innerHTML = '';
+        const heading = document.createElement('div');
+        heading.className = 'mcp-tooltip-heading';
+        heading.textContent = 'MCP servers (' + healthyCount + ' healthy)';
+        dom.mcpTooltip.appendChild(heading);
+        for (const s of servers) {
+            const row = document.createElement('div');
+            row.className = 'mcp-tooltip-row';
+            const dot = document.createElement('span');
+            dot.className = 'mcp-dot mcp-dot-' + (s.state || 'unknown');
+            row.appendChild(dot);
+            const nameEl = document.createElement('span');
+            nameEl.className = 'mcp-tooltip-name';
+            nameEl.textContent = s.name || '(unnamed)';
+            row.appendChild(nameEl);
+            const meta = document.createElement('span');
+            meta.className = 'mcp-tooltip-meta';
+            meta.textContent = (s.state || 'unknown') +
+                (typeof s.tools === 'number' ? ' • ' + s.tools + ' 工具' : '');
+            row.appendChild(meta);
+            if (s.reason) {
+                const reason = document.createElement('div');
+                reason.className = 'mcp-tooltip-reason';
+                reason.textContent = s.reason;
+                row.appendChild(reason);
+            }
+            dom.mcpTooltip.appendChild(row);
+        }
+
+        // tooltip 显示控制：hover/leave 切换
+        if (dom.mcpStat) {
+            dom.mcpStat.onmouseenter = () => { dom.mcpTooltip.hidden = false; };
+            dom.mcpStat.onmouseleave = () => { dom.mcpTooltip.hidden = true; };
+        }
     }
 
     // -------------------------------------------------------------------------

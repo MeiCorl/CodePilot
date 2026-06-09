@@ -1157,9 +1157,9 @@ body {
  * 底部（视口外不可见）。改 grid 让按钮天然占满右列整高，
  * 不再受 4 子项堆叠影响。
  *
- * Step 5 修复：grid-template-rows 从 repeat(3, ...) 改为 repeat(4, ...)，
- * 否则第 4 个 stat (ctx left) 会落到隐式自动行，stat 列总高度超过 send-btn
- * 覆盖的 3 行，send 按钮无法对齐 inputbar 底部。 */
+ * Step 6 修复：grid-template-rows 从 repeat(4, ...) 改为 repeat(5, ...)，
+ * 否则第 5 个 stat (mcp) 会落到隐式自动行，stat 列总高度超过 send-btn
+ * 覆盖的显式行数，send 按钮无法对齐 inputbar 底部。 */
 .inputbar-side {
     /* 加宽 40px：让 model 名称（如 "MiniMax-M3"）不溢出，
      * 同时容纳 "system prompt" 全称标签 + value。 */
@@ -1167,12 +1167,12 @@ body {
     flex-shrink: 0;
     display: grid;
     grid-template-columns: 1fr 80px;
-    grid-template-rows: repeat(4, minmax(0, 1fr));
+    grid-template-rows: repeat(5, minmax(0, 1fr));
     gap: var(--sp-2);
     min-height: 0;
 }
 
-/* 4 个 stat 全部落在第 1 列（grid-column 默认是 auto，会被布局成 col1..col4 错列） */
+/* 5 个 stat 全部落在第 1 列（grid-column 默认是 auto，会被布局成 col1..col5 错列） */
 .inputbar-side > .inputbar-stat {
     grid-column: 1;
     min-width: 0;          /* 允许 stat 在窄空间下内部 flex 子项收缩 */
@@ -1721,6 +1721,150 @@ body {
     padding-top: 6px;
     border-top: 1px solid var(--border, #2a2a2e);
     font-weight: 600;
+}
+
+/* ---- Step 8: MCP server 健康状态样式 ---- */
+
+/* 状态栏 MCP 区域:与 perm/sp-stat 风格保持一致 */
+#mcp-stat {
+    position: relative;
+    cursor: help;
+}
+
+#mcp-summary {
+    font-variant-numeric: tabular-nums;
+}
+
+/* 圆点列容器:mcp-stat 头部右侧,显示每个 server 一个圆点 */
+.mcp-dots {
+    display: inline-flex;
+    gap: 3px;
+    margin-left: 6px;
+    align-items: center;
+}
+
+.mcp-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--fg-dim, #555);
+    flex-shrink: 0;
+}
+
+.mcp-dot-healthy {
+    background: #4ade80;        /* green */
+    box-shadow: 0 0 4px rgba(74, 222, 128, 0.5);
+}
+
+.mcp-dot-reconnecting {
+    background: #fbbf24;        /* amber */
+    animation: mcp-dot-pulse 1.4s ease-in-out infinite;
+}
+
+.mcp-dot-unhealthy {
+    background: #f87171;        /* red */
+}
+
+.mcp-dot-skipped {
+    background: #6b7280;        /* gray */
+}
+
+.mcp-dot-unknown {
+    background: var(--fg-dim, #555);
+}
+
+@keyframes mcp-dot-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+}
+
+/* tooltip: 与 sp-breakdown 风格一致 */
+#mcp-stat:hover .mcp-tooltip,
+#mcp-stat:focus-within .mcp-tooltip {
+    display: block;
+}
+
+.mcp-tooltip {
+    display: none;
+    position: absolute;
+    bottom: calc(100% + 8px);
+    right: 0;
+    min-width: 240px;
+    max-width: 360px;
+    padding: 10px 12px;
+    background: var(--bg-elevated, #1a1a1c);
+    border: 1px solid var(--border, #2a2a2e);
+    border-radius: 6px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+    z-index: 200;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--fg, #e5e5e7);
+    text-align: left;
+}
+
+.mcp-tooltip-heading {
+    font-weight: 600;
+    margin-bottom: 6px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--border, #2a2a2e);
+    color: var(--fg-dim, #999);
+    text-transform: uppercase;
+    font-size: 10px;
+    letter-spacing: 0.5px;
+}
+
+.mcp-tooltip-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 0;
+}
+
+.mcp-tooltip-name {
+    flex: 1;
+    font-weight: 500;
+    color: var(--fg, #e5e5e7);
+    word-break: break-all;
+}
+
+.mcp-tooltip-meta {
+    color: var(--fg-dim, #999);
+    font-size: 11px;
+}
+
+.mcp-tooltip-reason {
+    flex-basis: 100%;
+    margin-top: 2px;
+    margin-left: 14px;
+    font-size: 11px;
+    color: #f87171;
+    word-break: break-word;
+}
+
+/* 工具块 MCP 来源徽标:与 message-tool-name 同行,紫底色 */
+.mcp-server-badge {
+    display: inline-block;
+    margin-left: 8px;
+    padding: 1px 8px;
+    font-size: 10px;
+    font-weight: 600;
+    font-family: var(--font-mono, monospace);
+    letter-spacing: 0.3px;
+    color: #c4b5fd;            /* lavender-300 */
+    background: rgba(139, 92, 246, 0.12);  /* violet-500 12% opacity */
+    border: 1px solid rgba(139, 92, 246, 0.35);
+    border-radius: 10px;
+    vertical-align: middle;
+    text-transform: lowercase;
+    cursor: help;
+    white-space: nowrap;
+}
+
+.mcp-server-badge:hover {
+    background: rgba(139, 92, 246, 0.2);
+    color: #ddd6fe;
 }
 
 /* 开发者模式面板（隐藏在右下角的小入口，本步骤先做固定入口） */

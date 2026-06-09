@@ -14,16 +14,17 @@
 | 指标     | 数值                                                    |
 | ------ | ----------------------------------------------------- |
 | 计划总步骤数 | 12（含子步骤后实际更多）                                         |
-| 已完成步骤数 | 9（Step 1 / Step 1.1 / Step 1.2 / Step 1.3 / Step 1.4 / Step 2 / Step 3 / Step 4 / Step 5）    |
-| 当前最新版本 | V1.0.6                                                |
-| 下一步骤   | Step 6 — MCP 协议实现                             |
-| 最近更新   | 2026-06-07                                            |
+| 已完成步骤数 | 10（Step 1 / Step 1.1 / Step 1.2 / Step 1.3 / Step 1.4 / Step 2 / Step 3 / Step 4 / Step 5 / Step 6）   |
+| 当前最新版本 | V1.3.0                                                |
+| 进行中步骤  | —                                                    |
+| 下一步骤   | Step 7 — 上下文管理（需先 `/specs` 触发需求澄清）                       |
+| 最近更新   | 2026-06-09                                            |
 
 
 进度条：
 
 ```
-[████████████████████████░░░░] 9/12 步骤完成（75%）
+[█████████████████████████████] 10/12 步骤完成（~83%，Step 7 待开始）
 ```
 
 ---
@@ -176,6 +177,25 @@
   10. **WebUI 权限确认对话框**：展示工具名、参数摘要、触发原因 + 四按钮（拒绝/本次允许/本会话允许/永久允许）+ 60 秒倒计时 + 状态栏权限模式展示
   11. **92 个测试用例全部通过**：含 8 个端到端集成场景（默认模式/严格模式/自定义规则/多层配置/永久允许/黑名单/双层防护/向后兼容）+ 并发安全 + 性能基准 + 超时取消
 
+### Step 6 — MCP 协议实现（V1.3.0）
+
+- **完成时间**：2026-06-09
+- **设计文档**：[docs/step6-MCP协议实现/](../docs/step6-MCP协议实现/)
+- **Task 完成数**：9 / 9
+- **核心交付能力**：
+  1. **JSON-RPC 2.0 编解码层**：`Request` / `Response` / `Notification` 三核心结构体 + `MarshalRequest` / `UnmarshalMessage` + `crypto/rand` 全局唯一 ID 生成器
+  2. **Transport 抽象 + stdio 传输**：`Transport` 接口（Connect/Send/Recv/Close/IsAlive）+ stdio 子进程传输（`os/exec` + JSONL stdin/stdout），支持 env 注入
+  3. **Streamable HTTP 传输**：POST 请求/响应，支持 `application/json` + `text/event-stream` 双响应格式，Bearer/Basic Auth，`Mcp-Session-Id` 头部传播
+  4. **Session 三阶段握手**：`Initialize`（protocolVersion="2025-03-26"）→ `NotifyInitialized` → `ListTools` / `CallTool`，基于 id 的异步 pending 映射实现请求-响应关联
+  5. **多 server 连接池**：`Pool` 并发建连（`errgroup`）+ 失败隔离 + `ListToolsCached` 60s 缓存 + Session 复用
+  6. **MCP Tool → CodePilot Tool 适配器**：`adapterTool` 实现 `tool.Tool` 接口，命名 `mcp__<server>__<tool>`，`RegisterAll` 批量注册到 `tool.Registry`，Agent 调用无感
+  7. **指数退避重连**：1s / 3s / 9s 三次退避 → unhealthy 标记；重连成功恢复 healthy；lazy 重连（下次调用时触发）
+  8. **主流程接入**：`main.go` 启动时 `BuildTransports` → `Pool.InitializeAll` → `adapter.RegisterAll` → `handler.SetMCPPool`；配置缺失时正常启动
+  9. **权限系统集成**：MCP 工具名 `mcp__<server>__<tool>` 走 `permission.Decide` 全链路，支持 allow / deny / ask 规则匹配 + HITL 确认
+  10. **WebUI 可观测性**：工具块紫色 `mcp: <server>` 徽标 + 状态栏 MCP 健康区（绿/黄/红/灰四色圆点）+ hover tooltip 展示 server 详情
+  11. **配置驱动**：`setting.json` 新增 `mcp.servers[]` 段，支持 stdio（command/args/env）+ http（url/headers）+ disabled 跳过 + 超时配置
+  12. **端到端冒烟（Task 9）**：10 个 E2E 集成用例（stdio 握手+ ListTools / stdio CallTool / HTTP CallTool / 权限拦截 / server 失败隔离 / 重连退避 / 重连耗尽 / 50 路并发 id 匹配 / 命名规范 / 历史会话兼容）全绿 + 真实启动冒烟（`codepilot-e2e.exe` 启动监听 58426 + mock-stdio 52931 + mock-http 双 server 真实握手 + WS 客户端收到 mcp_status `healthy=2 tools=4` 推送）+ 200+ 单元/集成测试通过 + 跨功能回归 Step 1~5 无破坏
+
 ---
 
 ## 🕓 待完成步骤
@@ -183,15 +203,14 @@
 > 下列步骤按 [PROJECT.md](./PROJECT.md) 计划顺序排列，开始下一步前请先用 `/specs` 触发需求澄清并生成 spec / tasks / checklist 三文档。
 
 
-| 编号  | 步骤名                   | 所属架构层 | 状态    | 计划目录                             |
-| --- | --------------------- | ----- | ----- | -------------------------------- |
-| 6   | MCP 协议实现              | 工具层   | ⏳ 待开始 | `docs/step6-MCP协议实现/`            |
-| 7   | 上下文管理                 | 记忆层   | ⏳ 待开始 | `docs/step7-上下文管理/`              |
-| 8   | 记忆系统                  | 记忆层   | ⏳ 待开始 | `docs/step8-记忆系统/`               |
-| 9   | 快捷命令系统                | 交互层   | ⏳ 待开始 | `docs/step9-快捷命令系统/`             |
-| 10  | Skill 系统              | 交互层   | ⏳ 待开始 | `docs/step10-Skill系统/`           |
-| 11  | Hook 系统               | 工具层   | ⏳ 待开始 | `docs/step11-Hook系统/`            |
-| 12  | SubAgent              | 工具层   | ⏳ 待开始 | `docs/step12-SubAgent/`          |
+| 编号  | 步骤名                   | 所属架构层 | 状态      | 计划目录                             |
+| --- | --------------------- | ----- | ------- | -------------------------------- |
+| 7   | 上下文管理                 | 记忆层   | ⏳ 待开始   | `docs/step7-上下文管理/`              |
+| 8   | 记忆系统                  | 记忆层   | ⏳ 待开始   | `docs/step8-记忆系统/`               |
+| 9   | 快捷命令系统                | 交互层   | ⏳ 待开始   | `docs/step9-快捷命令系统/`             |
+| 10  | Skill 系统              | 交互层   | ⏳ 待开始   | `docs/step10-Skill系统/`           |
+| 11  | Hook 系统               | 工具层   | ⏳ 待开始   | `docs/step11-Hook系统/`            |
+| 12  | SubAgent              | 工具层   | ⏳ 待开始   | `docs/step12-SubAgent/`          |
 
 
 ---
@@ -203,9 +222,9 @@
 
 | 架构层       | 已落地                                                    | 待落地                                         |
 | --------- | ----------------------------------------------------- | ------------------------------------------- |
-| 第 1 层：交互层 | WebUI（HTTP + WebSocket + 富文本渲染 + 流式 Markdown 实时渲染 + SP 可观测性 + 开发者模式 Export + 工具块「查看改动」双栏 diff 弹窗 + 权限确认对话框 + 状态栏权限模式展示） | 完整命令系统（Step 9）、Skill 系统（Step 10）            |
+| 第 1 层：交互层 | WebUI（HTTP + WebSocket + 富文本渲染 + 流式 Markdown 实时渲染 + SP 可观测性 + 开发者模式 Export + 工具块「查看改动」双栏 diff 弹窗 + 权限确认对话框 + 状态栏权限模式展示 + MCP server 来源徽标 + MCP 健康状态区） | 完整命令系统（Step 9）、Skill 系统（Step 10）            |
 | 第 2 层：引擎层 | 对话管理 + Agent Loop（ReAct 循环迭代 + 多工具并行 + 迭代上限 + 溢出保护）、完整 System Prompt（Builder + 4 Source + 模板变量 + Anthropic 缓存切片） | —                                            |
-| 第 3 层：工具层 | 工具抽象 + Registry + 6 内置工具（ReadFile/WriteFile/EditFile/Bash/Glob/Grep）+ 路径沙箱 + Bash 黑名单 + 批量执行 + 进程内 FileDiffStore | MCP（Step 6）、Hook（Step 11）、SubAgent（Step 12） |
+| 第 3 层：工具层 | 工具抽象 + Registry + 6 内置工具（ReadFile/WriteFile/EditFile/Bash/Glob/Grep）+ 路径沙箱 + Bash 黑名单 + 批量执行 + 进程内 FileDiffStore + **MCP 客户端**（JSON-RPC 2.0 + stdio/HTTP 双传输 + Session 三阶段握手 + 连接池 + 适配器自动注册 + 指数退避重连 + 10 个 E2E 集成用例全绿 + 真实启动冒烟 healthy=2 tools=4） | Hook（Step 11）、SubAgent（Step 12） |
 | 第 4 层：记忆层 | 会话持久化、上下文滑动窗口                                        | 高级上下文管理（Step 7）、自动记忆（Step 8）                |
 | 第 5 层：安全层 | 完整权限系统（三层模式 + 可配置规则 + 多层配置合并 + HITL 确认 + 权限拦截器 + 危险命令黑名单增强 + 路径沙箱策略化 + 双层防护） | —                                            |
 

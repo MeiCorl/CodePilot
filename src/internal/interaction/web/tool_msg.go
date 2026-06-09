@@ -51,7 +51,10 @@ func SummarizeOutput(output string) string {
 // ToolCallDisplay 与 ToolCallEndPayload 字段几乎一致，独立类型是
 // 为了让 session_loaded 中的历史工具消息能够脱离"时间戳 / Input RawMessage"
 // 这些"实时事件"语义——历史消息只关心最终态。
-func ToolDisplayFromExecution(toolUseID, name, input string, output string, isError bool, durationMs int64, status string) ToolCallDisplay {
+//
+// Step 8 接入 MCP：server 参数标识工具的远端来源。传空串时表示"内置工具"
+// (即不展示 server 徽标),由调用方在持 h.mcpPool 引用时按 toolName 解析后传入。
+func ToolDisplayFromExecution(toolUseID, name, input, output string, isError bool, durationMs int64, status, server string) ToolCallDisplay {
 	return ToolCallDisplay{
 		ID:         toolUseID,
 		Name:       name,
@@ -60,6 +63,7 @@ func ToolDisplayFromExecution(toolUseID, name, input string, output string, isEr
 		IsError:    isError,
 		DurationMs: durationMs,
 		Status:     status,
+		Server:     server,
 	}
 }
 

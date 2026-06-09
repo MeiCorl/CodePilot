@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -20,11 +21,18 @@ import (
 	"github.com/MeiCorl/CodePilot/src/internal/engine/prompt"
 	"github.com/MeiCorl/CodePilot/src/internal/engine/prompt/sources"
 	"github.com/MeiCorl/CodePilot/src/internal/logger"
-	"github.com/MeiCorl/CodePilot/src/internal/memory/session"
+	"github.com/MeiCorl/CodePilot/src/internal/mcp/adapter"
+	mcpsession "github.com/MeiCorl/CodePilot/src/internal/mcp/session"
+	memsession "github.com/MeiCorl/CodePilot/src/internal/memory/session"
 	"github.com/MeiCorl/CodePilot/src/internal/security"
 	"github.com/MeiCorl/CodePilot/src/llm"
 	"github.com/MeiCorl/CodePilot/src/internal/tool"
 )
+
+// mcpServerByName 缓存 MCP 远端工具名 → server 名的映射(由 mcpPool 在 SetMCPPool 时填充)。
+// 解析远端工具的 server 来源不依赖 adapter(避免 web → mcp 内部细节泄漏),只
+// 依赖 adapter.ToolNamePrefix / nameSeparator 拆分命名。
+var _ = adapter.ToolNamePrefix // 保留 import(防止未来误删导致 server 解析静默失败)
 
 // defaultContextWindowSize 为 Handler 层的兜底默认值。
 // 正常情况下 ContextWindowSize 由 Config 层（setting.json）提供并通过 main.go 传入，
@@ -48,7 +56,7 @@ const defaultContextWindowSize = 200000
 //   - runStream 透传 sp 给 Provider.streamChat，Anthropic 协议据此打 cache_control
 type Handler struct {
 	provider          llm.Provider
-	sessMgr           *session.SessionManager
+	sessMgr           *memsession.SessionManager
 	cfg               *config.Config
 	conv              *conversation.ConversationManager
 	promptBuilder     *prompt.Builder
@@ -76,7 +84,7 @@ type Handler struct {
 	pendingConn *websocket.Conn
 
 	mu      sync.Mutex
-	current *session.Session
+	current *memsession.Session
 
 	// writeMu 保护 WebSocket 写操作的互斥锁。
 	// gorilla/websocket 要求同一时刻只有一个 writer；Handler 的读循环 goroutine
@@ -85,6 +93,13 @@ type Handler struct {
 	writeMu sync.Mutex
 
 	stream streamState
+
+	// mcpPool 是 MCP server 连接池（Step 8）。nil 时 MCP 相关消息跳过。
+	// 提供两个能力：
+	//   1. 通过 mcpPool.HealthyNames() 等查询健康状态,填充 mcp_status payload
+	//   2. 通过 mcp/adapter adapter 命名规则(`mcp__<server>__<tool>`)解析
+	//      远端工具的 server 名称,填入 ToolCallStartPayload.Server
+	mcpPool *mcpsession.Pool
 }
 
 // NewHandler 构造 Handler。
@@ -96,7 +111,7 @@ type Handler struct {
 // fileDiffStore 为 nil 时前端"查看改动"按钮点击会得到 not_found 提示，工具仍正常工作。
 func NewHandler(
 	provider llm.Provider,
-	sessMgr *session.SessionManager,
+	sessMgr *memsession.SessionManager,
 	cfg *config.Config,
 	maxRounds int,
 	promptBuilder *prompt.Builder,
@@ -305,6 +320,7 @@ func (h *Handler) runStream(ctx context.Context, conn *websocket.Conn) {
 				Name:      evt.Name,
 				Input:     evt.Input,
 				StartedAt: evt.StartedAt,
+				Server:    h.resolveMCPServerByToolName(evt.Name),
 			})
 		})
 		h.toolHandler.SetOnEnd(func(evt conversation.ToolExecutionEvent) {
@@ -319,6 +335,7 @@ func (h *Handler) runStream(ctx context.Context, conn *websocket.Conn) {
 				IsError:    evt.IsError,
 				DurationMs: evt.DurationMs,
 				Status:     mapToolEventStatus(evt.Status),
+				Server:     h.resolveMCPServerByToolName(evt.Name),
 			})
 		})
 	}
@@ -444,7 +461,7 @@ func (h *Handler) handleGetCurrentSession(conn *websocket.Conn, msg Message) err
 func (h *Handler) handleListSessions(conn *websocket.Conn, msg Message) error {
 	p, _ := AsPayload[ListSessionsPayload](msg)
 
-	var summaries []session.SessionSummary
+	var summaries []memsession.SessionSummary
 	var err error
 	if p.Mode == "table" {
 		summaries, err = h.sessMgr.ListRecentSessions(10)
@@ -531,7 +548,7 @@ func (h *Handler) handleResumeSession(conn *websocket.Conn, msg Message) error {
 		return h.sendStreamError(conn, "list_sessions_failed", err.Error())
 	}
 
-	var matches []session.SessionSummary
+	var matches []memsession.SessionSummary
 	for _, s := range summaries {
 		if strings.HasPrefix(s.ID, p.ID) {
 			matches = append(matches, s)
@@ -590,7 +607,7 @@ func (h *Handler) handleDeleteSession(conn *websocket.Conn, msg Message) error {
 	// 判断是否影响当前会话；若是，则选择新的当前会话
 	h.mu.Lock()
 	currentChanged := h.current != nil && h.current.ID == p.ID
-	var newCurrent *session.Session
+	var newCurrent *memsession.Session
 	if currentChanged {
 		// 优先选最近更新的其它会话
 		summaries, listErr := h.sessMgr.ListSessions()
@@ -699,6 +716,98 @@ func (h *Handler) handleGetFileDiff(conn *websocket.Conn, msg Message) error {
 		Before:    diff.Before,
 		After:     diff.After,
 	})
+}
+
+// SetMCPPool 注入 MCP 连接池。
+// 应在 main.go 启动流程中、构造 Handler 之后调用一次。
+// pool 为 nil 时 MCP 相关能力（远端工具 server 解析 + 状态栏 mcp_status 推送）禁用。
+func (h *Handler) SetMCPPool(pool *mcpsession.Pool) {
+	h.mcpPool = pool
+}
+
+// resolveMCPServerByToolName 从远端工具名（`mcp__<server>__<tool>`）中提取 server 部分。
+//
+// 解析规则严格遵循 adapter.BuildToolName：
+//   - 必须以 "mcp__" 开头
+//   - 双下划线 "__" 之后的剩余部分为 server 与 tool 的拼接
+//   - 第一个 "__" 之前是 server 名
+//
+// 解析失败或工具名不属于 MCP 远端工具时返回空串,内置工具因此不会展示 server 徽标。
+func (h *Handler) resolveMCPServerByToolName(toolName string) string {
+	const prefix = "mcp__"
+	if len(toolName) <= len(prefix) || !strings.HasPrefix(toolName, prefix) {
+		return ""
+	}
+	rest := toolName[len(prefix):]
+	// 分隔符是连续双下划线
+	const sep = "__"
+	idx := strings.Index(rest, sep)
+	if idx < 0 {
+		return ""
+	}
+	return rest[:idx]
+}
+
+// buildMCPStatusPayload 构造 mcp_status 推送 payload。
+//
+// 数据源：mcpPool.HealthyNames() + mcpPool.Unhealthy()。
+// 远端工具数 = 各 healthy server 注册的 adapterTool 数量(由 tool.Registry 反查),
+// 但为了避免 handler 强依赖 Registry 内部统计,这里用 mcpPool 已有的 HealthyNames
+// + toolName 前缀匹配简单计算(每 server 取所有 "mcp__<server>__" 前缀的工具)。
+//
+// mcpPool 为 nil 时返回空 payload,Servers 为空数组,前端视为"未启用 MCP"。
+func (h *Handler) buildMCPStatusPayload() MCPStatusPayload {
+	payload := MCPStatusPayload{
+		Servers: []MCPServerStatus{},
+	}
+	if h.mcpPool == nil {
+		return payload
+	}
+
+	// 远端工具数(按 server 名分组):遍历 registry 统计 mcp__<server>__ 前缀
+	toolsPerServer := make(map[string]int)
+	if h.registry != nil {
+		for _, t := range h.registry.List() {
+			srv := h.resolveMCPServerByToolName(t.Name())
+			if srv != "" {
+				toolsPerServer[srv]++
+			}
+		}
+	}
+
+	// healthy servers
+	healthy := make(map[string]bool, len(h.mcpPool.HealthyNames()))
+	for _, name := range h.mcpPool.HealthyNames() {
+		healthy[name] = true
+		tools := toolsPerServer[name]
+		payload.Servers = append(payload.Servers, MCPServerStatus{
+			Name:  name,
+			State: MCPHealthHealthy,
+			Tools: tools,
+		})
+		payload.HealthyCount++
+		payload.TotalTools += tools
+	}
+	// unhealthy servers
+	for name, reason := range h.mcpPool.Unhealthy() {
+		payload.Servers = append(payload.Servers, MCPServerStatus{
+			Name:   name,
+			State:  MCPHealthUnhealthy,
+			Reason: reason,
+		})
+		payload.UnhealthyCount++
+	}
+	// 按 server 名字典序排序,稳定输出
+	sort.SliceStable(payload.Servers, func(i, j int) bool {
+		return payload.Servers[i].Name < payload.Servers[j].Name
+	})
+	return payload
+}
+
+// sendMCPStatus 推送 mcp_status 消息到当前 conn。
+// 在 WebSocket 连接建立时和 MCP pool 健康状态变化时调用。
+func (h *Handler) sendMCPStatus(conn *websocket.Conn) error {
+	return h.sendMessage(conn, MsgTypeMCPStatus, h.buildMCPStatusPayload())
 }
 
 // SetInterceptor 设置权限拦截器并注入 HITL 回调。
@@ -1150,8 +1259,16 @@ func (h *Handler) sendContextUsageLocked(conn *websocket.Conn, usage conversatio
 // 工具消息处理：assistant 同时含 text + tool_use 时拆成两条 ChatMessage
 // （text 保持原样、tool_use 转为带 ToolCall 的展示条），user 消息里的
 // tool_result 块因为已经在 ToolCallDisplay.Output 里体现，故跳过。
-func (h *Handler) sendSessionLoaded(conn *websocket.Conn, sess *session.Session) error {
+func (h *Handler) sendSessionLoaded(conn *websocket.Conn, sess *memsession.Session) error {
 	chatMsgs := buildChatMessages(sess.Messages)
+	// Step 8:历史会话中 MCP 远端工具的 server 来源回填。
+	// buildChatMessages 是 free function,不在 h 上;此处统一遍历一次 ChatMessage
+	// 给 ToolCall.Server 赋值,避免改动 buildChatMessages 签名。
+	for i := range chatMsgs {
+		if chatMsgs[i].ToolCall != nil {
+			chatMsgs[i].ToolCall.Server = h.resolveMCPServerByToolName(chatMsgs[i].ToolCall.Name)
+		}
+	}
 	summary := SessionSummary{
 		ID:           sess.ID,
 		CreatedAt:    sess.CreatedAt,
@@ -1170,6 +1287,8 @@ func (h *Handler) sendSessionLoaded(conn *websocket.Conn, sess *session.Session)
 	}
 	// 会话加载完成后推送当前权限模式（状态栏展示）
 	_ = h.sendPermissionMode(conn)
+	// Step 8:同步推送 MCP 状态,让状态栏 MCP 区在会话加载后立刻有内容
+	_ = h.sendMCPStatus(conn)
 	return nil
 }
 
@@ -1249,6 +1368,7 @@ func buildChatMessages(messages []llm.Message) []ChatMessage {
 				tu.ID, tu.Name,
 				SummarizeInput(tu.Input),
 				output, isErr, 0, status,
+				"", // server 字段在循环外统一设置(避免把 h 传给 free function)
 			)
 			out = append(out, ChatMessage{
 				Role:     string(llm.RoleAssistant),

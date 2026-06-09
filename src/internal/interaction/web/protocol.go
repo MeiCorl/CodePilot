@@ -51,6 +51,9 @@ const (
 	MsgTypePermissionRequest = "permission_request"
 	// MsgTypePermissionMode 由后端推送，告知前端当前权限模式及规则概要。
 	MsgTypePermissionMode = "permission_mode"
+	// MsgTypeMCPStatus 由后端推送 MCP server 健康状态，前端在状态栏渲染。
+	// 连接成功时立刻推送一次，运行期由 mcp 后端按需推送更新。
+	MsgTypeMCPStatus = "mcp_status"
 )
 
 // 流式结束原因与 Agent 状态的取值常量。
@@ -175,16 +178,27 @@ type StatusUpdatePayload struct {
 
 // ToolCallStartPayload 工具调用开始事件。
 // 由 ToolHandler.OnStart 回调透传；Input 为 LLM 传入的原始 JSON 参数。
+//
+// Step 8 接入 MCP：Server 字段标识工具的远端来源（`mcp__<server>__<tool>`
+// 命名时填 server 名，内置工具或命名不含 mcp__ 前缀的工具为空字符串）。
+// 前端在工具块头部用紫色徽标 `mcp: <server>` 展示，让用户清楚知道是
+// 本地工具还是远端 MCP server 提供的。
 type ToolCallStartPayload struct {
 	ToolUseID string          `json:"tool_use_id"`
 	Name      string          `json:"name"`
 	Input     json.RawMessage `json:"input"`
 	StartedAt time.Time       `json:"started_at"`
+	// Server 为 MCP server 名称（远端工具时填 mcp server 的 name，内置工具时为空）。
+	Server string `json:"server,omitempty"`
 }
 
 // ToolCallEndPayload 工具调用结束事件。
 // 由 ToolHandler.OnEnd 回调透传；Output 为已截断（≤500 字符）的结果摘要。
 // Status 取值：completed / error / aborted / timeout。
+//
+// Step 8 接入 MCP：Server 字段语义与 ToolCallStartPayload.Server 一致，
+// 前端 updateToolEndNode 据此保证徽标在 end 后仍存在（end 消息重建时
+// 不应丢失 server 信息）。
 type ToolCallEndPayload struct {
 	ToolUseID  string `json:"tool_use_id"`
 	Name       string `json:"name"`
@@ -192,11 +206,17 @@ type ToolCallEndPayload struct {
 	IsError    bool   `json:"is_error"`
 	DurationMs int64  `json:"duration_ms"`
 	Status     string `json:"status"`
+	// Server 为 MCP server 名称（远端工具时填 mcp server 的 name，内置工具时为空）。
+	Server string `json:"server,omitempty"`
 }
 
 // ToolCallDisplay 用于 session_loaded 中携带工具消息的完整展示数据。
 // Input / Output 均为已截断的字符串（不再是 RawMessage），方便前端直接渲染。
 // 持久化会话中恢复工具消息时使用该结构（区别于实时 tool_call_start/end）。
+//
+// Step 8 接入 MCP：Server 字段持久化在 session JSON 中，会话恢复时仍能
+// 展示 server 来源徽标。Server 仅在 Name 符合 `mcp__<server>__<tool>`
+// 命名时填充（避免历史会话中已存在的 mcp__ 工具块丢失来源信息）。
 type ToolCallDisplay struct {
 	ID         string `json:"id"`
 	Name       string `json:"name"`
@@ -205,6 +225,8 @@ type ToolCallDisplay struct {
 	IsError    bool   `json:"is_error"`
 	DurationMs int64  `json:"duration_ms"`
 	Status     string `json:"status"`
+	// Server 为 MCP server 名称（远端工具时填 mcp server 的 name，内置工具时为空）。
+	Server string `json:"server,omitempty"`
 }
 
 // ContextUsagePayload 上下文窗口使用情况，PercentLeft 范围 0~100。
@@ -330,6 +352,59 @@ type PermissionModePayload struct {
 type SetPermissionModePayload struct {
 	// Mode 为目标档位。
 	Mode string `json:"mode"`
+}
+
+// ---------------------------------------------------------------------------
+// MCP 健康状态 Payload（Step 8 接入主流程）
+// ---------------------------------------------------------------------------
+
+// MCPHealthState 描述单个 MCP server 的连接状态。
+//
+// 状态机:
+//   - healthy   transport 健康、握手已完成、远端工具已注册
+//   - reconnecting 正在按指数退避重连
+//   - unhealthy 启动失败或重连耗尽，需重启 CodePilot
+//   - skipped   配置阶段即被跳过（如 disabled=true、type 非法）
+type MCPHealthState string
+
+const (
+	// MCPHealthHealthy server 健康，所有远端工具可用。
+	MCPHealthHealthy MCPHealthState = "healthy"
+	// MCPHealthReconnecting server 正在重连（指数退避 1s/3s/9s）。
+	MCPHealthReconnecting MCPHealthState = "reconnecting"
+	// MCPHealthUnhealthy server 永久不可用。
+	MCPHealthUnhealthy MCPHealthState = "unhealthy"
+	// MCPSkipped 配置阶段被跳过（如 disabled=true）。
+	MCPSkipped MCPHealthState = "skipped"
+)
+
+// MCPServerStatus 单个 MCP server 的健康状态描述。
+//
+// Fields:
+//   - Name      server 唯一标识
+//   - State     健康状态
+//   - Tools     当前已注册的远端工具数量（healthy 时有值，unhealthy 时为 0）
+//   - Reason    unhealthy / skipped 时的原因说明（healthy 时为空）
+type MCPServerStatus struct {
+	Name   string         `json:"name"`
+	State  MCPHealthState `json:"state"`
+	Tools  int            `json:"tools"`
+	Reason string         `json:"reason,omitempty"`
+}
+
+// MCPStatusPayload 后端 → 前端：MCP pool 整体健康状态。
+//
+// 前端据此更新状态栏 MCP 区：
+//   - Servers 为所有已知 server 列表（含 unhealthy / skipped）
+//   - HealthyCount / UnhealthyCount 便于快速展示汇总数字
+//   - TotalTools 所有 healthy server 暴露的工具数总和
+//
+// 推送时机：CodePilot 启动完成 + 运行期按需（如某 server 进入 unhealthy 时）。
+type MCPStatusPayload struct {
+	Servers        []MCPServerStatus `json:"servers"`
+	HealthyCount   int               `json:"healthy_count"`
+	UnhealthyCount int               `json:"unhealthy_count"`
+	TotalTools     int               `json:"total_tools"`
 }
 
 // Encode 编码消息为 JSON 字节。

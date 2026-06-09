@@ -1,6 +1,10 @@
 package tool
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+	"sort"
+)
 
 // ToolSpec 是工具的协议层描述，剥离了执行逻辑与权限分级。
 //
@@ -32,6 +36,10 @@ type ToolSpec struct {
 //
 // 返回的列表是稳定有序的，便于 LLM 端观察到一致的描述顺序。
 // 内部复用 EnabledNames 保证与 List() / ToSpecs() 过滤语义一致。
+//
+// 安全防护：当 enabled 非空但匹配结果为空、且 Registry 中有工具时，
+// 输出 warn 日志提示用户检查配置中的工具名是否正确（常见原因：
+// snake_case vs PascalCase 大小写不匹配）。
 func (r *Registry) ToSpecs(enabled []string) []ToolSpec {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -47,6 +55,16 @@ func (r *Registry) ToSpecs(enabled []string) []ToolSpec {
 			Description: t.Description(),
 			InputSchema: t.InputSchema(),
 		})
+	}
+	// 防护日志：用户配置了白名单但零匹配，很可能工具名写错了
+	if len(enabled) > 0 && len(out) == 0 && len(r.tools) > 0 {
+		registered := make([]string, 0, len(r.tools))
+		for name := range r.tools {
+			registered = append(registered, name)
+		}
+		sort.Strings(registered)
+		fmt.Printf("[warn] tools.enabled 配置了 %v，但未匹配到任何已注册工具。已注册工具名：%v\n",
+			enabled, registered)
 	}
 	return out
 }

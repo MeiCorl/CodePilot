@@ -44,6 +44,59 @@ type Config struct {
 	// Permissions 为权限系统配置，控制工具调用的安全策略。
 	// 留空等效于 mode=default 且无自定义规则，向后兼容旧配置。
 	Permissions PermissionsConfig `json:"permissions,omitempty"`
+	// MCP 为 MCP（Model Context Protocol）客户端配置，控制外部工具服务器连接。
+	// 留空等效于未启用 MCP,CodePilot 仅暴露 6 个内置工具,不影响 Step 1~5 已有的功能。
+	MCP MCPConfig `json:"mcp,omitempty"`
+}
+
+// MCPConfig 是 MCP 客户端的整体配置段,对应 setting.json 中 "mcp" 对象。
+//
+// 设计要点:
+//   - Servers 为单个 server 列表(逐步替代 setting.json 旧的平铺 mcp.servers 写法),
+//     当前 Task 8 直接使用本字段
+//   - HandshakeTimeoutSeconds 为单 server 握手超时,留空回退到 30s
+//   - ListToolsCacheTTLSeconds 为 ListToolsCached 的 TTL,留空回退到 60s
+type MCPConfig struct {
+	// Servers 为已声明的 MCP server 列表,启动时由 main.go 并发建连。
+	// 单 server 失败仅记日志,不影响其他 server 与 CodePilot 启动。
+	Servers []MCPServerConfig `json:"servers,omitempty"`
+	// HandshakeTimeoutSeconds 单 server 握手超时(Connect+Initialize+ListTools 总耗时)。
+	// 0 等效于 30s,与 setting.json 工具执行超时默认值对齐。
+	HandshakeTimeoutSeconds int `json:"handshake_timeout_seconds,omitempty"`
+	// ListToolsCacheTTLSeconds tools/list 缓存时长,0 等效于 60s。
+	// 在 Agent Loop 高频会话刷新场景下减少远端 RPC,过长则 server 端动态新增工具感知延迟。
+	ListToolsCacheTTLSeconds int `json:"list_tools_cache_ttl_seconds,omitempty"`
+}
+
+// MCPServerConfig 是单个 MCP server 的配置结构,对应 setting.json 中
+// mcp.servers[] 单元素。
+//
+// 字段说明(按 MCP 2025-03-26 规范 + Anthropic 官方 Claude Desktop 实践):
+//   - Type: 传输类型,合法值 "stdio" / "http"
+//   - Command/Args/Env: stdio 用,启动子进程
+//   - URL/Headers: http 用,Streamable HTTP 端点
+//   - Timeout: 单次 RPC 超时(秒),0 视为 30s
+//   - Disabled: 临时禁用,启动时跳过该 server(不报错)
+type MCPServerConfig struct {
+	// Name server 唯一标识(用于查找/日志/WebUI 状态栏)。
+	// 必填,重复时启动期记 warn 跳过同名后者。
+	Name string `json:"name"`
+	// Type 传输类型: "stdio" / "http"。
+	Type string `json:"type"`
+	// Command stdio 用,要启动的可执行文件路径(必填,Type=stdio 时校验)。
+	Command string `json:"command,omitempty"`
+	// Args stdio 用,命令行参数。
+	Args []string `json:"args,omitempty"`
+	// Env stdio 用,注入到子进程环境变量(同名键覆盖父进程 os.Environ 值)。
+	Env map[string]string `json:"env,omitempty"`
+	// URL http 用,Streamable HTTP 端点 URL(必填,Type=http 时校验)。
+	URL string `json:"url,omitempty"`
+	// Headers http 用,额外请求头(如 Authorization 透传 Bearer Token 等)。
+	Headers map[string]string `json:"headers,omitempty"`
+	// Timeout 单次 RPC 超时(秒),0 视为 30s。
+	Timeout int `json:"timeout,omitempty"`
+	// Disabled 临时禁用,启动时跳过该 server(不建连、不报错)。
+	Disabled bool `json:"disabled,omitempty"`
 }
 
 // ToolsConfig 是工具系统的配置项。
@@ -181,6 +234,53 @@ func (c *Config) validate() error {
 	}
 	if c.ContextSafetyMargin < 0 {
 		return fmt.Errorf("配置校验失败: context_safety_margin 不能为负数")
+	}
+
+	// MCP 配置校验:仅校验关键字段,具体传输类型在 mcp/config.BuildTransports 阶段构造
+	if err := ValidateMCPConfig(&c.MCP); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ValidateMCPConfig 校验 mcp.servers 中每条 server 声明的最小合法性。
+//
+// 导出以方便 mcp/config 包的测试调用;运行时由 c.validate() 内部自动调用。
+//
+// 不在此处构造 transport(避免 config 包依赖 transport 包),仅做"键值存在"和
+// "type 合法"两层校验;详细校验(如 stdio 的 command 路径是否存在)由
+// mcp/config.BuildTransports 在启动期完成。
+func ValidateMCPConfig(m *MCPConfig) error {
+	if m == nil || len(m.Servers) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(m.Servers))
+	for i, s := range m.Servers {
+		if s.Disabled {
+			continue // 禁用的 server 跳过校验
+		}
+		if s.Name == "" {
+			return fmt.Errorf("配置校验失败: mcp.servers[%d].name 不能为空", i)
+		}
+		if _, dup := seen[s.Name]; dup {
+			return fmt.Errorf("配置校验失败: mcp.servers[%d].name=%q 重复声明", i, s.Name)
+		}
+		seen[s.Name] = struct{}{}
+
+		switch s.Type {
+		case "stdio":
+			if s.Command == "" {
+				return fmt.Errorf("配置校验失败: mcp.servers[%d] (name=%q) type=stdio 必须填写 command", i, s.Name)
+			}
+		case "http":
+			if s.URL == "" {
+				return fmt.Errorf("配置校验失败: mcp.servers[%d] (name=%q) type=http 必须填写 url", i, s.Name)
+			}
+		case "":
+			return fmt.Errorf("配置校验失败: mcp.servers[%d] (name=%q) 缺少 type(必须是 stdio/http)", i, s.Name)
+		default:
+			return fmt.Errorf("配置校验失败: mcp.servers[%d] (name=%q) 不支持的 type=%q(仅支持 stdio/http)", i, s.Name, s.Type)
+		}
 	}
 	return nil
 }
