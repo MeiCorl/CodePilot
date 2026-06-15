@@ -79,20 +79,39 @@ func (m *mockProvider) StreamChat(ctx context.Context, sp llm.SystemPrompt, mess
 
 // ---- 测试公用工具 ----
 
+// handlerTestWorkdir 为测试用的稳定工作目录，决定项目子目录名（basename = CodePilot）。
+const handlerTestWorkdir = "/test/handler/CodePilot"
+
+// persistSession 把会话以新存储模型落盘（CreateSession + AppendMessages），
+// 替代旧的 sm.Save（全量覆盖）。返回 error 以兼容原 `if err := persistSession(sm,s); ...` 用法。
+func persistSession(sm *session.SessionManager, s *session.Session) error {
+	if err := sm.CreateSession(s); err != nil {
+		return err
+	}
+	if len(s.Messages) > 0 {
+		if err := sm.AppendMessages(s.ID, s.Messages); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // testRig 聚合 handler、mock provider、session dir、ws 客户端。
 type testRig struct {
-	h         *Handler
-	mp        *mockProvider
-	sessDir   string
-	srv       *httptest.Server
-	client    *websocket.Conn
+	h                *Handler
+	mp               *mockProvider
+	sessDir          string
+	projectDir       string
+	sm               *session.SessionManager
+	srv              *httptest.Server
+	client           *websocket.Conn
 	cancelHookCalled int32
 }
 
 func newTestRig(t *testing.T, chunks []llm.StreamChunk) *testRig {
 	t.Helper()
 	dir := t.TempDir()
-	sm, err := session.NewSessionManagerWithDir(dir)
+	sm, err := session.NewSessionManagerWithDir(dir, handlerTestWorkdir)
 	if err != nil {
 		t.Fatalf("SessionManager 初始化失败: %v", err)
 	}
@@ -103,7 +122,7 @@ func newTestRig(t *testing.T, chunks []llm.StreamChunk) *testRig {
 		MaxTokens: 1024,
 	}
 	mp := &mockProvider{chunks: chunks}
-	h := NewHandler(mp, sm, cfg, 10, nil, 100000, t.TempDir(), nil, nil, nil)
+	h := NewHandler(mp, sm, cfg, 10, nil, 100000, handlerTestWorkdir, nil, nil, nil)
 
 	s := NewServer("127.0.0.1:0")
 	h.Register(s.Router())
@@ -118,11 +137,13 @@ func newTestRig(t *testing.T, chunks []llm.StreamChunk) *testRig {
 	t.Cleanup(func() { client.Close() })
 
 	return &testRig{
-		h:       h,
-		mp:      mp,
-		sessDir: dir,
-		srv:     ts,
-		client:  client,
+		h:          h,
+		mp:         mp,
+		sessDir:    dir,
+		projectDir: filepath.Join(dir, filepath.Base(handlerTestWorkdir)),
+		sm:         sm,
+		srv:        ts,
+		client:     client,
 	}
 }
 
@@ -229,21 +250,29 @@ func TestUserInputStreamsAndPersists(t *testing.T) {
 		t.Errorf("PercentLeft = %d，应在 0~100", ctxPayload.PercentLeft)
 	}
 
-	// 验证会话文件已写入
-	files, err := os.ReadDir(r.sessDir)
+	// 验证会话已写入项目目录下的 session 子目录（排除 .project.json 等非目录文件）
+	entries, err := os.ReadDir(r.projectDir)
 	if err != nil {
-		t.Fatalf("读取会话目录失败: %v", err)
+		t.Fatalf("读取项目目录失败: %v", err)
 	}
-	if len(files) != 1 {
-		t.Errorf("期望 1 个会话文件，实际 %d", len(files))
+	var sessionDir string
+	for _, e := range entries {
+		if e.IsDir() {
+			sessionDir = e.Name()
+			break
+		}
 	}
-	// 验证文件内容包含用户消息和助手消息
-	data, _ := os.ReadFile(filepath.Join(r.sessDir, files[0].Name()))
+	if sessionDir == "" {
+		t.Fatal("期望至少 1 个会话子目录，实际 0")
+	}
+	// 验证 messages.jsonl 内容包含用户消息和助手消息
+	msgFile := filepath.Join(r.projectDir, sessionDir, "messages.jsonl")
+	data, _ := os.ReadFile(msgFile)
 	if !strings.Contains(string(data), "Hi") {
-		t.Errorf("会话文件应包含用户消息 'Hi'，实际: %s", data)
+		t.Errorf("messages.jsonl 应包含用户消息 'Hi'，实际: %s", data)
 	}
 	if !strings.Contains(string(data), "Hello, world!") {
-		t.Errorf("会话文件应包含助手回复 'Hello, world!'，实际: %s", data)
+		t.Errorf("messages.jsonl 应包含助手回复 'Hello, world!'，实际: %s", data)
 	}
 }
 
@@ -370,14 +399,14 @@ func TestEmptyUserInput(t *testing.T) {
 // TestListSessions 验证 list_sessions 返回所有会话摘要按 UpdatedAt 降序。
 func TestListSessions(t *testing.T) {
 	dir := t.TempDir()
-	sm, _ := session.NewSessionManagerWithDir(dir)
+	sm, _ := session.NewSessionManagerWithDir(dir, handlerTestWorkdir)
 	// 预创建 3 个会话
 	for range []int{1, 2, 3} {
 		s := sm.CreateNew()
 		s.Messages = []llm.Message{
 			{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.NewTextBlock("hello")}},
 		}
-		if err := sm.Save(s); err != nil {
+		if err := persistSession(sm,s); err != nil {
 			t.Fatalf("保存失败: %v", err)
 		}
 		// 间隔 1ms 区分 UpdatedAt
@@ -422,7 +451,7 @@ func TestListSessions(t *testing.T) {
 // 按 CreatedAt 降序、最多 10 条；并返回 created_at 字段。
 func TestListSessionsTableMode(t *testing.T) {
 	dir := t.TempDir()
-	sm, _ := session.NewSessionManagerWithDir(dir)
+	sm, _ := session.NewSessionManagerWithDir(dir, handlerTestWorkdir)
 
 	// 依次创建 3 个会话，确保 CreatedAt 严格递增
 	var ids []string
@@ -431,7 +460,7 @@ func TestListSessionsTableMode(t *testing.T) {
 		s.Messages = []llm.Message{
 			{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.NewTextBlock(fmt.Sprintf("msg-%d", i))}},
 		}
-		if err := sm.Save(s); err != nil {
+		if err := persistSession(sm,s); err != nil {
 			t.Fatalf("保存失败: %v", err)
 		}
 		ids = append(ids, s.ID)
@@ -520,17 +549,23 @@ func TestNewSessionCreatesAndSavesCurrent(t *testing.T) {
 		t.Errorf("Handler.CurrentSessionID = %q，应等于 %q", r.h.CurrentSessionID(), p.SessionID)
 	}
 
-	// 验证目录里至少 1 个会话文件（旧会话已 save）
-	files, _ := os.ReadDir(r.sessDir)
-	if len(files) < 1 {
-		t.Errorf("期望至少 1 个会话文件，实际 %d", len(files))
+	// 验证项目目录里至少 1 个会话子目录（旧会话已落盘，排除 .project.json 文件）
+	entries, _ := os.ReadDir(r.projectDir)
+	sessionCount := 0
+	for _, e := range entries {
+		if e.IsDir() {
+			sessionCount++
+		}
+	}
+	if sessionCount < 1 {
+		t.Errorf("期望至少 1 个会话子目录，实际 %d", sessionCount)
 	}
 }
 
 // TestResumeSessionPrefixMatch 验证前缀匹配恢复历史会话。
 func TestResumeSessionPrefixMatch(t *testing.T) {
 	dir := t.TempDir()
-	sm, _ := session.NewSessionManagerWithDir(dir)
+	sm, _ := session.NewSessionManagerWithDir(dir, handlerTestWorkdir)
 
 	// 创建一个含消息的会话
 	sess := sm.CreateNew()
@@ -538,7 +573,7 @@ func TestResumeSessionPrefixMatch(t *testing.T) {
 		{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.NewTextBlock("ask1")}},
 		{Role: llm.RoleAssistant, Content: []llm.ContentBlock{llm.NewTextBlock("ans1")}},
 	}
-	if err := sm.Save(sess); err != nil {
+	if err := persistSession(sm,sess); err != nil {
 		t.Fatalf("保存失败: %v", err)
 	}
 	prefix := sess.ID[:6]
@@ -592,7 +627,7 @@ func TestResumeSessionNotFound(t *testing.T) {
 // TestResumeSessionAmbiguous 验证多匹配返回 session_ambiguous。
 func TestResumeSessionAmbiguous(t *testing.T) {
 	dir := t.TempDir()
-	sm, _ := session.NewSessionManagerWithDir(dir)
+	sm, _ := session.NewSessionManagerWithDir(dir, handlerTestWorkdir)
 	// 创建两个 ID 前缀相同的会话（不太可能，但可以构造：手动写文件）
 	// 直接创建两个 session 让 ID 前 4 位相同是几乎不可能的；改为构造同样前缀
 	// 通过写入两个 ID 都是 "amb" 开头的会话
@@ -601,7 +636,7 @@ func TestResumeSessionAmbiguous(t *testing.T) {
 	s1.Messages = []llm.Message{
 		{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.NewTextBlock("m1")}},
 	}
-	if err := sm.Save(s1); err != nil {
+	if err := persistSession(sm,s1); err != nil {
 		t.Fatalf("保存失败: %v", err)
 	}
 	s2 := sm.CreateNew()
@@ -609,7 +644,7 @@ func TestResumeSessionAmbiguous(t *testing.T) {
 	s2.Messages = []llm.Message{
 		{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.NewTextBlock("m2")}},
 	}
-	if err := sm.Save(s2); err != nil {
+	if err := persistSession(sm,s2); err != nil {
 		t.Fatalf("保存失败: %v", err)
 	}
 
@@ -644,12 +679,12 @@ func TestResumeSessionAmbiguous(t *testing.T) {
 // TestSessionLoadedIncludesChatMessages 验证 session_loaded 消息的 chat 字段。
 func TestSessionLoadedIncludesChatMessages(t *testing.T) {
 	dir := t.TempDir()
-	sm, _ := session.NewSessionManagerWithDir(dir)
+	sm, _ := session.NewSessionManagerWithDir(dir, handlerTestWorkdir)
 	sess := sm.CreateNew()
 	sess.Messages = []llm.Message{
 		{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.NewTextBlock("hi")}},
 	}
-	_ = sm.Save(sess)
+	_ = persistSession(sm,sess)
 
 	cfg := &config.Config{Provider: "anthropic", Model: "test", APIKey: "k", MaxTokens: 1024}
 	mp := &mockProvider{}
@@ -684,13 +719,13 @@ func TestSessionLoadedIncludesChatMessages(t *testing.T) {
 // TestGetCurrentSessionPushesCurrent 验证 get_current_session 把当前活动会话以 session_loaded 回推。
 func TestGetCurrentSessionPushesCurrent(t *testing.T) {
 	dir := t.TempDir()
-	sm, _ := session.NewSessionManagerWithDir(dir)
+	sm, _ := session.NewSessionManagerWithDir(dir, handlerTestWorkdir)
 	sess := sm.CreateNew()
 	sess.Messages = []llm.Message{
 		{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.NewTextBlock("hello")}},
 		{Role: llm.RoleAssistant, Content: []llm.ContentBlock{llm.NewTextBlock("hi there")}},
 	}
-	if err := sm.Save(sess); err != nil {
+	if err := persistSession(sm,sess); err != nil {
 		t.Fatalf("保存失败: %v", err)
 	}
 
@@ -728,7 +763,7 @@ func TestGetCurrentSessionPushesCurrent(t *testing.T) {
 // TestGetCurrentSessionEmptyMgr 验证无历史时 get_current_session 仍返回 session_loaded（新建空会话）。
 func TestGetCurrentSessionEmptyMgr(t *testing.T) {
 	dir := t.TempDir()
-	sm, _ := session.NewSessionManagerWithDir(dir)
+	sm, _ := session.NewSessionManagerWithDir(dir, handlerTestWorkdir)
 	cfg := &config.Config{Provider: "anthropic", Model: "test", APIKey: "k", MaxTokens: 1024}
 	mp := &mockProvider{}
 	h := NewHandler(mp, sm, cfg, 10, nil, 100000, t.TempDir(), nil, nil, nil)
@@ -757,12 +792,12 @@ func TestGetCurrentSessionEmptyMgr(t *testing.T) {
 // TestHandlerRecoversLatestSession 验证构造时 LoadLatest 自动恢复。
 func TestHandlerRecoversLatestSession(t *testing.T) {
 	dir := t.TempDir()
-	sm, _ := session.NewSessionManagerWithDir(dir)
+	sm, _ := session.NewSessionManagerWithDir(dir, handlerTestWorkdir)
 	sess := sm.CreateNew()
 	sess.Messages = []llm.Message{
 		{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.NewTextBlock("recovered")}},
 	}
-	_ = sm.Save(sess)
+	_ = persistSession(sm,sess)
 
 	cfg := &config.Config{Provider: "anthropic", Model: "test", APIKey: "k", MaxTokens: 1024}
 	mp := &mockProvider{}
@@ -776,13 +811,13 @@ func TestHandlerRecoversLatestSession(t *testing.T) {
 // TestDeleteSessionRemovesFileAndNotifies 验证删除非当前会话：文件被移除、收到 session_deleted、不发生 currentChanged。
 func TestDeleteSessionRemovesFileAndNotifies(t *testing.T) {
 	dir := t.TempDir()
-	sm, _ := session.NewSessionManagerWithDir(dir)
+	sm, _ := session.NewSessionManagerWithDir(dir, handlerTestWorkdir)
 	// 预创建两个会话
 	s1 := sm.CreateNew()
-	_ = sm.Save(s1)
+	_ = persistSession(sm,s1)
 	time.Sleep(2 * time.Millisecond)
 	s2 := sm.CreateNew()
-	_ = sm.Save(s2)
+	_ = persistSession(sm,s2)
 	// 假设当前激活的是 s2（最近更新），删 s1
 	cfg := &config.Config{Provider: "anthropic", Model: "test", APIKey: "k", MaxTokens: 1024}
 	mp := &mockProvider{}
@@ -815,7 +850,7 @@ func TestDeleteSessionRemovesFileAndNotifies(t *testing.T) {
 	}
 
 	// 文件已删除
-	if _, err := os.Stat(filepath.Join(dir, s1.ID+".json")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(dir, filepath.Base(handlerTestWorkdir), s1.ID)); !os.IsNotExist(err) {
 		t.Errorf("会话文件应已删除，实际: %v", err)
 	}
 	// 当前会话未变
@@ -828,16 +863,16 @@ func TestDeleteSessionRemovesFileAndNotifies(t *testing.T) {
 // 自动切到最近更新的其它会话、收到 session_deleted(current_changed=true) + session_loaded。
 func TestDeleteSessionSwitchesCurrentWhenDeletingCurrent(t *testing.T) {
 	dir := t.TempDir()
-	sm, _ := session.NewSessionManagerWithDir(dir)
+	sm, _ := session.NewSessionManagerWithDir(dir, handlerTestWorkdir)
 	// 预创建两个会话
 	s1 := sm.CreateNew()
-	_ = sm.Save(s1)
+	_ = persistSession(sm,s1)
 	time.Sleep(5 * time.Millisecond)
 	s2 := sm.CreateNew()
 	s2.Messages = []llm.Message{
 		{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.NewTextBlock("latest")}},
 	}
-	_ = sm.Save(s2)
+	_ = persistSession(sm,s2)
 
 	cfg := &config.Config{Provider: "anthropic", Model: "test", APIKey: "k", MaxTokens: 1024}
 	mp := &mockProvider{}
@@ -895,7 +930,7 @@ func TestDeleteSessionSwitchesCurrentWhenDeletingCurrent(t *testing.T) {
 		t.Errorf("Handler.CurrentSessionID = %q，期望 %q", h.CurrentSessionID(), s2.ID)
 	}
 	// 旧文件已删除
-	if _, err := os.Stat(filepath.Join(dir, s1.ID+".json")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(dir, filepath.Base(handlerTestWorkdir), s1.ID)); !os.IsNotExist(err) {
 		t.Errorf("旧会话文件应已删除，实际: %v", err)
 	}
 }
@@ -921,74 +956,55 @@ func TestDeleteSessionEmptyID(t *testing.T) {
 	}
 }
 
-// TestStep4_LoadLegacySessionCompat 验证 Step 3 时代的会话 JSON（不含 sp 字段）
-// 在 Step 4 代码下能正常加载并恢复使用。
+// TestStep4_SessionWithToolBlocksCompat 验证含 tool_use / tool_result 的会话
+// 在新存储模型（JSONL append-only + 按项目分目录）下能正常保存、LoadLatest 恢复并 round-trip。
 //
-// 兼容性来源：
-//   - Session 结构未变动（id/created_at/updated_at/messages 4 个字段保持不变）
-//   - System Prompt 本就不持久化到 JSON（spec 5.10），每次启动重新 assemble
-//   - 旧消息流中 tool_use / tool_result 块（Step 2 引入）的 ContentBlock 序列化格式
-//     与 Step 4 一致，无需迁移
-func TestStep4_LoadLegacySessionCompat(t *testing.T) {
+// 验证点：
+//   - System Prompt 不持久化（每次启动重新 assemble）
+//   - 消息流中 tool_use / tool_result 块的 ContentBlock 序列化在 JSONL 单行内保持一致
+func TestStep4_SessionWithToolBlocksCompat(t *testing.T) {
 	dir := t.TempDir()
-	sm, err := session.NewSessionManagerWithDir(dir)
+	sm, err := session.NewSessionManagerWithDir(dir, handlerTestWorkdir)
 	if err != nil {
 		t.Fatalf("SessionManager 初始化失败: %v", err)
 	}
 
-	// 手工写入 Step 3 风格的 session JSON（无 sp 字段、消息含 tool_use/tool_result）
-	legacyID := "legacy-001-2026-05-01"
-	legacyJSON := `{
-  "id": "legacy-001-2026-05-01",
-  "created_at": "2026-05-01T10:00:00Z",
-  "updated_at": "2026-05-01T10:30:00Z",
-  "messages": [
-    {
-      "role": "user",
-      "content": [
-        {"type": "text", "text": "看看 src/foo.go 是什么"}
-      ]
-    },
-    {
-      "role": "assistant",
-      "content": [
-        {"type": "text", "text": "好的，让我看看。"},
-        {"type": "tool_use", "id": "toolu_1", "name": "ReadFile", "input": {"path": "src/foo.go"}}
-      ]
-    },
-    {
-      "role": "user",
-      "content": [
-        {"type": "tool_result", "tool_use_id": "toolu_1", "content": "package foo\n", "is_error": false}
-      ]
-    },
-    {
-      "role": "assistant",
-      "content": [
-        {"type": "text", "text": "这是一个简单的 Go 包。"}
-      ]
-    }
-  ]
-}`
-	legacyPath := filepath.Join(dir, legacyID+".json")
-	if err := os.WriteFile(legacyPath, []byte(legacyJSON), 0644); err != nil {
-		t.Fatalf("写入 legacy session 失败: %v", err)
+	// 写入含 tool_use / tool_result 的会话（新存储模型：CreateSession + AppendMessages）
+	legacyID := sm.CreateNew().ID
+	sess := &session.Session{
+		ID:        legacyID,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		Messages: []llm.Message{
+			{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.NewTextBlock("看看 src/foo.go 是什么")}},
+			{Role: llm.RoleAssistant, Content: []llm.ContentBlock{
+				llm.NewTextBlock("好的，让我看看。"),
+				&llm.ToolUseBlock{ID: "toolu_1", Name: "ReadFile", Input: json.RawMessage(`{"path": "src/foo.go"}`)},
+			}},
+			{Role: llm.RoleUser, Content: []llm.ContentBlock{
+				&llm.ToolResultBlock{ToolUseID: "toolu_1", Content: "package foo\n", IsError: false},
+			}},
+			{Role: llm.RoleAssistant, Content: []llm.ContentBlock{llm.NewTextBlock("这是一个简单的 Go 包。")}},
+		},
+	}
+	if err := persistSession(sm, sess); err != nil {
+		t.Fatalf("persistSession 失败: %v", err)
 	}
 
 	// 用 NewHandler 加载（模拟「启动时自动恢复最近会话」）
 	cfg := &config.Config{Provider: "anthropic", Model: "test", APIKey: "k", MaxTokens: 1024}
 	mp := &mockProvider{}
-	h := NewHandler(mp, sm, cfg, 10, nil, 100000, t.TempDir(), nil, nil, nil)
+	h := NewHandler(mp, sm, cfg, 10, nil, 100000, handlerTestWorkdir, nil, nil, nil)
 
-	// 验证：CurrentSessionID = 旧会话 ID（LoadLatest 按 UpdatedAt 排序）
+	// 验证：CurrentSessionID = 该会话 ID（LoadLatest 按 UpdatedAt 排序）
 	if h.CurrentSessionID() != legacyID {
 		t.Errorf("CurrentSessionID = %q，期望 %q", h.CurrentSessionID(), legacyID)
 	}
 
-	// 验证：消息成功反序列化
+	// 验证：消息成功反序列化（含 tool_use / tool_result 块）
 	cur, _ := sm.Load(legacyID)
 	if cur == nil || len(cur.Messages) != 4 {
-		t.Fatalf("legacy session 消息数 = %d，期望 4", len(cur.Messages))
+		t.Fatalf("session 消息数 = %d，期望 4", len(cur.Messages))
 	}
 	if cur.Messages[0].Role != llm.RoleUser {
 		t.Errorf("Messages[0].Role = %q，期望 user", cur.Messages[0].Role)
@@ -1056,7 +1072,7 @@ func TestStep4_LoadLegacySessionCompat(t *testing.T) {
 func newDiffTestRig(t *testing.T, store *FileDiffStore) *Handler {
 	t.Helper()
 	dir := t.TempDir()
-	sm, err := session.NewSessionManagerWithDir(dir)
+	sm, err := session.NewSessionManagerWithDir(dir, handlerTestWorkdir)
 	if err != nil {
 		t.Fatalf("SessionManager 初始化失败: %v", err)
 	}

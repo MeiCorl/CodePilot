@@ -2787,8 +2787,28 @@
         const healthyCount = (typeof p.healthy_count === 'number') ? p.healthy_count : 0;
         const unhealthyCount = (typeof p.unhealthy_count === 'number') ? p.unhealthy_count : 0;
         const totalTools = (typeof p.total_tools === 'number') ? p.total_tools : 0;
+        const loading = p.loading === true; // MCP 后台初始化中（握手/工具拉取未完成）
 
         if (!dom.mcpSummary || !dom.mcpDots || !dom.mcpTooltip) return;
+
+        // MCP 后台初始化中：servers 通常为空，偶有个别 server 已就绪。
+        // 统一展示"连接中…"脉冲态，避免被下面的 off 分支误判为未启用 MCP。
+        // 后台就绪后会再次推送 loading=false 覆盖本态。
+        if (loading) {
+            dom.mcpSummary.textContent = '连接中…';
+            dom.mcpDots.innerHTML = '';
+            // 渲染一个琥珀色脉冲圆点表达"连接中"，复用现有 .mcp-dot-reconnecting 样式
+            const dot = document.createElement('span');
+            dot.className = 'mcp-dot mcp-dot-reconnecting';
+            dom.mcpDots.appendChild(dot);
+            dom.mcpTooltip.innerHTML = '';
+            const heading = document.createElement('div');
+            heading.className = 'mcp-tooltip-heading';
+            heading.textContent = 'MCP 正在后台连接…';
+            dom.mcpTooltip.appendChild(heading);
+            if (dom.mcpStat) dom.mcpStat.title = 'MCP 正在后台连接 server';
+            return;
+        }
 
         // 未启用 MCP:servers 为空数组
         if (servers.length === 0) {

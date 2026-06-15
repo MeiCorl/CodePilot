@@ -124,6 +124,24 @@ func (m *ConnectionManager) Count() int {
 	return len(m.conns)
 }
 
+// Snapshot 返回当前所有活跃连接的切片副本。
+// 在 RLock 下拷贝后立即释放锁，调用方可在锁外安全遍历。
+//
+// [Why] 供需要"逐个走 Handler.sendMessage(writeMu)"的推送场景使用——
+// 例如 MCP 后台初始化完成后的 BroadcastMCPStatus。这里刻意返回连接指针供
+// 调用方自行走 sendMessage，而不是直接调裸 conn.WriteMessage（即不走 Broadcast）：
+// 后者绕过 Handler.writeMu，会与 runStream 的流式写竞争，触发 gorilla
+// "concurrent write to websocket connection" panic。
+func (m *ConnectionManager) Snapshot() []*websocket.Conn {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]*websocket.Conn, 0, len(m.conns))
+	for c := range m.conns {
+		out = append(out, c)
+	}
+	return out
+}
+
 // Broadcast 向所有连接广播一条文本消息。
 // 单个连接写入失败仅记录日志，不中断其他连接的广播。
 // Task 3/4 接入 Router 后将由业务层调用。

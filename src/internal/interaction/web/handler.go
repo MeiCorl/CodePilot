@@ -85,11 +85,21 @@ type Handler struct {
 
 	mu      sync.Mutex
 	current *memsession.Session
+	// persistedMsgCount 记录当前会话已落盘到 messages.jsonl 的消息数。
+	// saveCurrentSessionLocked 据此仅追加 history[persistedMsgCount:] 这批新消息，
+	// 实现 append-only 增量持久化（避免每次全量重写历史）。
+	// 所有读写均在持有 h.mu 的临界区内进行，与 current 配套维护。
+	persistedMsgCount int
 
 	// writeMu 保护 WebSocket 写操作的互斥锁。
 	// gorilla/websocket 要求同一时刻只有一个 writer；Handler 的读循环 goroutine
 	// （HandleLoop）和流式输出 goroutine（runStream）都会向 conn 写消息，
 	// 必须通过 writeMu 串行化以避免 "concurrent write to websocket connection" panic。
+	//
+	// [强制约束] 所有向 *websocket.Conn 的写入都必须经 sendMessage（即持有 writeMu）。
+	// 禁止在 Handler 内部任何位置直接调用裸 conn.WriteMessage 或 ConnectionManager.Broadcast
+	// （后者不经 writeMu）——一旦与 sendMessage 混用，同一 conn 上会触发并发写 panic。
+	// 需要向多个连接推送时，用 connMgr.Snapshot() 取连接后逐个调 sendMessage。
 	writeMu sync.Mutex
 
 	stream streamState
@@ -100,6 +110,13 @@ type Handler struct {
 	//   2. 通过 mcp/adapter adapter 命名规则(`mcp__<server>__<tool>`)解析
 	//      远端工具的 server 名称,填入 ToolCallStartPayload.Server
 	mcpPool *mcpsession.Pool
+	// connMgr 持有 WebSocket 连接管理器引用，供 BroadcastMCPStatus 向所有活跃连接
+	// 推送 MCP 状态（如后台初始化就绪后）。
+	// [Why] MCP 初始化异步化后，就绪时刻不固定，可能发生在任意 idle 状态（此时
+	// pendingConn 为 nil）。需要一个不依赖 pendingConn 的广播入口。
+	// 构造期一次性注入（main.go 在 server 构造后调 SetConnMgr），其后只读，无需加锁。
+	// 为 nil 时 BroadcastMCPStatus 退化为 no-op（兼容未注入场景与测试）。
+	connMgr *ConnectionManager
 }
 
 // NewHandler 构造 Handler。
@@ -141,12 +158,16 @@ func NewHandler(
 	if latest, err := sessMgr.LoadLatest(); err == nil && latest != nil {
 		h.current = latest
 		h.conv.Reset(latest.Messages)
+		// 恢复的消息已在磁盘上，已落盘计数对齐到其长度
+		h.persistedMsgCount = len(latest.Messages)
 		logger.Info("Handler 已恢复最近会话",
 			zap.String("session_id", latest.ID),
 			zap.Int("message_count", len(latest.Messages)),
 		)
 	} else {
 		h.current = sessMgr.CreateNew()
+		// 新会话尚未落盘，首次追加消息时惰性创建目录
+		h.persistedMsgCount = 0
 	}
 	// 初次组装 System Prompt（同一会话内复用，避免每次 LLM 调用都重新 assemble）
 	h.assembleSP()
@@ -408,21 +429,40 @@ func (h *Handler) runStream(ctx context.Context, conn *websocket.Conn) {
 	_ = h.sendContextUsage(conn)
 }
 
-// saveCurrentSession 把当前 ConversationManager 中的完整历史持久化到磁盘。
-// 无论成功还是失败都不影响调用方继续运行；失败仅记录日志。
-func (h *Handler) saveCurrentSession() {
-	h.mu.Lock()
-	defer h.mu.Unlock()
+// saveCurrentSession 把当前 ConversationManager 中「尚未落盘的新消息」追加持久化到磁盘。
+// 无锁版：调用方必须已持有 h.mu（切换会话路径均已持锁）。
+// 通过 persistedMsgCount 仅追加 history[persistedMsgCount:] 实现真正的 append-only，
+// 避免每次全量重写历史；失败仅记录日志，不影响调用方继续运行。
+func (h *Handler) saveCurrentSessionLocked() {
 	if h.current == nil {
 		return
 	}
-	h.current.Messages = h.conv.AllMessages()
-	if err := h.sessMgr.Save(h.current); err != nil {
+	allMsgs := h.conv.AllMessages()
+	// 幂等：已无新消息（OnLoopDone 与 defer 可能重复触发）则直接返回，不产生空写
+	if len(allMsgs) <= h.persistedMsgCount {
+		return
+	}
+	newMsgs := allMsgs[h.persistedMsgCount:]
+	if err := h.sessMgr.AppendMessages(h.current.ID, newMsgs); err != nil {
 		logger.Warn("会话增量保存失败",
 			zap.String("session_id", h.current.ID),
+			zap.Int("new_msgs", len(newMsgs)),
 			zap.Error(err),
 		)
+		return
 	}
+	// 落盘成功：同步内存镜像与已落盘计数
+	h.current.Messages = allMsgs
+	h.current.UpdatedAt = time.Now()
+	h.persistedMsgCount = len(allMsgs)
+}
+
+// saveCurrentSession 是 saveCurrentSessionLocked 的带锁包装，供未持有 h.mu 的调用点
+// （如 runStream defer / OnLoopDone 回调）使用。已持锁的切换点必须直接调 Locked 版本，避免死锁。
+func (h *Handler) saveCurrentSession() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.saveCurrentSessionLocked()
 }
 
 // handleAbortStream 中断当前流式请求。无正在进行的流时为 no-op。
@@ -443,6 +483,7 @@ func (h *Handler) handleGetCurrentSession(conn *websocket.Conn, msg Message) err
 		cur = h.sessMgr.CreateNew()
 		h.mu.Lock()
 		h.current = cur
+		h.persistedMsgCount = 0
 		h.mu.Unlock()
 	}
 	if err := h.sendSessionLoaded(conn, cur); err != nil {
@@ -489,13 +530,11 @@ func (h *Handler) handleNewSession(conn *websocket.Conn, msg Message) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	if h.current != nil && len(h.current.Messages) > 0 {
-		if err := h.sessMgr.Save(h.current); err != nil {
-			logger.Warn("保存当前会话失败", zap.Error(err))
-		}
-	}
+	// 增量落盘当前会话（切换点已持 h.mu，必须用 Locked 版本避免死锁）
+	h.saveCurrentSessionLocked()
 	h.current = h.sessMgr.CreateNew()
 	h.conv.Reset(nil)
+	h.persistedMsgCount = 0
 	// 新会话触发 SP 重新组装（虽然 result 通常一致，但保持与切换路径一致的处理）
 	h.assembleSP()
 	// 刷新前端 ctx left 显示：新会话无历史，remaining 应回到 ~100%
@@ -519,10 +558,11 @@ func (h *Handler) handleClearSession(conn *websocket.Conn, msg Message) error {
 	h.conv.Reset(nil)
 	// 清空也触发 SP 重新组装（与切换会话路径保持一致语义）
 	h.assembleSP()
-	// 覆盖写一份空会话，让历史列表预览/计数也同步清零
-	if err := h.sessMgr.Save(h.current); err != nil {
-		logger.Warn("保存清空后的会话失败", zap.Error(err))
+	// 清空磁盘消息日志（保留 session_id），让历史列表预览/计数同步归零
+	if err := h.sessMgr.TruncateMessages(h.current.ID); err != nil {
+		logger.Warn("清空会话消息失败", zap.Error(err))
 	}
+	h.persistedMsgCount = 0
 	// 刷新前端 ctx left 显示：清空后历史为空，remaining 应回到 ~100%
 	// 注意：此处已持有 h.mu，必须使用 Locked 版本避免死锁
 	usage := h.conv.GetContextUsage(h.contextWindowSize)
@@ -569,12 +609,12 @@ func (h *Handler) handleResumeSession(conn *websocket.Conn, msg Message) error {
 	}
 
 	h.mu.Lock()
-	// 保存当前会话（如有消息）
-	if h.current != nil && len(h.current.Messages) > 0 {
-		_ = h.sessMgr.Save(h.current)
-	}
+	// 增量落盘当前会话（切换点已持 h.mu，必须用 Locked 版本避免死锁）
+	h.saveCurrentSessionLocked()
 	h.current = sess
 	h.conv.Reset(sess.Messages)
+	// 恢复的消息已在磁盘上，已落盘计数对齐到其长度
+	h.persistedMsgCount = len(sess.Messages)
 	// 切换会话后重新组装 SP（确保与新会话上下文一致）
 	h.assembleSP()
 	h.mu.Unlock()
@@ -622,6 +662,8 @@ func (h *Handler) handleDeleteSession(conn *websocket.Conn, msg Message) error {
 		}
 		h.current = newCurrent
 		h.conv.Reset(newCurrent.Messages)
+		// 已落盘计数对齐到新当前会话的消息数（Load 出来的有计数，CreateNew 的为 0）
+		h.persistedMsgCount = len(newCurrent.Messages)
 		// 切换会话后重新组装 SP
 		h.assembleSP()
 	}
@@ -725,6 +767,13 @@ func (h *Handler) SetMCPPool(pool *mcpsession.Pool) {
 	h.mcpPool = pool
 }
 
+// SetConnMgr 注入 WebSocket 连接管理器，使 BroadcastMCPStatus 能向所有活跃连接推送。
+// 应在 main.go 构造 Server 之后、启动 Web 服务前调用一次。
+// mgr 为 nil 时 BroadcastMCPStatus 退化为 no-op。
+func (h *Handler) SetConnMgr(mgr *ConnectionManager) {
+	h.connMgr = mgr
+}
+
 // resolveMCPServerByToolName 从远端工具名（`mcp__<server>__<tool>`）中提取 server 部分。
 //
 // 解析规则严格遵循 adapter.BuildToolName：
@@ -763,6 +812,12 @@ func (h *Handler) buildMCPStatusPayload() MCPStatusPayload {
 	if h.mcpPool == nil {
 		return payload
 	}
+
+	// [Why] MCP 初始化异步化：mcpPool 已注入但握手可能仍在后台进行。
+	// Initializing()==true 时前端展示"连接中…"loading 态。初始化完成（成功或失败）
+	// 后该标志复位为 false，前端据此停止 loading 动画。loading 与下方 servers[] 填充
+	// 正交：初始化中 servers 通常为空，但快的 server 可能已就绪并出现在列表中。
+	payload.Loading = h.mcpPool.Initializing()
 
 	// 远端工具数(按 server 名分组):遍历 registry 统计 mcp__<server>__ 前缀
 	toolsPerServer := make(map[string]int)
@@ -808,6 +863,27 @@ func (h *Handler) buildMCPStatusPayload() MCPStatusPayload {
 // 在 WebSocket 连接建立时和 MCP pool 健康状态变化时调用。
 func (h *Handler) sendMCPStatus(conn *websocket.Conn) error {
 	return h.sendMessage(conn, MsgTypeMCPStatus, h.buildMCPStatusPayload())
+}
+
+// BroadcastMCPStatus 向所有活跃 WebSocket 连接推送当前 MCP 状态快照。
+//
+// 调用时机：MCP 后台初始化就绪后由 main goroutine 触发一次（loading 由 true 翻 false）。
+//
+// [并发写安全] 遍历 connMgr.Snapshot() 后逐个调 sendMessage，每个 sendMessage
+// 内部持有 writeMu——与 runStream 的流式写、sendSessionLoaded 的连接级写共享同一把锁，
+// 同一 conn 不会同时进入 WriteMessage，杜绝 gorilla 并发写 panic。
+// 刻意不走 ConnectionManager.Broadcast（裸 WriteMessage 不经 writeMu）。
+//
+// [Why payload 复用] buildMCPStatusPayload 需遍历 registry 统计工具数、无 conn 依赖，
+// 一次构造给所有连接共用，避免重复计算。
+func (h *Handler) BroadcastMCPStatus() {
+	if h.connMgr == nil {
+		return
+	}
+	payload := h.buildMCPStatusPayload()
+	for _, conn := range h.connMgr.Snapshot() {
+		_ = h.sendMessage(conn, MsgTypeMCPStatus, payload)
+	}
 }
 
 // SetInterceptor 设置权限拦截器并注入 HITL 回调。

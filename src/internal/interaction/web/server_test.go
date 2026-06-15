@@ -374,3 +374,59 @@ func waitUntil(t *testing.T, timeout time.Duration, cond func() bool, msg string
 	}
 	t.Fatalf("等待超时: %s", msg)
 }
+
+// dialTestWS 在 httptest.Server 上拨号建立一条 WebSocket 连接，返回客户端 conn。
+// 用于 ConnectionManager 的多连接测试：每拨号一次服务端 ConnectionManager.Add 一个连接。
+func dialTestWS(t *testing.T, ts *httptest.Server) *websocket.Conn {
+	t.Helper()
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/"
+	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("WebSocket 拨号失败: %v, status=%d", err, statusOf(resp))
+	}
+	return conn
+}
+
+// TestConnectionManager_Snapshot 验证 Snapshot 返回当前所有活跃连接，且
+// 返回的切片是独立副本（修改不影响内部连接集合）。供 BroadcastMCPStatus 取连接用。
+func TestConnectionManager_Snapshot(t *testing.T) {
+	s := NewServer("127.0.0.1:0")
+	mgr := s.ConnectionManager()
+	ts := httptest.NewServer(http.HandlerFunc(mgr.HandleWS))
+	defer ts.Close()
+
+	// 初始无连接
+	if got := mgr.Snapshot(); len(got) != 0 {
+		t.Fatalf("初始 Snapshot 期望 0 个连接，实际 %d", len(got))
+	}
+
+	// 建立 3 条连接
+	var conns []*websocket.Conn
+	for i := 0; i < 3; i++ {
+		c := dialTestWS(t, ts)
+		conns = append(conns, c)
+		defer c.Close()
+	}
+	// 等待服务端 Add 完成
+	waitUntil(t, 2*time.Second, func() bool { return mgr.Count() == 3 }, "等待 3 条连接注册")
+
+	// Snapshot 应返回 3 个
+	snap := mgr.Snapshot()
+	if len(snap) != 3 {
+		t.Fatalf("Snapshot 期望 3 个连接，实际 %d", len(snap))
+	}
+
+	// 独立性：清空返回切片，不影响内部 Count
+	snap[0] = nil
+	snap = snap[:0]
+	if mgr.Count() != 3 {
+		t.Errorf("修改 Snapshot 返回切片后内部 Count 不应变, 实际 %d", mgr.Count())
+	}
+
+	// 关闭 1 条后 Snapshot 应同步反映
+	conns[0].Close()
+	waitUntil(t, 2*time.Second, func() bool { return mgr.Count() == 2 }, "等待连接数降为 2")
+	if got := len(mgr.Snapshot()); got != 2 {
+		t.Errorf("关闭 1 条后 Snapshot 期望 2，实际 %d", got)
+	}
+}

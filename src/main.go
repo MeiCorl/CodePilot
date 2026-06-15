@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"syscall"
 	"time"
 
@@ -94,18 +95,19 @@ func run() error {
 		return fmt.Errorf("初始化 LLM Provider 失败: %w", err)
 	}
 
-	// 4. 创建会话管理器（内部自动加载最近会话）
-	sessMgr, err := memsession.NewSessionManager()
-	if err != nil {
-		return fmt.Errorf("创建会话管理器失败: %w", err)
-	}
-
-	// 5. 获取启动时所在工作目录，顶栏展示用
+	// 4. 获取启动时所在工作目录（供会话管理器按项目分目录、顶栏展示用）。
+	//    必须先于会话管理器构造：项目目录由 filepath.Base(workdir) 决定。
 	workdir, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("获取当前工作目录失败: %w", err)
 	}
 	logger.Info("工作目录", zap.String("workdir", workdir))
+
+	// 5. 创建会话管理器（按当前项目分目录，内部自动加载本项目最近会话）
+	sessMgr, err := memsession.NewSessionManager(workdir)
+	if err != nil {
+		return fmt.Errorf("创建会话管理器失败: %w", err)
+	}
 
 	// 6. 工具系统配置：把 cfg 中的工作目录/超时/白名单实际注入到工具层。
 	// builtin 包的 init() 已用 cwd + 30s 兜底注册；此处用 cfg 显式覆盖，
@@ -165,17 +167,18 @@ func run() error {
 		zap.Int("rules", checker.RuleCount()),
 	)
 
-	// 6.6 Step 8：MCP 客户端启动。
-	// 从 cfg.MCP.Servers 解析 transports + 工厂 → 构造 Pool →
-	// 并发拉起所有 server → 把远端工具批量注册到 tool.Registry。
-	// 单 server 失败仅记日志，不阻塞 CodePilot 启动。
+	// 6.6 Step 8：MCP 客户端启动（纯构造阶段）。
+	// 从 cfg.MCP.Servers 解析 transports + 工厂 → 构造 Pool → 注入 reconnect 工厂。
+	// 本段只做"无 IO 的纯内存构造"（BuildTransports / NewPool 均不触发网络/子进程），
+	// 真正的握手 + 工具注册（InitializeAll / RegisterAll）放到下方后台 goroutine，
+	// [Why] 避免阻塞 WebUI 启动——stdio spawn / HTTP 建连 / JSON-RPC 握手可能耗时数秒。
 	//
-	// 这里把 mcpPool 注入到 Handler（供状态栏 / mcp_status 推送使用），
-	// 在 Handler 构造后通过 setter 绑定。Adapter / Pool 失败隔离语义：
+	// mcpBuild 上提声明到 if 块外，供下方后台 goroutine 捕获 PoolConfigs。
 	// 整个 mcp 段为可选项，cfg.MCP.Servers 为空时跳过整段。
 	var mcpPool *session.Pool
+	var mcpBuild *mcpconfig.BuildResult
 	if len(cfg.MCP.Servers) > 0 {
-		mcpBuild := mcpconfig.BuildTransports(cfg, logger.L())
+		mcpBuild = mcpconfig.BuildTransports(cfg, logger.L())
 		if len(mcpBuild.PoolConfigs) > 0 {
 			// 给每个 ServerConfig 注入 reconnect 工厂
 			for i := range mcpBuild.PoolConfigs {
@@ -183,31 +186,9 @@ func run() error {
 					mcpBuild.PoolConfigs[i].ReconnectFactory = f
 				}
 			}
+			// 仅构造空 Pool，立即注入 Handler 让前端能拿到 loading 态；
+			// 握手 + 注册在下方后台 goroutine 完成。
 			mcpPool = session.NewPool(logger.L())
-			initCtx, initCancel := context.WithTimeout(context.Background(), 60*time.Second)
-			if err := mcpPool.InitializeAll(initCtx, mcpBuild.PoolConfigs); err != nil {
-				logger.Warn("MCP pool 初始化返回错误（部分 server 可能未就绪）", zap.Error(err))
-			}
-			initCancel()
-			healthy := mcpPool.HealthyNames()
-			logger.Info("MCP pool 启动完成",
-				zap.Int("healthy", len(healthy)),
-				zap.Strings("healthy_names", healthy),
-				zap.Int("unhealthy", len(mcpBuild.Skipped)+len(mcpPool.Unhealthy())),
-			)
-			// 批量把远端工具注册到 tool.Registry
-			regCtx, regCancel := context.WithTimeout(context.Background(), 15*time.Second)
-			stats, regErr := adapter.RegisterAll(regCtx, mcpPool, toolRegistry, logger.L())
-			regCancel()
-			if regErr != nil {
-				logger.Warn("MCP 工具注册失败", zap.Error(regErr))
-			} else if stats != nil {
-				logger.Info("MCP 工具注册完成",
-					zap.Int("tools", stats.ToolsRegistered),
-					zap.Int("servers", stats.ServersProcessed),
-					zap.Int("skipped", stats.SkippedDuplicate),
-				)
-			}
 		}
 		if len(mcpBuild.Skipped) > 0 {
 			logger.Warn("MCP server 被跳过",
@@ -245,10 +226,73 @@ func run() error {
 	handler.SetMCPPool(mcpPool)
 	server := web.NewServer(web.DefaultAddr)
 	handler.Register(server.Router())
+	// 注入 ConnectionManager：让 MCP 后台初始化就绪后能向所有活跃连接广播 mcp_status。
+	// NewServer 构造时 wsMgr 已就绪，此处可立即取用。
+	handler.SetConnMgr(server.ConnectionManager())
 
 	// 9. 异步启动 Web 服务
 	runCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	// 9.1 MCP 后台异步初始化（不阻塞 WebUI）。
+	// InitializeAll（spawn 子进程 / HTTP 建连 / JSON-RPC 握手）+ RegisterAll（拉取远端工具）
+	// 都有 IO，放后台让浏览器先弹出可用。就绪后把工具注入 registry 并广播 mcp_status。
+	//
+	// [取消语义] InitializeAll/RegisterAll 用各自的独立 timeout ctx，不直接接 runCtx：
+	// 避免用户正常退出（runCtx cancel）时强制截断正在握手的 server、留下僵尸 stdio 子进程。
+	// 退出语义由"阶段间 runCtx 检查 + 退出流程的 mcpPool.CloseAll 兜底"三段式保证。
+	// [recover] 防止 MCP 初始化 panic 拖垮整个进程。
+	if mcpPool != nil && mcpBuild != nil && len(mcpBuild.PoolConfigs) > 0 {
+		poolConfigs := mcpBuild.PoolConfigs
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					logger.Error("MCP 后台初始化 panic，已恢复",
+						zap.Any("panic", r),
+						zap.String("stack", string(debug.Stack())),
+					)
+				}
+			}()
+
+			// 1. InitializeAll：并发拉起所有 server（单 server 失败仅记 unhealthy，不阻断其他）
+			initCtx, initCancel := context.WithTimeout(context.Background(), 60*time.Second)
+			if err := mcpPool.InitializeAll(initCtx, poolConfigs); err != nil {
+				logger.Warn("MCP pool 初始化返回错误（部分 server 可能未就绪）", zap.Error(err))
+			}
+			initCancel()
+			healthy := mcpPool.HealthyNames()
+			logger.Info("MCP pool 启动完成",
+				zap.Int("healthy", len(healthy)),
+				zap.Strings("healthy_names", healthy),
+				zap.Int("unhealthy", len(mcpBuild.Skipped)+len(mcpPool.Unhealthy())),
+			)
+
+			// 2. runCtx 检查点：进程正在退出则不再注册工具、不再广播
+			if runCtx.Err() != nil {
+				return
+			}
+
+			// 3. RegisterAll：批量把远端工具注册到 tool.Registry（晚加载——本轮 runStream
+			//    若已发出快照则不含新工具，下一轮 user_input 自动包含）
+			regCtx, regCancel := context.WithTimeout(context.Background(), 15*time.Second)
+			stats, regErr := adapter.RegisterAll(regCtx, mcpPool, toolRegistry, logger.L())
+			regCancel()
+			if regErr != nil {
+				logger.Warn("MCP 工具注册失败", zap.Error(regErr))
+			} else if stats != nil {
+				logger.Info("MCP 工具注册完成",
+					zap.Int("tools", stats.ToolsRegistered),
+					zap.Int("servers", stats.ServersProcessed),
+					zap.Int("skipped", stats.SkippedDuplicate),
+				)
+			}
+
+			// 4. 推送真实状态（Initializing() 此刻已复位为 false，loading 由 true 翻 false）
+			if runCtx.Err() == nil {
+				handler.BroadcastMCPStatus()
+			}
+		}()
+	}
 
 	serverErrCh := make(chan error, 1)
 	go func() {
@@ -336,6 +380,13 @@ func run() error {
 	cancel()
 	if err := <-serverErrCh; err != nil {
 		logger.Warn("Web 服务退出时返回错误", zap.Error(err))
+	}
+	// 关闭 MCP pool：优雅回收 stdio 子进程 / 关闭 HTTP 连接、停掉各 Session 的 recvLoop。
+	// [Why] 此前靠进程退出隐式回收，可能导致 stdio 子进程短暂残留；异步初始化后，
+	// 后台 goroutine 若仍卡在 InitializeAll 握手中，CloseAll 关 transport 可使其快速返回。
+	// CloseAll 幂等（atomic CAS），且其 ctx 参数被忽略，直接传 background。
+	if mcpPool != nil {
+		mcpPool.CloseAll(context.Background())
 	}
 	logger.Info("CodePilot 已退出",
 		zap.String("current_session", handler.CurrentSessionID()),

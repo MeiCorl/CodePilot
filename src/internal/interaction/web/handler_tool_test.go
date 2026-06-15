@@ -97,7 +97,7 @@ func newToolRig(t *testing.T, scripts [][]llm.StreamChunk, toolInstance tool.Too
 func newToolRigWithEnabled(t *testing.T, scripts [][]llm.StreamChunk, toolInstance tool.Tool, enabled []string) *toolRig {
 	t.Helper()
 	dir := t.TempDir()
-	sm, err := session.NewSessionManagerWithDir(dir)
+	sm, err := session.NewSessionManagerWithDir(dir, handlerTestWorkdir)
 	if err != nil {
 		t.Fatalf("SessionManager 初始化失败: %v", err)
 	}
@@ -391,7 +391,7 @@ func TestAbortDuringToolExecution(t *testing.T) {
 // TestSessionLoadedIncludesToolHistory 验证 session_loaded 中工具消息以 ToolCallDisplay 回放。
 func TestSessionLoadedIncludesToolHistory(t *testing.T) {
 	dir := t.TempDir()
-	sm, _ := session.NewSessionManagerWithDir(dir)
+	sm, _ := session.NewSessionManagerWithDir(dir, handlerTestWorkdir)
 	sess := sm.CreateNew()
 	sess.Messages = []llm.Message{
 		{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.NewTextBlock("请读文件")}},
@@ -403,7 +403,7 @@ func TestSessionLoadedIncludesToolHistory(t *testing.T) {
 		}},
 		{Role: llm.RoleAssistant, Content: []llm.ContentBlock{llm.NewTextBlock("已读")}},
 	}
-	if err := sm.Save(sess); err != nil {
+	if err := persistSession(sm, sess); err != nil {
 		t.Fatalf("保存失败: %v", err)
 	}
 
@@ -869,7 +869,7 @@ func TestAgentLoopConfigFromHandler(t *testing.T) {
 		{{Content: "ok", Done: true}},
 	}
 	dir := t.TempDir()
-	sm, _ := session.NewSessionManagerWithDir(dir)
+	sm, _ := session.NewSessionManagerWithDir(dir, handlerTestWorkdir)
 	cfg := &config.Config{
 		Provider:               "anthropic",
 		Model:                  "claude-test",

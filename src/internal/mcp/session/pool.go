@@ -71,6 +71,20 @@ type Pool struct {
 	unhealthy map[string]*unhealthyRecord // 启动失败的 server
 
 	closed atomic.Bool
+	// initializing 标记当前是否正处于 InitializeAll 执行期间。
+	// 供 WebUI 状态栏展示 MCP "连接中…" loading 态：主流程把 MCP 初始化放到
+	// 后台 goroutine 后，前端通过 mcp_status.Loading 字段拿到该状态。
+	// [Why] 用 atomic.Bool 而非 mu：与 closed 同风格，InitializeAll 的
+	// 入口/出口 Store，WebUI 层高频只读 Load，避免与 sessions/unhealthy 的
+	// 读写锁竞争。零值 false = 未开始初始化，语义自洽。
+	initializing atomic.Bool
+}
+
+// Initializing 返回当前是否处于 InitializeAll 执行期间。
+// 供 WebUI 区分三元状态：mcpPool==nil → 未启用 MCP；
+// !=nil && Initializing()==true → 后台连接中；!=nil && Initializing()==false → 已就绪/已失败。
+func (p *Pool) Initializing() bool {
+	return p.initializing.Load()
 }
 
 // NewPool 构造一个空的 Pool。
@@ -214,6 +228,12 @@ func (p *Pool) InitializeAll(ctx context.Context, configs []ServerConfig) error 
 	if len(configs) == 0 {
 		return nil
 	}
+
+	// 标记进入初始化期，defer 保证无论成功/失败/panic 都复位为 false。
+	// WebUI 的 buildMCPStatusPayload 据此输出 loading payload，初始化完成后
+	// 即便有 server 不健康，loading 也必须变 false（避免前端永久卡在"连接中"）。
+	p.initializing.Store(true)
+	defer p.initializing.Store(false)
 
 	var eg errgroup.Group
 	for _, cfg := range configs {

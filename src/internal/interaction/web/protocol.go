@@ -398,13 +398,21 @@ type MCPServerStatus struct {
 //   - Servers 为所有已知 server 列表（含 unhealthy / skipped）
 //   - HealthyCount / UnhealthyCount 便于快速展示汇总数字
 //   - TotalTools 所有 healthy server 暴露的工具数总和
+//   - Loading 表示 MCP 是否正处于后台初始化中（InitializeAll 执行期间）
 //
-// 推送时机：CodePilot 启动完成 + 运行期按需（如某 server 进入 unhealthy 时）。
+// [Why] MCP 初始化异步化后，WebUI 启动时 MCP 可能尚未握手完成。
+// Loading=true 时前端展示"连接中…"loading 态（脉冲圆点），与 servers[]
+// 正交：初始化中 servers 通常为空，但快的 server 可能已就绪并出现在列表中，
+// 此时 Loading=true + 部分 servers 并存是合法的渐进式语义。
+//
+// 推送时机：CodePilot 启动完成 + 运行期按需（如某 server 进入 unhealthy 时）
+// + MCP 后台初始化就绪（Loading 由 true 翻 false 时主动广播一次）。
 type MCPStatusPayload struct {
 	Servers        []MCPServerStatus `json:"servers"`
 	HealthyCount   int               `json:"healthy_count"`
 	UnhealthyCount int               `json:"unhealthy_count"`
 	TotalTools     int               `json:"total_tools"`
+	Loading        bool              `json:"loading"`
 }
 
 // Encode 编码消息为 JSON 字节。
