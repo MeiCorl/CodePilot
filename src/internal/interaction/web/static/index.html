@@ -87,24 +87,35 @@
             </div>
 
             <div class="inputbar" role="form" aria-label="消息输入">
-                <div class="inputbar-wrap">
-                    <textarea
-                        id="input"
-                        rows="3"
-                        placeholder="向 CodePilot 提问，或输入 / 唤出命令…"
-                        aria-label="消息输入框"
-                    ></textarea>
-                    <div class="inputbar-hint">
-                        <span>
-                            <kbd>Enter</kbd> 发送 ·
-                            <kbd>Shift</kbd>+<kbd>Enter</kbd> 换行 ·
-                            <kbd>/</kbd> 命令
-                        </span>
-                        <span id="char-count">0</span>
+                <!-- 顶行：输入框 + 发送按钮。发送按钮保持在输入框右侧，位置不变。 -->
+                <div class="inputbar-main">
+                    <div class="inputbar-wrap">
+                        <textarea
+                            id="input"
+                            rows="3"
+                            placeholder="向 CodePilot 提问，或输入 / 唤出命令…"
+                            aria-label="消息输入框"
+                        ></textarea>
+                        <div class="inputbar-hint">
+                            <span>
+                                <kbd>Enter</kbd> 发送 ·
+                                <kbd>Shift</kbd>+<kbd>Enter</kbd> 换行 ·
+                                <kbd>/</kbd> 命令
+                            </span>
+                            <span id="char-count">0</span>
+                        </div>
+                    </div>
+                    <div class="inputbar-send-side">
+                        <button id="send-btn" class="send-btn" type="button" title="发送 (Enter)">
+                            <span>Send</span>
+                        </button>
                     </div>
                 </div>
 
-                <div class="inputbar-side">
+                <!-- 底部状态栏：model / permission / system prompt / ctx left / compact / mcp
+                     六个状态指标从原输入框右侧的窄竖列迁出，改为独立一行水平排列，
+                     消除原先 6 项挤在 260px 窄列（且 mcp 溢出到隐式行）的拥挤问题。 -->
+                <div class="inputbar-statusbar">
                     <div class="inputbar-stat" data-status="idle">
                         <span class="inputbar-stat-label">model</span>
                         <span class="inputbar-stat-value" id="model-name">--</span>
@@ -147,6 +158,13 @@
                         <span class="inputbar-stat-label">ctx left</span>
                         <span class="inputbar-stat-value" id="ctx-percent">100%</span>
                     </div>
+                    <!-- Step 7: 压缩按钮 - 手动触发上下文压缩（历史摘要化），并显示累计轻量压缩计数 -->
+                    <button id="compact-btn" class="inputbar-stat compact-stat" type="button"
+                            title="压缩上下文：手动触发历史摘要化，腾出上下文空间"
+                            aria-label="压缩上下文">
+                        <span class="inputbar-stat-label">compact</span>
+                        <span class="inputbar-stat-value" id="compact-stat-value">–</span>
+                    </button>
                     <!-- Step 8: MCP 状态区 - 显示已连接 server 数量 + 圆点;hover 列表 -->
                     <div class="inputbar-stat" id="mcp-stat" title="MCP server 健康状态（悬停查看详情）">
                         <span class="inputbar-stat-label">mcp</span>
@@ -154,9 +172,6 @@
                         <span class="mcp-dots" id="mcp-dots" aria-hidden="true"></span>
                         <div class="mcp-tooltip" id="mcp-tooltip" hidden role="tooltip" aria-label="MCP server 列表"></div>
                     </div>
-                    <button id="send-btn" class="send-btn" type="button" title="发送 (Enter)">
-                        <span>Send</span>
-                    </button>
                 </div>
             </div>
         </main>
@@ -201,6 +216,9 @@
         </div>
 
     </div>
+
+    <!-- Step 7: 全局 toast 容器（压缩事件等强提示） -->
+    <div id="toast-container" class="toast-container" aria-live="polite" aria-atomic="true"></div>
 
     <!-- Step 1.2 接入 DOMPurify / marked / highlight.js / app.js，加载顺序固定 -->
     <script src="/vendor/purify.min.js" defer></script>

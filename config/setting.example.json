@@ -102,5 +102,16 @@
                 "timeout": 30
             }
         ]
+    },
+
+    "compaction": {
+        "enabled": true,
+        "tool_result_threshold": 8192,
+        "preview_tokens": 500,
+        "auto_trigger_margin": 13000,
+        "manual_target_margin": 3000,
+        "keep_recent_tokens": 10000,
+        "keep_recent_min_messages": 5,
+        "breaker_threshold": 3
     }
 }

@@ -276,6 +276,14 @@ func shortHash(s string) string {
 	return hex.EncodeToString(sum[:4]) // 4 字节 = 8 hex 字符
 }
 
+// ProjectDir 返回会话根目录（sessionsRoot/projectName）。
+// 供记忆层上下文压缩子系统（Step 7）在主流程装配时注入 ToolResultStore——
+// 工具结果落盘到 <projectDir>/<sessionID>/tool_results/<toolUseID>，与本管理器
+// 的会话目录约定对齐。本 getter 只读返回字符串，不暴露内部可变状态。
+func (sm *SessionManager) ProjectDir() string {
+	return sm.projectDir
+}
+
 // CreateNew 创建一个新的空会话（仅在内存中生成 UUID），不立即落盘。
 // 首次追加消息时由 AppendMessages 惰性创建 session 目录与文件。
 func (sm *SessionManager) CreateNew() *Session {

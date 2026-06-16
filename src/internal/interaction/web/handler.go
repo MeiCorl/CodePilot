@@ -24,6 +24,7 @@ import (
 	"github.com/MeiCorl/CodePilot/src/internal/mcp/adapter"
 	mcpsession "github.com/MeiCorl/CodePilot/src/internal/mcp/session"
 	memsession "github.com/MeiCorl/CodePilot/src/internal/memory/session"
+	memctx "github.com/MeiCorl/CodePilot/src/internal/memory/context"
 	"github.com/MeiCorl/CodePilot/src/internal/security"
 	"github.com/MeiCorl/CodePilot/src/llm"
 	"github.com/MeiCorl/CodePilot/src/internal/tool"
@@ -69,6 +70,11 @@ type Handler struct {
 	// Step 1.4 接入；Task 3 (get_file_diff 协议) 真正消费此字段。
 	// 为 nil 时前端请求 diff 会得到 not_found 提示，等价于"未启用 diff 预览"。
 	fileDiffStore *FileDiffStore
+
+	// compactor 为上下文压缩协调器（Step 7）。nil 表示压缩总开关关闭——此时
+	// /compact 返回 compaction_disabled，自动压缩在 manager 侧见 nil 直接跳过（降级为纯滑动窗口）。
+	// 由 main.go 顶层装配后通过 SetCompactor 注入（同时转发给 ConversationManager）。
+	compactor *memctx.Compactor
 
 	// interceptor 为权限拦截器；为 nil 时 ToolHandler 不做权限检查。
 	interceptor *security.Interceptor
@@ -171,6 +177,12 @@ func NewHandler(
 	}
 	// 初次组装 System Prompt（同一会话内复用，避免每次 LLM 调用都重新 assemble）
 	h.assembleSP()
+	// Step 7：注入 contextWindowSize（协调器 Remaining() 计算依赖）与当前会话 sessionID
+	// （压缩存盘子目录归属 + 熔断状态隔离）。sessionID 在每次会话切换时由对应 handler 刷新。
+	h.conv.SetContextWindowSize(contextWindowSize)
+	if h.current != nil {
+		h.conv.SetSessionID(h.current.ID)
+	}
 	return h
 }
 
@@ -223,6 +235,7 @@ func (h *Handler) Register(router *Router) {
 	router.Register(MsgTypeGetFileDiff, h.handleGetFileDiff)
 	router.Register(MsgTypePermissionResponse, h.handlePermissionResponse)
 	router.Register(MsgTypeSetPermissionMode, h.handleSetPermissionMode)
+	router.Register(MsgTypeCompact, h.handleCompact)
 }
 
 // ModelName 返回当前配置中的模型名，供状态栏展示。
@@ -376,6 +389,12 @@ func (h *Handler) runStream(ctx context.Context, conn *websocket.Conn) {
 			OnError: func(err error) {
 				_ = h.sendStreamError(conn, "stream_error", err.Error())
 			},
+			// Step 7：每轮自动压缩产生变更时推送 compaction_event（自动模式 manual=false）
+			// 并刷新用量展示。回调在 runOneLLM 内同步触发，与流式写共享 writeMu，安全。
+			OnCompaction: func(res memctx.CompactionResult) {
+				_ = h.sendCompactionEvent(conn, res, false)
+				_ = h.sendContextUsage(conn)
+			},
 			// OnToolUse / OnToolResult 由 ToolHandler.OnStart/OnEnd 替代承担，
 			// 这里置 nil；AgentLoop 内部会按 nil 跳过调用。
 		},
@@ -484,6 +503,7 @@ func (h *Handler) handleGetCurrentSession(conn *websocket.Conn, msg Message) err
 		h.mu.Lock()
 		h.current = cur
 		h.persistedMsgCount = 0
+		h.conv.SetSessionID(cur.ID)
 		h.mu.Unlock()
 	}
 	if err := h.sendSessionLoaded(conn, cur); err != nil {
@@ -534,6 +554,7 @@ func (h *Handler) handleNewSession(conn *websocket.Conn, msg Message) error {
 	h.saveCurrentSessionLocked()
 	h.current = h.sessMgr.CreateNew()
 	h.conv.Reset(nil)
+	h.conv.SetSessionID(h.current.ID)
 	h.persistedMsgCount = 0
 	// 新会话触发 SP 重新组装（虽然 result 通常一致，但保持与切换路径一致的处理）
 	h.assembleSP()
@@ -613,6 +634,7 @@ func (h *Handler) handleResumeSession(conn *websocket.Conn, msg Message) error {
 	h.saveCurrentSessionLocked()
 	h.current = sess
 	h.conv.Reset(sess.Messages)
+	h.conv.SetSessionID(sess.ID)
 	// 恢复的消息已在磁盘上，已落盘计数对齐到其长度
 	h.persistedMsgCount = len(sess.Messages)
 	// 切换会话后重新组装 SP（确保与新会话上下文一致）
@@ -662,6 +684,7 @@ func (h *Handler) handleDeleteSession(conn *websocket.Conn, msg Message) error {
 		}
 		h.current = newCurrent
 		h.conv.Reset(newCurrent.Messages)
+		h.conv.SetSessionID(newCurrent.ID)
 		// 已落盘计数对齐到新当前会话的消息数（Load 出来的有计数，CreateNew 的为 0）
 		h.persistedMsgCount = len(newCurrent.Messages)
 		// 切换会话后重新组装 SP
@@ -884,6 +907,101 @@ func (h *Handler) BroadcastMCPStatus() {
 	for _, conn := range h.connMgr.Snapshot() {
 		_ = h.sendMessage(conn, MsgTypeMCPStatus, payload)
 	}
+}
+
+// SetCompactor 注入上下文压缩协调器（Step 7）。
+// 应在 main.go 构造 Handler 后、启动服务前调用一次。c 为 nil 表示压缩关闭——
+// /compact 返回 compaction_disabled，自动压缩在 manager 侧见 nil 直接跳过（降级为纯滑动窗口）。
+// 本方法同时把协调器转发注入 ConversationManager，使 runOneLLM 每轮自动压缩生效。
+func (h *Handler) SetCompactor(c *memctx.Compactor) {
+	h.compactor = c
+	h.conv.SetCompactor(c)
+}
+
+// handleCompact 处理前端 /compact 斜杠命令或状态栏「压缩」按钮的请求：
+// 触发一次手动上下文压缩（第二层摘要，无视余量与熔断）。
+//
+// 串行化：复用 streamState 抢占——与 user_input / 再次 compact 互斥，避免手动压缩与
+// 正在进行的 AgentLoop 并发改写 history（ReplaceHistory 与 GetContext 并发不安全）。
+// busy 时返回 stream_error(busy)。压缩本身异步执行（runManualCompact goroutine），
+// 不阻塞 HandleLoop 消息循环。
+func (h *Handler) handleCompact(conn *websocket.Conn, msg Message) error {
+	if h.compactor == nil {
+		return h.sendStreamError(conn, "compaction_disabled",
+			"上下文压缩未启用（setting.json 中 compaction.enabled=false）")
+	}
+	ctx, busy := h.stream.tryAcquire()
+	if busy {
+		return h.sendStreamError(conn, "busy", "当前已有请求进行中，请稍后再试")
+	}
+	go h.runManualCompact(ctx, conn)
+	return nil
+}
+
+// runManualCompact 在独立 goroutine 中执行手动压缩并推送结果。
+//
+// 流程：状态切到「压缩中」→ 调协调器 Compact(manual=true) → 推送 compaction_event
+// （manual=true；即使 Level=none 也推送，让前端反馈「无需压缩」）→ 刷新用量 → 切回 idle。
+// 失败时额外推 stream_error，err 文案同时进入 compaction_event.Err 供前端展示根因。
+// defer 保证 streamState 释放与 pendingConn 清理，panic 安全。
+//
+// 可中断：Compact 内部用本 ctx 调 LLM，用户点 Stop（abort_stream）会 cancel 该 ctx，
+// 摘要调用随之返回 ctx.Err，runManualCompact 正常收尾。
+func (h *Handler) runManualCompact(ctx context.Context, conn *websocket.Conn) {
+	h.mu.Lock()
+	h.pendingConn = conn
+	sessionID := ""
+	if h.current != nil {
+		sessionID = h.current.ID
+	}
+	h.mu.Unlock()
+
+	defer func() {
+		if r := recover(); r != nil {
+			logger.Error("runManualCompact panic，已恢复",
+				zap.Any("panic", r),
+				zap.String("stack", string(debug.Stack())),
+			)
+			_ = h.sendStreamError(conn, "internal_error", fmt.Sprintf("压缩内部错误: %v", r))
+		}
+		h.mu.Lock()
+		h.pendingConn = nil
+		h.mu.Unlock()
+		h.stream.release(ctx)
+		_ = h.sendStatusUpdate(conn, StatusIdle)
+	}()
+
+	_ = h.sendStatusUpdate(conn, StatusCompacting)
+
+	res, err := h.compactor.Compact(ctx, h.provider, h.conv, sessionID, true)
+	// 总是推送压缩事件（manual=true）；Level=none 时前端据此提示「当前无需压缩」。
+	_ = h.sendCompactionEvent(conn, res, true)
+	// 压缩改变了历史，刷新前端用量展示。
+	_ = h.sendContextUsage(conn)
+
+	if err != nil {
+		_ = h.sendStreamError(conn, "compaction_failed", fmt.Sprintf("压缩失败: %v", err))
+	}
+}
+
+// sendCompactionEvent 推送一轮压缩结果给前端（Step 7 可观测性）。
+// manual 标识是否手动触发，前端据此对 summary 结果给更强提示（用户主动操作应明确反馈）。
+func (h *Handler) sendCompactionEvent(conn *websocket.Conn, res memctx.CompactionResult, manual bool) error {
+	errText := ""
+	if res.Err != nil {
+		errText = res.Err.Error()
+	}
+	return h.sendMessage(conn, MsgTypeCompactionEvent, CompactionEventPayload{
+		Level:          string(res.Level),
+		LightChanged:   res.LightChanged,
+		SummaryChanged: res.SummaryChanged,
+		ReplacedBlocks: res.ReplacedBlocks,
+		BeforeTokens:   res.BeforeTokens,
+		AfterTokens:    res.AfterTokens,
+		Tripped:        res.Tripped,
+		Manual:         manual,
+		Err:            errText,
+	})
 }
 
 // SetInterceptor 设置权限拦截器并注入 HITL 回调。

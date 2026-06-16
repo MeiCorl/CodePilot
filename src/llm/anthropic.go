@@ -13,9 +13,11 @@ import (
 	"time"
 
 	"github.com/MeiCorl/CodePilot/src/internal/config"
+	"github.com/MeiCorl/CodePilot/src/internal/logger"
 	"github.com/MeiCorl/CodePilot/src/internal/tool"
 	anthropic "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
+	"go.uber.org/zap"
 )
 
 // AnthropicProvider 是 Anthropic（Claude 系列）的 LLM 适配器。
@@ -233,8 +235,22 @@ func (p *AnthropicProvider) doStream(ctx context.Context, params anthropic.Messa
 
 		switch evt := event.AsAny().(type) {
 		case anthropic.MessageStartEvent:
-			// 流开始时获取 input_tokens（本轮发送给模型的总输入 token 数）
-			inputTokens = evt.Message.Usage.InputTokens
+			// 流开始时获取本轮发送给模型的【全部】输入 token 数。
+			// [Why] Anthropic 在开启 Prompt Caching 后（Step 4 已对 SystemBlocks
+			// 前若干段打 cache_control=ephemeral 标记），message_start.usage 的语义
+			// 会拆成三段：input_tokens 仅统计未命中缓存的新增 token，缓存命中部分
+			// 分别记在 cache_read_input_tokens（读取）/cache_creation_input_tokens
+			// （写入）。若只取 InputTokens，该值会随缓存命中率升高而越来越小——
+			// 表现为状态栏「ctx left」每轮反向增大、且无法反映真实上下文占用。
+			// 三者相加才是本轮真实的输入 token 总量（也是 ctx left 计算所需口径）。
+			u := evt.Message.Usage
+			inputTokens = u.InputTokens + u.CacheCreationInputTokens + u.CacheReadInputTokens
+			logger.Debug("Anthropic 输入 token 用量明细",
+				zap.Int64("input", u.InputTokens),
+				zap.Int64("cache_read", u.CacheReadInputTokens),
+				zap.Int64("cache_creation", u.CacheCreationInputTokens),
+				zap.Int64("input_total", inputTokens),
+			)
 		case anthropic.MessageDeltaEvent:
 			// 流结束时获取累计的 output_tokens 和 stop_reason
 			outputTokens = evt.Usage.OutputTokens

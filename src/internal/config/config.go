@@ -47,6 +47,10 @@ type Config struct {
 	// MCP 为 MCP（Model Context Protocol）客户端配置，控制外部工具服务器连接。
 	// 留空等效于未启用 MCP,CodePilot 仅暴露 6 个内置工具,不影响 Step 1~5 已有的功能。
 	MCP MCPConfig `json:"mcp,omitempty"`
+	// Compaction 为上下文压缩配置（Step 7），控制两层压缩策略的各项阈值与总开关。
+	// 留空（零值）时由 setDefaults 填充默认值；总开关默认开启，enabled=false 可整体
+	// 降级为纯滑动窗口，兼容 Step 1~6 行为。
+	Compaction CompactionConfig `json:"compaction,omitempty"`
 }
 
 // MCPConfig 是 MCP 客户端的整体配置段,对应 setting.json 中 "mcp" 对象。
@@ -99,6 +103,53 @@ type MCPServerConfig struct {
 	Disabled bool `json:"disabled,omitempty"`
 }
 
+// CompactionConfig 是上下文压缩（Step 7）的配置段，对应 setting.json 中 "compaction" 对象。
+//
+// 两层压缩策略：
+//   - 第一层「轻量预防」：单条工具结果体积超阈值时存盘 + 替换为预览（ToolResultThreshold）；
+//   - 第二层「重量兜底」：整体历史逼近窗口时做结构化摘要（AutoTriggerMargin 触发）。
+//
+// 字段语义与默认值：
+//   - Enabled：压缩总开关。默认 true；显式设 false 时整体降级为纯滑动窗口。
+//     使用 *bool 指针以区分「未配置（→默认 true）」与「显式关闭（false）」——
+//     Go 的 bool 零值是 false，若用值类型将无法表达「默认开启」。
+//   - ToolResultThreshold：工具结果存盘阈值（token）。单个工具结果超此值、或单条消息
+//     内多个工具结果合计超此值时触发存盘 + 预览替换。默认 8192。
+//   - PreviewTokens：预览头部保留长度（token），存盘后内存中保留的截断预览大小。默认 500。
+//   - AutoTriggerMargin：第二层自动触发余量（token）。剩余 token ≤ 此值且未熔断时触发摘要。默认 13000。
+//   - ManualTargetMargin：第二层手动触发目标余量（token）。用户主动 /compact 时允许压到只留此余量
+//     （比自动更激进，因用户主动要压）。默认 3000。
+//   - KeepRecentTokens：近期原文保留量（token），摘要后尾部保留的原文窗口。默认 10000。
+//   - KeepRecentMinMessages：近期原文最少保留条数，与 KeepRecentTokens 取较大者作为实际保留量。默认 5。
+//   - BreakerThreshold：熔断阈值（摘要连续失败次数），达到后本会话停止自动压缩（允许手动重试）。默认 3。
+type CompactionConfig struct {
+	// Enabled 为压缩总开关；nil 视为 true（默认开启），通过 IsEnabled() 访问。
+	Enabled *bool `json:"enabled,omitempty"`
+	// ToolResultThreshold 为工具结果存盘阈值（token），默认 8192。
+	ToolResultThreshold int `json:"tool_result_threshold,omitempty"`
+	// PreviewTokens 为预览头部保留长度（token），默认 500。
+	PreviewTokens int `json:"preview_tokens,omitempty"`
+	// AutoTriggerMargin 为第二层自动触发余量（token），默认 13000。
+	AutoTriggerMargin int `json:"auto_trigger_margin,omitempty"`
+	// ManualTargetMargin 为第二层手动触发目标余量（token），默认 3000。
+	ManualTargetMargin int `json:"manual_target_margin,omitempty"`
+	// KeepRecentTokens 为近期原文保留量（token），默认 10000。
+	KeepRecentTokens int `json:"keep_recent_tokens,omitempty"`
+	// KeepRecentMinMessages 为近期原文最少保留条数，默认 5。
+	KeepRecentMinMessages int `json:"keep_recent_min_messages,omitempty"`
+	// BreakerThreshold 为熔断阈值（摘要连续失败次数），默认 3。
+	BreakerThreshold int `json:"breaker_threshold,omitempty"`
+}
+
+// IsEnabled 返回压缩总开关的最终生效值：未配置（nil）时默认 true，否则取显式设置。
+// 调用方（main.go 装配、协调器判定）统一通过本方法读取，避免到处判 nil。
+func (c CompactionConfig) IsEnabled() bool {
+	if c.Enabled == nil {
+		return true
+	}
+	return *c.Enabled
+}
+
 // ToolsConfig 是工具系统的配置项。
 //
 // Enabled 列表为空时视为"启用全部已注册工具"；否则按 Name 白名单过滤。
@@ -143,6 +194,18 @@ const (
 	defaultContextWindowSize       = 200000
 	defaultContextSafetyMargin     = 4096
 	defaultMaxTokens               = 16384
+
+	// ---- Step 7 上下文压缩默认值 ----
+	// 数值字段在 setDefaults 里用「==0 填默认」模式；Enabled 是 *bool，
+	// 用下方的布尔常量取址填充，以表达「未配置 → 默认开启」。
+	defaultCompactionEnabled             = true
+	defaultCompactionToolResultThreshold = 8192  // 工具结果存盘阈值（8K token）
+	defaultCompactionPreviewTokens       = 500   // 预览头部保留（token）
+	defaultCompactionAutoTriggerMargin   = 13000 // 第二层自动触发余量（token）
+	defaultCompactionManualTargetMargin  = 3000  // 第二层手动触发目标余量（token）
+	defaultCompactionKeepRecentTokens    = 10000 // 近期原文保留量（token）
+	defaultCompactionKeepRecentMinMsgs   = 5     // 近期原文最少保留条数
+	defaultCompactionBreakerThreshold    = 3     // 熔断阈值（连续失败次数）
 )
 
 // Load 从 ~/.codepilot/setting.json 加载配置文件。
@@ -206,6 +269,43 @@ func (c *Config) setDefaults() {
 	}
 	if c.ContextSafetyMargin == 0 {
 		c.ContextSafetyMargin = defaultContextSafetyMargin
+	}
+	applyCompactionDefaults(&c.Compaction)
+}
+
+// applyCompactionDefaults 为 Compaction 配置段填充默认值。
+//
+// 单独抽成函数以便 config 包测试直接调用（无需构造完整 Config）。
+// 数值字段沿用「==0 填默认」的既有模式；Enabled 作为 *bool，nil 时填默认 true，
+// 从而区分「用户未配置（→开启）」与「用户显式 enabled=false（→关闭）」。
+func applyCompactionDefaults(c *CompactionConfig) {
+	if c == nil {
+		return
+	}
+	if c.Enabled == nil {
+		on := defaultCompactionEnabled
+		c.Enabled = &on
+	}
+	if c.ToolResultThreshold == 0 {
+		c.ToolResultThreshold = defaultCompactionToolResultThreshold
+	}
+	if c.PreviewTokens == 0 {
+		c.PreviewTokens = defaultCompactionPreviewTokens
+	}
+	if c.AutoTriggerMargin == 0 {
+		c.AutoTriggerMargin = defaultCompactionAutoTriggerMargin
+	}
+	if c.ManualTargetMargin == 0 {
+		c.ManualTargetMargin = defaultCompactionManualTargetMargin
+	}
+	if c.KeepRecentTokens == 0 {
+		c.KeepRecentTokens = defaultCompactionKeepRecentTokens
+	}
+	if c.KeepRecentMinMessages == 0 {
+		c.KeepRecentMinMessages = defaultCompactionKeepRecentMinMsgs
+	}
+	if c.BreakerThreshold == 0 {
+		c.BreakerThreshold = defaultCompactionBreakerThreshold
 	}
 }
 

@@ -29,6 +29,10 @@ const (
 	// 携带目标档位（strict/default/permissive）请求后端运行时切换。
 	// 后端会更新 Checker.SetMode() 并通过 MsgTypePermissionMode 回推新档位。
 	MsgTypeSetPermissionMode = "set_permission_mode"
+	// MsgTypeCompact 由前端「压缩」按钮或 /compact 斜杠命令触发，请求后端
+	// 立即执行一次手动上下文压缩（第二层摘要，无视余量与熔断）。
+	// 服务端通过 MsgTypeCompactionEvent 回推本轮压缩结果。
+	MsgTypeCompact = "compact"
 )
 
 // 服务端 → 客户端 消息类型常量。
@@ -54,6 +58,12 @@ const (
 	// MsgTypeMCPStatus 由后端推送 MCP server 健康状态，前端在状态栏渲染。
 	// 连接成功时立刻推送一次，运行期由 mcp 后端按需推送更新。
 	MsgTypeMCPStatus = "mcp_status"
+	// MsgTypeCompactionEvent 由后端推送，告知前端本轮上下文压缩的结果。
+	// 覆盖两层压缩（light/summary），前端据此区分提示强度：
+	//   - summary（第二层摘要）：强提示（toast「已将 N 条历史压缩为摘要」）；
+	//   - light（第一层工具结果预览化）：轻量感知（状态栏压缩计数/小标记，不打扰）。
+	// 自动压缩（每轮 API 请求前）与手动压缩（/compact）共用本消息，Manual 字段区分来源。
+	MsgTypeCompactionEvent = "compaction_event"
 )
 
 // 流式结束原因与 Agent 状态的取值常量。
@@ -68,6 +78,9 @@ const (
 	StatusThinking    = "thinking"
 	StatusToolRunning = "tool_running"
 	StatusError       = "error"
+	// StatusCompacting 表示正在执行手动上下文压缩（/compact）。前端据此把发送按钮
+	// 切为可中断的 Stop（abort_stream 可中断压缩中的 LLM 摘要调用），并禁用输入。
+	StatusCompacting = "compacting"
 )
 
 // 工具执行结束事件的 status 取值。
@@ -413,6 +426,42 @@ type MCPStatusPayload struct {
 	UnhealthyCount int               `json:"unhealthy_count"`
 	TotalTools     int               `json:"total_tools"`
 	Loading        bool              `json:"loading"`
+}
+
+// ---------------------------------------------------------------------------
+// 上下文压缩 Payload（Step 7 接入主流程）
+// ---------------------------------------------------------------------------
+
+// CompactionEventLevel 取值与 memory/context 包的 CompactionLevel 常量字符串一致：
+// "none"（未发生压缩）、"light"（仅第一层工具结果预览化）、"summary"（第二层历史摘要化）。
+// 刻意用字符串字面量而非常量引用，保持 web 协议层对记忆层的解耦（仅注释说明对齐关系）。
+const (
+	CompactionLevelNone    = "none"
+	CompactionLevelLight   = "light"
+	CompactionLevelSummary = "summary"
+)
+
+// CompactionEventPayload 后端 → 前端：一轮上下文压缩的结果。
+//
+// 字段语义（与 memory/context.CompactionResult 对齐）：
+//   - Level：本轮生效的最高层级（none/light/summary），前端据此决定提示强度。
+//   - LightChanged / SummaryChanged：两层各自是否产生变更。
+//   - ReplacedBlocks：第一层本轮替换为预览的工具结果数。
+//   - BeforeTokens / AfterTokens：压缩前后历史 token 估算，差值即压缩收益。
+//   - Tripped：本轮结束时该会话是否处于熔断态（自动第二层被禁用），前端可展示熔断标识。
+//   - Manual：是否由用户手动触发（/compact 或压缩按钮）；自动压缩为 false。
+//     前端据此对手动触发的 summary 结果给更强提示（用户主动操作，应明确反馈）。
+//   - Err：第二层摘要失败时的错误描述（第一层恒空）。非空时前端可提示「压缩失败」。
+type CompactionEventPayload struct {
+	Level          string `json:"level"`
+	LightChanged   bool   `json:"light_changed"`
+	SummaryChanged bool   `json:"summary_changed"`
+	ReplacedBlocks int    `json:"replaced_blocks"`
+	BeforeTokens   int    `json:"before_tokens"`
+	AfterTokens    int    `json:"after_tokens"`
+	Tripped        bool   `json:"tripped"`
+	Manual         bool   `json:"manual,omitempty"`
+	Err            string `json:"err,omitempty"`
 }
 
 // Encode 编码消息为 JSON 字节。

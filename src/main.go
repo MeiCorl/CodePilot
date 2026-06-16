@@ -40,6 +40,7 @@ import (
 	"github.com/MeiCorl/CodePilot/src/internal/engine/prompt/sources"
 	"github.com/MeiCorl/CodePilot/src/internal/interaction/web"
 	"github.com/MeiCorl/CodePilot/src/internal/logger"
+	memctx "github.com/MeiCorl/CodePilot/src/internal/memory/context"
 	memsession "github.com/MeiCorl/CodePilot/src/internal/memory/session"
 	"github.com/MeiCorl/CodePilot/src/internal/runtime/console"
 	"github.com/MeiCorl/CodePilot/src/internal/security"
@@ -224,6 +225,28 @@ func run() error {
 	handler.SetInterceptor(interceptor, checker)
 	// Step 8:把 MCP pool 注入 Handler,让 mcp_status 推送 + 远端工具 server 解析生效
 	handler.SetMCPPool(mcpPool)
+
+	// Step 7：装配上下文压缩协调器（可选，压缩总开关关闭时跳过）。
+	// 链路：ToolResultStore（注入 sessMgr 的 projectDir）+ LightCompactor + SummaryCompactor
+	// （archiver 用 sessMgr，*SessionManager 天然满足 HistoryArchiver 接口）→ Compactor 协调器。
+	// 通过 handler.SetCompactor 注入（同时转发给 ConversationManager 使每轮自动压缩生效）。
+	// enabled=false 时整体降级为纯滑动窗口，兼容 Step 1~6 行为。
+	if cfg.Compaction.IsEnabled() {
+		toolResultStore := memctx.NewToolResultStore(sessMgr.ProjectDir())
+		lightCompactor := memctx.NewLightCompactor(toolResultStore, cfg.Compaction)
+		summaryCompactor := memctx.NewSummaryCompactor(sessMgr, cfg.Compaction)
+		compactor := memctx.NewCompactor(lightCompactor, summaryCompactor, cfg.Compaction)
+		handler.SetCompactor(compactor)
+		logger.Info("上下文压缩系统就绪",
+			zap.String("projectDir", sessMgr.ProjectDir()),
+			zap.Int("toolResultThreshold", cfg.Compaction.ToolResultThreshold),
+			zap.Int("autoTriggerMargin", cfg.Compaction.AutoTriggerMargin),
+			zap.Int("breakerThreshold", cfg.Compaction.BreakerThreshold),
+		)
+	} else {
+		logger.Info("上下文压缩已关闭（compaction.enabled=false），降级为纯滑动窗口")
+	}
+
 	server := web.NewServer(web.DefaultAddr)
 	handler.Register(server.Router())
 	// 注入 ConnectionManager：让 MCP 后台初始化就绪后能向所有活跃连接广播 mcp_status。

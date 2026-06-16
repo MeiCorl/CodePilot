@@ -67,7 +67,7 @@
     /* —— 布局尺寸 —— */
     --topbar-h:    56px;
     --sidebar-w:  280px;
-    --inputbar-h: 140px;
+    --inputbar-h: 172px;
 
     /* —— 动效 —— */
     --ease-out:   cubic-bezier(0.16, 1, 0.3, 1);
@@ -1087,10 +1087,32 @@ body {
     border-top: 1px solid var(--border);
     background: var(--bg);
     padding: var(--sp-3) var(--sp-6) var(--sp-4);
+    /* [Why] 改为纵向两行布局：顶行放输入框+发送按钮，底行放 6 个状态指标。
+     * 原 row 布局把 6 个 stat 挤在输入框右侧 260px 窄列（且第 6 个 mcp 溢出到
+     * 隐式行），空间局促、文字拥挤；拆成独立状态栏后各项有充足横向空间。 */
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-2);
+    position: relative;
+}
+
+/* 顶行：输入框（flex:1）+ 发送按钮侧（固定窄列）并排，发送按钮与输入框等高。
+ * 取代旧的 inputbar-side grid 右列职责——stat 已迁到底部状态栏，此行只剩输入与发送。 */
+.inputbar-main {
+    flex: 1;
     display: flex;
     gap: var(--sp-3);
     align-items: stretch;
-    position: relative;
+    min-height: 0;
+}
+
+/* 发送按钮侧：保持发送按钮在输入框右侧的位置不变，宽度与原右列一致。
+ * 内部 send-btn 用 height:100% 撑满本侧（= 顶行高度），与输入框底缘对齐。 */
+.inputbar-send-side {
+    width: 80px;
+    flex-shrink: 0;
+    display: flex;
+    min-height: 0;
 }
 
 .inputbar-wrap {
@@ -1148,34 +1170,25 @@ body {
     margin: 0 1px;
 }
 
-/* 右侧栏：4 个 stat（model / permission / system prompt / ctx left）在左列纵向堆叠，
- * 发送按钮在右列跨 4 行与 stat 列等高。
+/* 底部状态栏：model / permission / system prompt / ctx left / compact / mcp
+ * 六个 stat 水平一行排列，取代旧 inputbar-side 的「grid 2列×5行竖排」。
  *
- * 为什么用 grid 而不是 column flex：
- * 原 column flex 布局在 Step 4 新增 sp stat 后变成 4 个子项，
- * 而 inputbar 高度只够放下 3 个 stat，发送按钮被压缩并挤出 inputbar
- * 底部（视口外不可见）。改 grid 让按钮天然占满右列整高，
- * 不再受 4 子项堆叠影响。
- *
- * Step 6 修复：grid-template-rows 从 repeat(4, ...) 改为 repeat(5, ...)，
- * 否则第 5 个 stat (mcp) 会落到隐式自动行，stat 列总高度超过 send-btn
- * 覆盖的显式行数，send 按钮无法对齐 inputbar 底部。 */
-.inputbar-side {
-    /* 加宽 40px：让 model 名称（如 "MiniMax-M3"）不溢出，
-     * 同时容纳 "system prompt" 全称标签 + value。 */
-    width: 260px;
+ * [Why] 旧布局把 6 个 stat 塞进输入框右侧 260px 窄列的第 1 列纵向堆叠，
+ * 而显式行数只有 5 行，第 6 个 stat(mcp) 落到隐式自动行导致拥挤错位；
+ * 迁到独立底部行后，各项在整宽内水平分布，纵向只占一行高度，彻底消除拥挤。
+ * flex-wrap 允许窄屏下换行兜底，避免溢出裁切。 */
+.inputbar-statusbar {
     flex-shrink: 0;
-    display: grid;
-    grid-template-columns: 1fr 80px;
-    grid-template-rows: repeat(5, minmax(0, 1fr));
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
     gap: var(--sp-2);
-    min-height: 0;
 }
 
-/* 5 个 stat 全部落在第 1 列（grid-column 默认是 auto，会被布局成 col1..col5 错列） */
-.inputbar-side > .inputbar-stat {
-    grid-column: 1;
-    min-width: 0;          /* 允许 stat 在窄空间下内部 flex 子项收缩 */
+/* 状态栏内每个 stat 等分横向空间，min-width:0 允许内部 label/value 收缩 */
+.inputbar-statusbar > .inputbar-stat {
+    flex: 1 1 auto;
+    min-width: 0;
 }
 
 .inputbar-stat-label,
@@ -1347,11 +1360,11 @@ body {
 .ctx-bar-fill[data-warning="true"] { background: var(--error); }
 
 .send-btn, .abort-btn {
-    /* grid item 跨 4 行：覆盖旧 flex 行为，让按钮高度 = 4 个 stat + 3 个 gap，
-     * 与 stat 列严格等高，保证按钮底缘对齐 inputbar 底缘。 */
+    /* [Why] 旧布局是 inputbar-side 的 grid item（grid-column:2 / grid-row:1/-1）
+     * 用跨行撑高；现在 send-btn 是 .inputbar-send-side 的唯一 flex 子项，
+     * 改用 height:100% 撑满顶行高度，保持与输入框底缘对齐、位置不变。 */
     flex: none;
-    grid-column: 2;
-    grid-row: 1 / -1;
+    height: 100%;
     width: 100%;
     border: 1px solid var(--border-strong);
     border-radius: var(--r-md);
@@ -1644,25 +1657,97 @@ body {
  * ========================================================================== */
 
 @media (max-width: 1024px) {
-    /* Step 4: inputbar-h 仍保持 150px（不再压到 120），
-     * 因为侧栏现在 3 stat + 1 send-btn 跨行布局，最低需要 ~130px 内容区。 */
-    :root { --sidebar-w: 240px; --inputbar-h: 150px; }
+    /* 两行布局下 inputbar 仍需容纳「顶行输入+发送」与「底行状态栏」两行，
+     * 172px 与桌面端一致即可满足；此处仅收紧水平 padding 适配窄屏。 */
+    :root { --sidebar-w: 240px; --inputbar-h: 172px; }
     .messages { padding: var(--sp-4) var(--sp-5); }
     .inputbar { padding: var(--sp-3) var(--sp-4) var(--sp-3); }
-    .inputbar-side { width: 240px; grid-template-columns: 1fr 64px; }
     .sessions-table { padding: var(--sp-4) var(--sp-5) var(--sp-3); }
     .sessions-table-tbl .col-count { display: none; }
 }
 
 @media (max-width: 768px) {
-    :root { --sidebar-w: 200px; --inputbar-h: 140px; }
+    :root { --sidebar-w: 200px; --inputbar-h: 172px; }
     .topbar-meta { display: none; }
-    .inputbar-side { width: 200px; grid-template-columns: 1fr 56px; }
     .inputbar-hint { display: none; }
     .inputbar-stat { font-size: 12px; gap: 0; padding: var(--sp-1) var(--sp-1); }
     .sessions-table-tbl .col-time { width: 110px; }
     .sessions-table-tbl .col-name { font-size: var(--fs-xs); }
 }
+
+/* ===== Step 7：上下文压缩按钮 + toast ===== */
+
+/* 压缩按钮：复用 .inputbar-stat 外观，作为 <button> 补足可点击反馈。
+ * <button> 默认 cursor/text-align 由 .inputbar-stat 的 flex 布局接管，这里只加交互态。 */
+.compact-stat {
+    cursor: pointer;
+    transition: border-color var(--dur-fast) var(--ease-out),
+                background var(--dur-fast) var(--ease-out);
+}
+.compact-stat:hover {
+    border-color: var(--accent);
+    background: var(--bg-hover);
+}
+.compact-stat:active {
+    background: var(--bg-active);
+}
+.compact-stat:focus-visible {
+    outline: 2px solid var(--accent-dim);
+    outline-offset: 1px;
+}
+.compact-stat .inputbar-stat-value {
+    font-variant-numeric: tabular-nums;
+}
+
+/* 全局 toast 容器：固定顶部居中；容器自身不阻挡交互，单个 toast 再启用 pointer-events */
+.toast-container {
+    position: fixed;
+    top: var(--sp-4);
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 1000;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--sp-2);
+    pointer-events: none;
+    max-width: min(560px, 92vw);
+}
+
+/* 单个 toast：左侧色条标识类型，点击可关闭 */
+.toast {
+    pointer-events: auto;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-strong);
+    border-left: 3px solid var(--fg-dim);
+    border-radius: var(--r-md);
+    padding: var(--sp-2) var(--sp-3);
+    font-size: var(--fs-sm, 13px);
+    line-height: 1.45;
+    color: var(--fg);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+    cursor: pointer;
+    opacity: 0;
+    transform: translateY(-8px);
+    transition: opacity var(--dur-fast) var(--ease-out),
+                transform var(--dur-fast) var(--ease-out);
+    word-break: break-word;
+}
+.toast.is-visible {
+    opacity: 1;
+    transform: translateY(0);
+}
+.toast.is-leaving {
+    opacity: 0;
+    transform: translateY(-8px);
+}
+
+/* 类型配色：左侧色条（summary-manual 最醒目） */
+.toast-summary        { border-left-color: var(--thinking); }
+.toast-summary-manual { border-left-color: var(--accent-bright); border-left-width: 4px; }
+.toast-info           { border-left-color: var(--fg-dim); }
+.toast-warn           { border-left-color: var(--accent-bright); }
+.toast-error          { border-left-color: var(--error); }
 
 /* ---- Step 4: System Prompt 可观测性样式 ---- */
 

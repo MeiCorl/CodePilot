@@ -38,6 +38,10 @@
         mcpSummary:     $('mcp-summary'),
         mcpDots:        $('mcp-dots'),
         mcpTooltip:     $('mcp-tooltip'),
+        // Step 7：压缩按钮 + 计数 + toast
+        compactBtn:     $('compact-btn'),
+        compactValue:   $('compact-stat-value'),
+        toastContainer: $('toast-container'),
         // Step 4：开发者模式面板
         devPanel:       $('dev-panel'),
         devExportBtn:   $('dev-export-sp-btn'),
@@ -79,6 +83,8 @@
         _permModal: null,              // 当前打开的权限确认弹窗 DOM 元素
         _permQueue: [],                // 排队等待的权限请求队列（FIFO）
         _permCountdownTimer: null,     // 倒计时定时器
+        // Step 7：累计第一层轻量替换的工具结果数（状态栏小标记，切换会话重置）
+        compactLightCount: 0,
     };
 
     // ---- / 快捷命令清单（Step 9 落地后将替换为命令注册表查询） ----
@@ -93,6 +99,8 @@
         { cmd: '/resume',        desc: '恢复指定 ID 的会话（需后接 ID 前缀）' },
         { cmd: '/clear',         desc: '清空当前会话上下文',
           exec: () => sendWS(MsgType.ClearSession, {}) },
+        { cmd: '/compact',       desc: '手动压缩上下文（历史摘要化）',
+          exec: () => sendWS(MsgType.Compact, {}) },
     ];
 
     // ---- 工具函数 ----
@@ -222,6 +230,9 @@
         SetPermissionMode: 'set_permission_mode',
         // Step 8：MCP server 健康状态推送
         MCPStatus:        'mcp_status',
+        // Step 7：上下文压缩（手动触发 + 事件推送）
+        Compact:          'compact',
+        CompactionEvent:  'compaction_event',
     };
 
     // abortMarker 与后端 agent_loop.go 中的 abortMarker 常量保持一致，
@@ -279,6 +290,7 @@
             case MsgType.PermissionRequest: return onPermissionRequest(msg.payload);
             case MsgType.PermissionMode:    return onPermissionMode(msg.payload);
             case MsgType.MCPStatus:         return onMCPStatus(msg.payload);
+            case MsgType.CompactionEvent:   return onCompactionEvent(msg.payload);
             default: console.warn('未知消息类型:', msg.type, msg.payload);
         }
     }
@@ -370,6 +382,9 @@
         // 任何"会话切换/重置"事件都会改变左侧列表的预览、消息数、更新时间等字段，
         // 这里统一拉一次最新列表，避免出现 /clear 后侧栏标题仍展示旧首条消息这类不一致。
         sendWS(MsgType.ListSessions, {});
+        // Step 7：切换会话重置轻量压缩计数（属于上一会话的统计）
+        state.compactLightCount = 0;
+        renderCompactStat();
     }
 
     // onSessionDeleted 收到删除完成回执。
@@ -1015,11 +1030,12 @@
             thinking: '思考中',
             tool_running: '工具执行中',
             error: '错误',
+            compacting: '压缩中',
         };
         dom.statusText.textContent = map[status] || status;
         dom.statusDot.dataset.status = status;
-        // 输入框禁用态：思考中 / 工具执行中 都不可输入
-        dom.input.disabled = (status === 'thinking' || status === 'tool_running');
+        // 输入框禁用态：思考中 / 工具执行中 / 压缩中 都不可输入
+        dom.input.disabled = (status === 'thinking' || status === 'tool_running' || status === 'compacting');
         // 若用户刚发了消息而 thinking 节点尚未渲染（后端 status_update 抢先到达），
         // 兜底补一个；正常情况下 onSendClicked 已主动插入。
         if (status === 'thinking' && state.expectingAssistant) {
@@ -1029,7 +1045,7 @@
     }
 
     function renderSendButton() {
-        if (state.streaming || state.agentStatus === 'thinking' || state.agentStatus === 'tool_running') {
+        if (state.streaming || state.agentStatus === 'thinking' || state.agentStatus === 'tool_running' || state.agentStatus === 'compacting') {
             dom.sendBtn.classList.remove('send-btn');
             dom.sendBtn.classList.add('abort-btn');
             dom.sendBtn.textContent = 'Stop';
@@ -2362,6 +2378,8 @@
         bindNewSessionBtn();
         bindScrollWatcher();
         bindDevPanel();
+        bindCompactBtn();
+        renderCompactStat();
         // 初始状态
         renderSendButton();
         renderEmptyState();
@@ -2869,6 +2887,101 @@
         if (dom.mcpStat) {
             dom.mcpStat.onmouseenter = () => { dom.mcpTooltip.hidden = false; };
             dom.mcpStat.onmouseleave = () => { dom.mcpTooltip.hidden = true; };
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Step 7：上下文压缩事件 + 状态栏压缩按钮
+    // -------------------------------------------------------------------------
+    //
+    // 后端 compaction_event payload 结构（与 protocol.go CompactionEventPayload 对齐）：
+    //   { level, light_changed, summary_changed, replaced_blocks,
+    //     before_tokens, after_tokens, tripped, manual, err }
+    //
+    // 提示强度按 Level 分级（spec 要求「summary 强提示 / light 轻量感知」）：
+    //   - summary：顶部 toast 强提示（重量级，用户须感知历史被摘要化）；
+    //   - light：仅更新状态栏压缩计数小标记，不弹 toast（每轮都可能跑，避免打扰）；
+    //   - none：仅 manual 时弹 toast 反馈「无需压缩」。
+
+    // onCompactionEvent 处理后端推送的 compaction_event。
+    function onCompactionEvent(p) {
+        if (!p) return;
+        const level = p.level || 'none';
+        const manual = p.manual === true;
+
+        // 第一层 light：累计替换数到状态栏小标记（轻量感知，不打扰）
+        if (level === 'light' && (p.replaced_blocks || 0) > 0) {
+            state.compactLightCount = (state.compactLightCount || 0) + p.replaced_blocks;
+            renderCompactStat();
+        }
+
+        // 第二层 summary：强提示 toast（重量级压缩，用户须明确感知）
+        if (level === 'summary') {
+            const before = p.before_tokens || 0;
+            const after = p.after_tokens || 0;
+            const saved = Math.max(0, before - after);
+            const msg = manual
+                ? `已手动压缩：历史摘要化（${formatTokenCount(before)} → ${formatTokenCount(after)}，释放 ${formatTokenCount(saved)})`
+                : `上下文接近上限，已自动将历史压缩为摘要（释放 ${formatTokenCount(saved)} token）`;
+            showCompactionToast(msg, manual ? 'summary-manual' : 'summary');
+            // 摘要化后历史已重组，旧轻量计数不再有意义，重置
+            state.compactLightCount = 0;
+            renderCompactStat();
+        }
+
+        // 手动触发但未实际压缩（Level=none）：反馈「无需压缩」
+        if (manual && level === 'none' && !p.err) {
+            showCompactionToast('当前上下文无需压缩', 'info');
+        }
+
+        // 熔断警告（自动第二层被禁用，用户可手动重试）
+        if (p.tripped) {
+            showCompactionToast('压缩已熔断：摘要连续失败，自动压缩暂停（可再次手动重试）', 'warn');
+        }
+        // 错误反馈
+        if (p.err) {
+            showCompactionToast('压缩失败：' + p.err, 'error');
+        }
+    }
+
+    // renderCompactStat 渲染状态栏压缩计数小标记（第一层轻量感知）。
+    function renderCompactStat() {
+        if (!dom.compactValue) return;
+        const n = state.compactLightCount || 0;
+        dom.compactValue.textContent = n > 0 ? ('⚡' + n) : '–';
+    }
+
+    // showCompactionToast 显示一个顶部 toast，type 决定配色与停留时长。
+    // 自动消失；点击或超时后移除。
+    function showCompactionToast(text, type) {
+        if (!dom.toastContainer) return;
+        const toast = document.createElement('div');
+        toast.className = 'toast toast-' + (type || 'info');
+        toast.setAttribute('role', 'status');
+        toast.textContent = text;
+        toast.addEventListener('click', () => dismissToast(toast));
+        dom.toastContainer.appendChild(toast);
+        // 入场动画：下一帧加 is-visible 触发过渡
+        requestAnimationFrame(() => toast.classList.add('is-visible'));
+        const dwell = (type === 'summary-manual') ? 6500
+            : (type === 'summary' ? 5000
+                : (type === 'error' || type === 'warn' ? 5000 : 3500));
+        setTimeout(() => dismissToast(toast), dwell);
+    }
+
+    function dismissToast(toast) {
+        if (!toast || !toast.parentNode) return;
+        toast.classList.remove('is-visible');
+        toast.classList.add('is-leaving');
+        setTimeout(() => { if (toast.parentNode) toast.parentNode.removeChild(toast); }, 250);
+    }
+
+    // bindCompactBtn 绑定状态栏压缩按钮点击 → 发送 compact 请求（手动压缩）。
+    function bindCompactBtn() {
+        if (dom.compactBtn) {
+            dom.compactBtn.addEventListener('click', () => {
+                sendWS(MsgType.Compact, {});
+            });
         }
     }
 

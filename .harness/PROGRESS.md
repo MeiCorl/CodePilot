@@ -14,17 +14,17 @@
 | 指标     | 数值                                                    |
 | ------ | ----------------------------------------------------- |
 | 计划总步骤数 | 12（含子步骤后实际更多）                                         |
-| 已完成步骤数 | 10（Step 1 / Step 1.1 / Step 1.2 / Step 1.3 / Step 1.4 / Step 2 / Step 3 / Step 4 / Step 5 / Step 6）   |
-| 当前最新版本 | V1.3.0                                                |
+| 已完成步骤数 | 11（Step 1 / Step 1.1 / Step 1.2 / Step 1.3 / Step 1.4 / Step 2 / Step 3 / Step 4 / Step 5 / Step 6 / Step 7）  |
+| 当前最新版本 | V1.4.0                                                |
 | 进行中步骤  | —                                                    |
-| 下一步骤   | Step 7 — 上下文管理（需先 `/specs` 触发需求澄清）                       |
-| 最近更新   | 2026-06-09                                            |
+| 下一步骤   | Step 8 — 记忆系统（需先 `/specs` 触发需求澄清）                       |
+| 最近更新   | 2026-06-16                                            |
 
 
 进度条：
 
 ```
-[█████████████████████████████] 10/12 步骤完成（~83%，Step 7 待开始）
+[███████████████████████████████] 11/12 步骤完成（~92%，Step 8 待开始）
 ```
 
 ---
@@ -196,6 +196,23 @@
   11. **配置驱动**：`setting.json` 新增 `mcp.servers[]` 段，支持 stdio（command/args/env）+ http（url/headers）+ disabled 跳过 + 超时配置
   12. **端到端冒烟（Task 9）**：10 个 E2E 集成用例（stdio 握手+ ListTools / stdio CallTool / HTTP CallTool / 权限拦截 / server 失败隔离 / 重连退避 / 重连耗尽 / 50 路并发 id 匹配 / 命名规范 / 历史会话兼容）全绿 + 真实启动冒烟（`codepilot-e2e.exe` 启动监听 58426 + mock-stdio 52931 + mock-http 双 server 真实握手 + WS 客户端收到 mcp_status `healthy=2 tools=4` 推送）+ 200+ 单元/集成测试通过 + 跨功能回归 Step 1~5 无破坏
 
+### Step 7 — 上下文管理（V1.4.0）
+
+- **完成时间**：2026-06-16（代码与端到端验证完成，待 release 提交）
+- **设计文档**：[docs/step7-上下文管理/](../docs/step7-上下文管理/)
+- **Task 完成数**：8 / 8
+- **核心交付能力**：
+  1. **两层压缩策略编排**：每次 API 请求前先跑第一层「轻量预防」（管单条消息内工具结果体积，纯本地估算无 LLM 调用），再判定是否需要第二层「重量兜底」（管累积历史长度，调 LLM 摘要）
+  2. **第一层工具结果存盘 + 预览替换**：单个/合计超阈值（默认 8K）的 tool_result 落盘到 `<sessionID>/tool_results/<toolUseID>`，内存 in-place 替换为「头部约 500 token 预览 + 存盘路径尾注」；确定性规则 + 存盘幂等保证 prompt cache 前缀稳定
+  3. **工具结果存盘子系统**：以 toolUseID 为文件名、`O_CREATE|O_EXCL` 原子幂等写入（并发下只写一次）、跨会话隔离、`isSafeName` 路径逃逸防护
+  4. **第二层结构化摘要压缩**：逼近窗口（剩余 ≤ 13K）时调 LLM 生成 5 段式摘要（目标/进展/决策/待办/关键文件），强制禁工具 + `<draft>` 草稿剥离；尾部保留约 1 万 token / ≥5 条近期原文；补边界提示防脑补
+  5. **历史原文归档 + 活跃历史重写**：被摘要的早期原文 append 到 `history_archive.jsonl`，`messages.jsonl` 原子重写为「摘要+近期」（session 包唯一非 append-only 低频重组路径，写临时文件 + rename）
+  6. **压缩协调器 + 会话级熔断**：摘要连续失败 3 次即熔断（本会话停自动第二层），允许手动 `/compact` 重置重试；自动/手动两种安全余量分级
+  7. **Provider 撞墙兜底**：`prompt_too_long` 精确识别 → 紧急压缩（无视余量/临时豁免熔断）→ 单次重试，保证用户最新输入不丢、不吞异常
+  8. **用户原文保留 + 配置可覆盖**：用户原始消息原文保留不被摘要改写；`setting.json` 新增 `compaction` 段全阈值可覆盖，`enabled=false` 降级为纯滑动窗口
+  9. **可观测性**：结构化日志（sessionID/层级/前后 token/熔断）+ WebUI 状态栏「压缩」按钮 + `/compact` 斜杠命令 + `compaction_event` 双层推送（summary 强提示 toast / light 轻量计数标记）+ 熔断状态可见
+  10. **端到端验证（Task 8）**：5 个 context 包跨组件 e2e（真实 SessionManager + ToolResultStore 落盘：第一层/第二层/熔断/撞墙/会话恢复）+ 4 个 handler 层 e2e（真实 HTTP Server + WS + 真实 Compactor：/compact 往返 + compaction_event 推送）+ 5 个 runOneLLM 撞墙 e2e 全绿；`go test ./...` Step 1~6 零回归（3 个失败经 git stash 验证为 Windows PowerShell 平台问题 / flaky，与本步骤无关）
+
 ---
 
 ## 🕓 待完成步骤
@@ -205,7 +222,6 @@
 
 | 编号  | 步骤名                   | 所属架构层 | 状态      | 计划目录                             |
 | --- | --------------------- | ----- | ------- | -------------------------------- |
-| 7   | 上下文管理                 | 记忆层   | ⏳ 待开始   | `docs/step7-上下文管理/`              |
 | 8   | 记忆系统                  | 记忆层   | ⏳ 待开始   | `docs/step8-记忆系统/`               |
 | 9   | 快捷命令系统                | 工具层   | ⏳ 待开始   | `docs/step9-快捷命令系统/`             |
 | 10  | Skill 系统              | 工具层   | ⏳ 待开始   | `docs/step10-Skill系统/`           |
@@ -225,7 +241,7 @@
 | 第 1 层：交互层 | WebUI（HTTP + WebSocket + 富文本渲染 + 流式 Markdown 实时渲染 + SP 可观测性 + 开发者模式 Export + 工具块「查看改动」双栏 diff 弹窗 + 权限确认对话框 + 状态栏权限模式展示 + MCP server 来源徽标 + MCP 健康状态区） | —            |
 | 第 2 层：引擎层 | 对话管理 + Agent Loop（ReAct 循环迭代 + 多工具并行 + 迭代上限 + 溢出保护）、完整 System Prompt（Builder + 4 Source + 模板变量 + Anthropic 缓存切片） | —                                            |
 | 第 3 层：工具层 | 工具抽象 + Registry + 6 内置工具（ReadFile/WriteFile/EditFile/Bash/Glob/Grep）+ 路径沙箱 + Bash 黑名单 + 批量执行 + 进程内 FileDiffStore + **MCP 客户端**（JSON-RPC 2.0 + stdio/HTTP 双传输 + Session 三阶段握手 + 连接池 + 适配器自动注册 + 指数退避重连 + 10 个 E2E 集成用例全绿 + 真实启动冒烟 healthy=2 tools=4） | 快捷命令系统（Step 9）、Skill 系统（Step 10）、Hook（Step 11）、SubAgent（Step 12） |
-| 第 4 层：记忆层 | 会话持久化、上下文滑动窗口                                        | 高级上下文管理（Step 7）、自动记忆（Step 8）                |
+| 第 4 层：记忆层 | 会话持久化、上下文滑动窗口 + **高级上下文管理（Step 7）**（两层压缩：轻量预防工具结果存盘预览 + 重量摘要兜底 + 撞墙紧急压缩 + 会话级熔断 + 历史原文归档 + compaction 可观测性 + 全阈值可配置） | 自动记忆（Step 8）                |
 | 第 5 层：安全层 | 完整权限系统（三层模式 + 可配置规则 + 多层配置合并 + HITL 确认 + 权限拦截器 + 危险命令黑名单增强 + 路径沙箱策略化 + 双层防护） | —                                            |
 
 
