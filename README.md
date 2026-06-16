@@ -18,34 +18,40 @@ CodePilot 是一个从零构建的终端 AI Coding Agent（类似 Claude Code / 
 ### 已支持功能
 
 
-| 功能                           | 说明                                                                                                   |
-| ---------------------------- | ---------------------------------------------------------------------------------------------------- |
-| **双 LLM 协议支持**               | Anthropic（Claude）+ OpenAI（GPT）双 Provider 适配，统一通过 `ContentBlock` 抽象交互                                 |
-| **Web UI 交互**                | 基于 HTTP + WebSocket 的全双工通信，深色主题界面，自动调起浏览器                                                            |
-| **流式 Markdown 实时渲染**         | LLM 输出实时解析为格式化 HTML，支持标题、列表、代码块、表格等元素                                                                |
-| **代码语法高亮**                   | 基于 highlight.js 的 18+ 语言自动语法高亮，含代码块语言标签与一键复制                                                         |
-| **ReAct 推理循环**               | 思考→决策→行动→观察的迭代循环，直到 LLM 认为任务完成                                                                       |
-| **多工具并行调用**                  | 一次 LLM 响应中包含多个工具调用时，按权限分组并行执行                                                                        |
-| **内置工具集**                    | `ReadFile`（读文件）、`WriteFile`（写文件）、`EditFile`（编辑文件）、`Bash`（命令执行）、`Glob`（文件查找）、`Grep`（内容搜索）             |
-| **工具块「查看改动」双栏 diff**         | WriteFile/EditFile 完成态工具块头部「查看改动」按钮，点击弹出双栏 diff 弹窗（Before/After 全文 + 行级 + 词级高亮）                      |
-| **迭代上限保护**                   | 默认最大 50 次迭代，达到上限后注入提示让模型优雅收尾                                                                         |
-| **上下文窗口管理**                  | Token 溢出保护，空间不足时自动提示模型总结当前进展                                                                         |
-| **分层 System Prompt**         | `Builder` 模式组装 4 个 Source（static / environment / agents_md / memory），行为规约、环境上下文、AGENTS.md 合并、自动记忆接入位 |
-| **Anthropic Prompt Caching** | SystemBlocks 多段带 `cache_control: ephemeral, ttl=5m` 标记，第二轮起命中服务端缓存降低成本与延迟                            |
-| **SP 可观测性**                  | WebUI 状态栏显示 SP 总 token 估算 + 4 层 Source 小计 tooltip，开发者模式一键导出完整 SP 快照                                  |
-| **AGENTS.md 双层合并**           | 全局 `~/.codepilot/AGENTS.md` + 项目级 `<cwd>/AGENTS.md` 按 H2 段解析，项目级同名段完全覆盖全局                            |
-| **三层权限模式**                   | `strict`（严格）/ `default`（默认）/ `permissive`（放行）三档档位，运行时可通过状态栏下拉即时切换                                    |
-| **可配置允许/拒绝/询问规则**            | 在 `setting.json` 中按「工具名 + 参数模式」声明 `allow` / `deny` / `ask`，支持路径 glob 与 Bash 命令前缀匹配                   |
-| **多层配置合并**                   | 全局 + 项目级 + 会话级规则按优先级合并                                                                               |
-| **人在回路（HITL）确认**             | 工具执行前通过 WebSocket 暂停 Agent Loop 等待用户确认，支持本次 / 本会话 / 永久三种授权范围                                         |
-| **危险命令黑名单**                  | Bash 硬拦截（不可被配置绕过）：`rm -rf /`、`mkfs`、远程脚本下载执行（curl|sh / wget|bash）等                                   |
-| **路径沙箱**                     | 工具内部 `ResolveInSandbox` 硬兜底 + 策略层 `IsPathOutsideSandbox` 双层防护                                        |
-| **MCP 协议（Model Context Protocol）** | JSON-RPC 2.0 + stdio / Streamable HTTP 双传输，动态发现外部工具服务器，自动注册为 `mcp__<server>__<tool>` 命名工具，支持指数退避重连（1s/3s/9s） |
-| **MCP WebUI 可观测**              | 工具块紫色 server 来源徽标 + 状态栏 MCP 健康区（绿/黄/红/灰四色圆点 + hover tooltip）                                         |
-| **会话持久化**                    | 多会话管理 + JSON 持久化，支持会话恢复与历史回放                                                                         |
-| **优雅中断**                     | 用户中断时保留已完成迭代的消息，支持后续恢复                                                                               |
-| **异步日志系统**                   | 基于 zap 的文件日志，支持日志轮转                                                                                  |
-| **跨平台支持**                    | Windows / macOS / Linux 自动调起浏览器，Windows 支持终端窗口自动隐藏                                                   |
+| 功能                                 | 说明                                                                                                                                           |
+| ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| **双 LLM 协议支持**                     | Anthropic（Claude）+ OpenAI（GPT）双 Provider 适配，统一通过 `ContentBlock` 抽象交互                                                                         |
+| **Web UI 交互**                      | 基于 HTTP + WebSocket 的全双工通信，深色主题界面，自动调起浏览器                                                                                                    |
+| **流式 Markdown 实时渲染**               | LLM 输出实时解析为格式化 HTML，支持标题、列表、代码块、表格等元素                                                                                                        |
+| **代码语法高亮**                         | 基于 highlight.js 的 18+ 语言自动语法高亮，含代码块语言标签与一键复制                                                                                                 |
+| **ReAct 推理循环**                     | 思考→决策→行动→观察的迭代循环，直到 LLM 认为任务完成                                                                                                               |
+| **多工具并行调用**                        | 一次 LLM 响应中包含多个工具调用时，按权限分组并行执行                                                                                                                |
+| **内置工具集**                          | `ReadFile`（读文件）、`WriteFile`（写文件）、`EditFile`（编辑文件）、`Bash`（命令执行）、`Glob`（文件查找）、`Grep`（内容搜索）                                                     |
+| **工具块「查看改动」双栏 diff**               | WriteFile/EditFile 完成态工具块头部「查看改动」按钮，点击弹出双栏 diff 弹窗（Before/After 全文 + 行级 + 词级高亮）                                                              |
+| **迭代上限保护**                         | 默认最大 50 次迭代，达到上限后注入提示让模型优雅收尾                                                                                                                 |
+| **上下文窗口管理**                        | Token 溢出保护，`context_safety_margin`（默认 4096 token）下触发 AgentLoop 优雅终止；压缩后 1 次重试兜底                                                              |
+| **两层上下文压缩（L1 轻量 + L2 重量）**         | L1 工具结果预览化（>5120 token 自动存盘到 `tool_results/`，内存仅保留 500 token 头部预览，保证 prompt cache 命中）；L2 整体历史摘要（接近窗口/手动触发，自动归档早期原文到 `history_archive.jsonl`） |
+| **会话级熔断 + 紧急压缩**                   | 摘要连续失败 3 次自动停止触发；撞墙（remaining < 4096）时 `EmergencyCompact` 用更激进目标余量（3000）兜底一次                                                                 |
+| **分层 System Prompt**               | `Builder` 模式组装 4 个 Source（static / environment / agents_md / memory），行为规约、环境上下文、AGENTS.md 合并、自动记忆接入位                                         |
+| **AGENTS.md 双层合并**                 | 全局 `~/.codepilot/AGENTS.md` + 项目级 `<cwd>/AGENTS.md` 按 H2 段解析，项目级同名段完全覆盖全局                                                                    |
+| **AGENTS.md `@include` 引用**        | 在 AGENTS.md 中用 `@relative/path.md` 引用其他 markdown 文件，自动展开为该文件内容；含路径沙箱 / 循环检测 / 深度上限（5 层）/ 大小截断（64KB）四重安全保护                                    |
+| **Anthropic Prompt Caching**       | SystemBlocks 多段带 `cache_control: ephemeral, ttl=5m` 标记，第二轮起命中服务端缓存降低成本与延迟                                                                    |
+| **Anthropic Prompt Caching**       | SystemBlocks 多段带 `cache_control: ephemeral, ttl=5m` 标记，第二轮起命中服务端缓存降低成本与延迟                                                                    |
+| **SP 可观测性**                        | WebUI 状态栏显示 SP 总 token 估算 + 4 层 Source 小计 tooltip，开发者模式一键导出完整 SP 快照                                                                          |
+| **AGENTS.md 双层合并**                 | 全局 `~/.codepilot/AGENTS.md` + 项目级 `<cwd>/AGENTS.md` 按 H2 段解析，项目级同名段完全覆盖全局                                                                    |
+| **三层权限模式**                         | `strict`（严格）/ `default`（默认）/ `permissive`（放行）三档档位，运行时可通过状态栏下拉即时切换                                                                            |
+| **可配置允许/拒绝/询问规则**                  | 在 `setting.json` 中按「工具名 + 参数模式」声明 `allow` / `deny` / `ask`，支持路径 glob 与 Bash 命令前缀匹配                                                           |
+| **多层配置合并**                         | 全局 + 项目级 + 会话级规则按优先级合并                                                                                                                       |
+| **人在回路（HITL）确认**                   | 工具执行前通过 WebSocket 暂停 Agent Loop 等待用户确认，支持本次 / 本会话 / 永久三种授权范围                                                                                 |
+| **危险命令黑名单**                        | Bash 硬拦截（不可被配置绕过）：`rm -rf /`、`mkfs`、远程脚本下载执行（curl                                                                                            |
+| **路径沙箱**                           | 工具内部 `ResolveInSandbox` 硬兜底 + 策略层 `IsPathOutsideSandbox` 双层防护                                                                                |
+| **MCP 协议（Model Context Protocol）** | JSON-RPC 2.0 + stdio / Streamable HTTP 双传输，动态发现外部工具服务器，自动注册为 `mcp__<server>__<tool>` 命名工具，支持指数退避重连（1s/3s/9s）                                 |
+| **MCP WebUI 可观测**                  | 工具块紫色 server 来源徽标 + 状态栏 MCP 健康区（绿/黄/红/灰四色圆点 + hover tooltip）                                                                                 |
+| **会话持久化**                          | 多会话管理 + append-only JSONL 持久化（`messages.jsonl` + `meta.json`），支持会话恢复与历史回放                                                                    |
+| **跨项目隔离**                          | 按 `workdir` basename 分目录存放会话（同名冲突时 `basename-<hash>` 解决），跨项目天然隔离                                                                             |
+| **优雅中断**                           | 用户中断时保留已完成迭代的消息 + 写入 `abortMarker` 标记，LLM 在后续轮次能"理解"前序已取消，支持后续恢复                                                                             |
+| **异步日志系统**                         | 基于 zap 的文件日志，支持日志轮转                                                                                                                          |
+| **跨平台支持**                          | Windows / macOS / Linux 自动调起浏览器，Windows 支持终端窗口自动隐藏                                                                                           |
 
 
 ### 计划支持功能
@@ -53,7 +59,6 @@ CodePilot 是一个从零构建的终端 AI Coding Agent（类似 Claude Code / 
 
 | 功能           | 所属阶段    | 说明                                        |
 | ------------ | ------- | ----------------------------------------- |
-| **高级上下文管理**  | Step 7  | 上下文压缩（摘要）、缓存策略，优化 token 利用率               |
 | **记忆系统**     | Step 8  | 自动记忆用户偏好与项目约定，跨会话持久化（System Prompt 已留接入位） |
 | **快捷命令系统**   | Step 9  | `/help`、`/clear`、`/init` 等斜杠命令，快速触发操作     |
 | **Skill 系统** | Step 10 | 可插拔技能模块，封装复杂工作流为可复用技能                     |
@@ -179,10 +184,16 @@ CodePilot/
 │   │   │   └── integration_test.go      #   端到端集成测试
 │   │   │   memory/                      # 记忆层（第 4 层）
 │   │   ├── memory/                      # 记忆层（第 4 层）
-│   │   │   ├── context/
-│   │   │   │   └── window.go            #   滑动窗口上下文管理
+│   │   │   ├── context/                #   上下文管理（Step 7）
+│   │   │   │   ├── compactor.go        #     顶层协调器（L1 必跑 + L2 按需 + 熔断）
+│   │   │   │   ├── light_compactor.go  #     L1 工具结果预览化（in-place + 落盘）
+│   │   │   │   ├── summary_compactor.go#     L2 整体历史摘要（切分 + 摘要 + 归档 + 重写）
+│   │   │   │   ├── tool_result_store.go#     工具结果外置存盘（幂等 O_EXCL）
+│   │   │   │   ├── measure.go          #     统一 token 估算（CJK 2字/token + 消息 15 token 开销）
+│   │   │   │   ├── preview.go          #     头部预览生成（按 rune 截断）
+│   │   │   │   └── window.go          #     滑动窗口（⚠️ 当前未使用，Step 7 改用两层压缩）
 │   │   │   └── session/
-│   │   │       └── session.go           #   会话管理器，创建/恢复/JSON 持久化
+│   │   │       └── session.go         #     会话管理器（按项目分目录 + append-only JSONL）
 │   │   ├── logger/                      # 日志系统
 │   │   │   └── logger.go                #   基于 zap 的异步文件日志
 │   │   └── runtime/                     # 运行时工具
@@ -206,6 +217,73 @@ CodePilot/
 > 说明：上述目录树省略了各包内的 `*_test.go` 单测文件（实际每个生产文件都有对应的 `_test.go` 覆盖单测与边界场景）。`src/internal/security/integration_test.go` 是合并的端到端集成测试入口。
 
 ---
+
+### 📝 AGENTS.md 与 `@include` 引用
+
+AGENTS.md 支持用 `@relative/path.md` 引用其他 markdown 文件，CodePilot 会在启动时**自动展开**为被引用文件的内容。
+
+**示例**（`F:\CodePilot\AGENTS.md`）：
+
+```markdown
+## code style
+@docs/style.md
+
+## testing
+@docs/testing.md
+```
+
+**展开后**（LLM 实际看到的 LeadUserMessage）：
+
+```markdown
+## code style
+<!-- included from docs/style.md -->
+<docs/style.md 的完整内容>
+
+## testing
+<!-- included from docs/testing.md -->
+<docs/testing.md 的完整内容>
+```
+
+**4 重安全保护**（设计动机：被引用文件视为项目敏感代码路径，必须防止意外泄露/撑爆上下文）：
+
+
+| 防线       | 机制                                                  | 默认值  |
+| -------- | --------------------------------------------------- | ---- |
+| **路径沙箱** | 拒绝绝对路径（含 POSIX `/` 与 Windows 盘符 `C:\`）+ 拒绝 `..` 路径段 | —    |
+| **循环检测** | 访问链追踪 map[A→B→A 立即停止，输出注释占位                         | —    |
+| **深度上限** | 递归深度限制                                              | 5 层  |
+| **大小截断** | 单文件超过限制截断并打 warn 日志                                 | 64KB |
+
+
+**失败语义**：所有失败模式（文件不存在/路径逃逸/循环/超深）降级为 HTML 注释占位（如 `<!-- @path: file not found -->`），**不抛错、不阻塞会话启动**。
+
+**不支持的语法**（按"非 .md 后缀不展开"规则原样保留为普通文本）：
+
+- `@/etc/passwd`（绝对路径）
+- `@~/file.md`（家目录简写）
+- `@file.txt`（非 .md 后缀）
+
+**路径基准**：相对 **AGENTS.md 所在目录**（非 CWD），跨项目移动整个目录树时引用不失效。
+
+### 🧠 上下文压缩（L1 + L2）
+
+CodePilot 在每次 LLM 请求前自动执行两层压缩，**无需用户感知**：
+
+
+| 层级          | 触发时机                                    | 机制                                                                                          | 代价        |
+| ----------- | --------------------------------------- | ------------------------------------------------------------------------------------------- | --------- |
+| **L1 轻量预防** | 每次请求前必跑                                 | 单条消息内 tool_result 超 5120 token → 落盘到 `tool_results/<toolUseID>`，内存替换为 500 token 头部预览        | 本地 IO     |
+| **L2 重量兜底** | 剩余 token ≤ 20000 / 用户手动 `/compact` / 撞墙 | `splitByTailTokens` 切分 → 调 LLM 生成摘要 → 早期原文归档到 `history_archive.jsonl` → 重写 `messages.jsonl` | 一次 LLM 调用 |
+
+
+**关键不变量**：
+
+- L1 替换规则完全由"超阈值"决定 → 同一历史每轮重跑结果一致 → **prompt cache 持续命中**
+- L2 摘要失败时**不修改**内存 history（顺序：先摘要成功 → 才归档 → 才重写 jsonl）
+- 摘要连续失败 3 次触发**会话级熔断**，停止自动 L2；用户手动 `/compact` 重置熔断给一次机会
+- 撞墙时（`remaining < 4096`）调用 `EmergencyCompact`，用更激进目标余量 3000 兜底一次
+
+**L2 切分点保护**：`alignSplitForToolPairs` 确保摘要边界不会把 `tool_use` 与其 `tool_result` 拆到不同侧，避免协议 400 错。
 
 ## 🚀 快速开始
 
@@ -259,24 +337,24 @@ cp config/setting.example.openai.json ~/.codepilot/setting.json
 **配置项说明：**
 
 
-| 参数                               | 说明                             | 默认值      |
-| -------------------------------- | ------------------------------ | -------- |
-| `provider`                       | LLM 供应商：`anthropic` 或 `openai` | 必填       |
-| `model`                          | 模型名称                           | 必填       |
-| `base_url`                       | API 基础地址（支持代理/私有部署）            | 官方默认     |
-| `api_key`                        | API 密钥                         | 必填       |
-| `max_tokens`                     | 单次回复最大 token 数                 | `16384`  |
-| `timeout`                        | 请求超时（秒）                        | `180`    |
-| `max_retries`                    | 最大重试次数                         | `2`      |
-| `tools.enabled`                  | 启用的工具列表                        | 全部内置工具   |
-| `tool_execution_timeout_seconds` | 工具执行超时（秒）                      | `30`     |
-| `tool_working_directory`         | 工具工作目录（为空则使用进程 cwd）            | 进程 cwd   |
-| `context_window_size`            | 上下文窗口大小（token 数）               | `200000` |
-| `max_agent_loop_iterations`      | Agent Loop 最大迭代次数              | `50`     |
-| `context_safety_margin`          | 上下文安全余量（token 数）               | `4096`   |
+| 参数                               | 说明                                       | 默认值       |
+| -------------------------------- | ---------------------------------------- | --------- |
+| `provider`                       | LLM 供应商：`anthropic` 或 `openai`           | 必填        |
+| `model`                          | 模型名称                                     | 必填        |
+| `base_url`                       | API 基础地址（支持代理/私有部署）                      | 官方默认      |
+| `api_key`                        | API 密钥                                   | 必填        |
+| `max_tokens`                     | 单次回复最大 token 数                           | `16384`   |
+| `timeout`                        | 请求超时（秒）                                  | `180`     |
+| `max_retries`                    | 最大重试次数                                   | `2`       |
+| `tools.enabled`                  | 启用的工具列表                                  | 全部内置工具    |
+| `tool_execution_timeout_seconds` | 工具执行超时（秒）                                | `30`      |
+| `tool_working_directory`         | 工具工作目录（为空则使用进程 cwd）                      | 进程 cwd    |
+| `context_window_size`            | 上下文窗口大小（token 数）                         | `200000`  |
+| `max_agent_loop_iterations`      | Agent Loop 最大迭代次数                        | `50`      |
+| `context_safety_margin`          | 上下文安全余量（token 数）                         | `4096`    |
 | `permissions.mode`               | 权限模式：`strict` / `default` / `permissive` | `default` |
-| `permissions.rules`              | 自定义权限规则列表（详见下方说明）              | `[]`     |
-| `mcp.servers`                    | MCP 外部工具服务器列表（详见下方说明）          | `[]`     |
+| `permissions.rules`              | 自定义权限规则列表（详见下方说明）                        | `[]`      |
+| `mcp.servers`                    | MCP 外部工具服务器列表（详见下方说明）                    | `[]`      |
 
 
 ### 运行
@@ -394,24 +472,24 @@ cp config/setting.example.openai.json ~/.codepilot/setting.json
 
 ## 📊 项目进度
 
-> 当前最新版本 **V1.2.0** · 最近更新 **2026-06-09** · 进行中 **Step 6 — MCP 协议实现（8/9 Task 完成）**
+> 当前最新版本 **V1.4.0** · 最近更新 **2026-06-16** · 进行中 **—**（11/12 步骤完成，下一步 Step 8 记忆系统）
 > 详细进度见 [.harness/PROGRESS.md](.harness/PROGRESS.md)
 
 ```
-[█████████████████████████░░░] ~82% 完成（9 步已完成，Step 6 进行中）
+[███████████████████████████████] 11/12 步骤完成（~92%，Step 8 待开始）
 
-✅ Step 1    — LLM 打通
+✅ Step 1    — LLM 打通（双 Provider + 流式）
 ✅ Step 1.1  — UI 界面重构（TUI → WebUI）
 ✅ Step 1.2  — 对话栏富文本渲染增强
 ✅ Step 1.3  — WebUI 流式渲染
 ✅ Step 1.4  — WebUI 工具展示优化（双栏 diff 弹窗）
-✅ Step 2    — 工具系统集成
-✅ Step 3    — ReAct 与 Agent Loop 实现
-✅ Step 4    — System Prompt 设计
+✅ Step 2    — 工具系统集成（Tool/Registry/Builtin）
+✅ Step 3    — ReAct 与 Agent Loop 实现（多轮迭代 + 工具错误回灌 + 优雅中断）
+✅ Step 4    — System Prompt 设计（Builder + 4 Source + 模板变量）
 ✅ Step 5    — 权限系统设计（运行时档位切换 + HITL + 危险命令黑名单 + 路径沙箱）
-🔧 Step 6    — MCP 协议实现（8/9，JSON-RPC + stdio/HTTP + 连接池 + 适配器 + 重连）
-⏳ Step 7    — 上下文管理
-⏳ Step 8    — 记忆系统
+✅ Step 6    — MCP 协议实现（JSON-RPC + stdio/HTTP + 连接池 + 适配器 + 重连）
+✅ Step 7    — 上下文管理（两层压缩 L1 工具结果预览化 + L2 整体摘要 + 熔断 + 紧急压缩）
+⏳ Step 8    — 记忆系统（自动记忆用户偏好与项目约定，跨会话持久化）
 ⏳ Step 9    — 快捷命令系统
 ⏳ Step 10   — Skill 系统
 ⏳ Step 11   — Hook 系统

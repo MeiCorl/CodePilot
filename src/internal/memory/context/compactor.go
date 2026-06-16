@@ -204,14 +204,7 @@ func (c *Compactor) Compact(
 	}
 
 	// ---- 第二层：判定是否需要重量兜底 ----
-	runSummary, wasTripped, remaining := c.decideSummary(sessionID, ch, manual)
-	logger.InfoCtx(ctx, "第二层摘要触发判定",
-		zap.Bool("manual", manual),
-		zap.Int("remaining", remaining),
-		zap.Int("autoTriggerMargin", c.cfg.AutoTriggerMargin),
-		zap.Bool("tripped", wasTripped),
-		zap.Bool("runSummary", runSummary),
-	)
+	runSummary, _, remaining := c.decideSummary(sessionID, ch, manual)
 
 	// 无需第二层：直接结算 token 返回。
 	if !runSummary {

@@ -161,7 +161,7 @@ type section struct {
 	order int
 }
 
-// loadFile 读取单个 AGENTS.md 文件并按 H2 解析为 section 切片。
+// loadFile 读取单个 AGENTS.md 文件，按 H2 解析前先递归展开 @include 引用。
 //
 // 行为：
 //  1. 文件不存在 / 不可读 → 返回 nil（不视为错误）
@@ -169,7 +169,6 @@ type section struct {
 //  3. 文件为空 / 只有空白 → 返回 nil
 //  4. 无 H2 时整个内容作为单个 name="" 的 section
 //  5. 有 H2 时按 H2 切分；H2 之前的「前言」段落作为 name=""
-//     （不被任何显式 H2 包裹的引言/序言，对 LLM 仍是有用信息）
 func (s *AgentsMDSource) loadFile(path string) []section {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -197,6 +196,12 @@ func (s *AgentsMDSource) loadFile(path string) []section {
 	if strings.TrimSpace(content) == "" {
 		return nil
 	}
+
+	// @include 展开：把 @path/to/file.md 引用替换为被引用文件的内容。
+	// 路径基准 = 当前 AGENTS.md 所在目录，跨文件移动不失效。
+	// 失败（不存在/循环/超深/路径逃逸）由 expandIncludes 内部降级为注释占位，
+	// 不向上抛错，保持与"AGENTS.md 缺失不阻塞"一致的失败语义。
+	content = s.expandIncludes(content, filepath.Dir(path))
 
 	return parseSections(content)
 }
