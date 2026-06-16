@@ -1,0 +1,15 @@
+src/internal/memory/context/compactor.go
+  h_3d401542af48ce 207
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.3",
+  "base_commit_sha": "7545eeb6f5403db65110e1a95a3771c2589875f9",
+  "prompts": {},
+  "logical_commit_id": "7545eeb6f5403db65110e1a95a3771c2589875f9",
+  "humans": {
+    "h_3d401542af48ce": {
+      "author": "meichao <1504-meichao@users.noreply.git.sysop.bigo.sg>"
+    }
+  }
+}
