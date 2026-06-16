@@ -114,9 +114,9 @@ type MCPServerConfig struct {
 //     使用 *bool 指针以区分「未配置（→默认 true）」与「显式关闭（false）」——
 //     Go 的 bool 零值是 false，若用值类型将无法表达「默认开启」。
 //   - ToolResultThreshold：工具结果存盘阈值（token）。单个工具结果超此值、或单条消息
-//     内多个工具结果合计超此值时触发存盘 + 预览替换。默认 8192。
+//     内多个工具结果合计超此值时触发存盘 + 预览替换。默认 5120。
 //   - PreviewTokens：预览头部保留长度（token），存盘后内存中保留的截断预览大小。默认 500。
-//   - AutoTriggerMargin：第二层自动触发余量（token）。剩余 token ≤ 此值且未熔断时触发摘要。默认 13000。
+//   - AutoTriggerMargin：第二层自动触发余量（token）。剩余 token ≤ 此值且未熔断时触发摘要。默认 20000。
 //   - ManualTargetMargin：第二层手动触发目标余量（token）。用户主动 /compact 时允许压到只留此余量
 //     （比自动更激进，因用户主动要压）。默认 3000。
 //   - KeepRecentTokens：近期原文保留量（token），摘要后尾部保留的原文窗口。默认 10000。
@@ -125,11 +125,11 @@ type MCPServerConfig struct {
 type CompactionConfig struct {
 	// Enabled 为压缩总开关；nil 视为 true（默认开启），通过 IsEnabled() 访问。
 	Enabled *bool `json:"enabled,omitempty"`
-	// ToolResultThreshold 为工具结果存盘阈值（token），默认 8192。
+	// ToolResultThreshold 为工具结果存盘阈值（token），默认 5120。
 	ToolResultThreshold int `json:"tool_result_threshold,omitempty"`
 	// PreviewTokens 为预览头部保留长度（token），默认 500。
 	PreviewTokens int `json:"preview_tokens,omitempty"`
-	// AutoTriggerMargin 为第二层自动触发余量（token），默认 13000。
+	// AutoTriggerMargin 为第二层自动触发余量（token），默认 20000。
 	AutoTriggerMargin int `json:"auto_trigger_margin,omitempty"`
 	// ManualTargetMargin 为第二层手动触发目标余量（token），默认 3000。
 	ManualTargetMargin int `json:"manual_target_margin,omitempty"`
@@ -199,9 +199,9 @@ const (
 	// 数值字段在 setDefaults 里用「==0 填默认」模式；Enabled 是 *bool，
 	// 用下方的布尔常量取址填充，以表达「未配置 → 默认开启」。
 	defaultCompactionEnabled             = true
-	defaultCompactionToolResultThreshold = 8192  // 工具结果存盘阈值（8K token）
+	defaultCompactionToolResultThreshold = 5120  // 工具结果存盘阈值（5K token）
 	defaultCompactionPreviewTokens       = 500   // 预览头部保留（token）
-	defaultCompactionAutoTriggerMargin   = 13000 // 第二层自动触发余量（token）
+	defaultCompactionAutoTriggerMargin   = 20000 // 第二层自动触发余量（token）
 	defaultCompactionManualTargetMargin  = 3000  // 第二层手动触发目标余量（token）
 	defaultCompactionKeepRecentTokens    = 10000 // 近期原文保留量（token）
 	defaultCompactionKeepRecentMinMsgs   = 5     // 近期原文最少保留条数

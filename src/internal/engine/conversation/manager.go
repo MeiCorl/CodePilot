@@ -1,6 +1,6 @@
 // Package conversation 实现对话历史管理，负责消息的构造、添加和上下文获取。
-// 它持有完整对话历史作为唯一真相源，并组合 memory/context 包的滑动窗口策略，
-// 派生出发送给 LLM 的上下文视图，为上层提供简洁的对话管理接口。
+// 它持有完整对话历史作为唯一真相源，并派生出发送给 LLM 的上下文视图，
+// 为上层提供简洁的对话管理接口。
 //
 // Step 2 在此基础上扩展 RunTurn 入口：把 LLM 流式响应与工具执行串联成
 // "单轮闭环"——LLM 返回 tool_use → 调度工具 → tool_result 回传 →
@@ -16,28 +16,29 @@ import (
 
 	"github.com/MeiCorl/CodePilot/src/internal/logger"
 	memctx "github.com/MeiCorl/CodePilot/src/internal/memory/context"
-	"github.com/MeiCorl/CodePilot/src/llm"
 	"github.com/MeiCorl/CodePilot/src/internal/tool"
+	"github.com/MeiCorl/CodePilot/src/llm"
 )
 
 // ConversationManager 管理多轮对话的消息历史。
-// 它持有完整对话历史（history，唯一真相源），并通过 SlidingWindow 派生出
-// 发送给 LLM 的窗口视图。完整历史可通过 AllMessages 获取用于持久化归档，
-// 不受窗口裁剪影响，从而避免持久化时丢失超窗的早期消息。
+// 它持有完整对话历史（history，唯一真相源）。GetContext 直接返回完整活跃历史，
+// 由 Step 7 压缩系统控制上下文体积，避免滑动窗口裁剪破坏 tool_use/tool_result 配对。
 //
 // Step 4 新增：leadUserMessage 字段用于保存「首条 user 消息」内容（通常
 // 来自 prompt.Builder 的 AGENTS.md 合并结果）。它在 history 之外单独持有，
-// 由 GetContext 在窗口派生后、对外暴露前拼接到 messages 最前，从而天然
-// 处于滑动窗口裁剪的保护区之外（窗口只对 history 起作用）。
+// 由 GetContext 在完整历史前拼接到 messages 最前。
 type ConversationManager struct {
-	// window 为滑动窗口策略，基于完整历史派生 LLM 上下文视图（无状态，不持有消息）
-	window *memctx.SlidingWindow
 	// history 为完整对话历史，作为唯一真相源；持久化与窗口派生均以此为基础
 	history []llm.Message
 	// lastInputTokens 为最近一次 LLM 调用返回的 input_tokens（精确值）。
 	// 用于计算上下文窗口剩余额度：remaining = context_window_size - lastInputTokens。
 	// 为 0 时表示尚无 LLM 调用（首次调用前、会话恢复后），需降级到字符估算。
 	lastInputTokens int
+	// contextVersion is bumped whenever the next request view may change.
+	contextVersion int64
+	// usageContextVersion records the request view version that lastInputTokens
+	// belongs to. The precise usage is valid only while the versions match.
+	usageContextVersion int64
 	// leadUserMessage 为会话级「首条 user 消息」内容。
 	// 通常由 prompt.Builder 的 AGENTS.md Source 注入；空字符串时 GetContext
 	// 不构造空消息。
@@ -45,7 +46,7 @@ type ConversationManager struct {
 
 	// ---- Step 7：上下文压缩相关（Task 6 撞墙兜底 + Task 7 每轮自动压缩共用）----
 	//
-	// compactor 为上下文压缩协调器（可选，nil 表示未装配——压缩总开关关闭时降级为纯滑动窗口）。
+	// compactor 为上下文压缩协调器（可选，nil 表示未装配——压缩总开关关闭）。
 	// 由 main.go 顶层装配后通过 SetCompactor 注入。runOneLLM 的撞墙兜底路径依赖它做紧急压缩。
 	compactor *memctx.Compactor
 	// sessionID 为当前活跃会话标识，供压缩协调器定位工具结果存盘子目录与熔断状态隔离。
@@ -57,10 +58,10 @@ type ConversationManager struct {
 }
 
 // NewConversationManager 创建一个对话管理器。
-// maxRounds 为滑动窗口最大保留的对话轮数。
+// maxRounds 已不再用于裁剪上下文；保留参数是为了兼容现有调用方配置。
 func NewConversationManager(maxRounds int) *ConversationManager {
+	_ = maxRounds
 	return &ConversationManager{
-		window:  memctx.NewSlidingWindow(maxRounds),
 		history: make([]llm.Message, 0),
 	}
 }
@@ -73,6 +74,9 @@ func NewConversationManager(maxRounds int) *ConversationManager {
 // 该消息同时会被 runOneLLM 透传给 Provider.StreamChat 作为 LeadUserMessage。
 // lead 为空字符串时清除已设置的内容（下次 GetContext 不再追加）。
 func (m *ConversationManager) SetLeadUserMessage(text string) {
+	if m.leadUserMessage != text {
+		m.invalidateContextUsage()
+	}
 	m.leadUserMessage = text
 }
 
@@ -90,7 +94,7 @@ func (m *ConversationManager) LeadUserMessage() string {
 // RemainingTokens(maxTokens int) 同名不同签名冲突——Go 不允许同类型存在两个同名方法。
 
 // SetCompactor 注入上下文压缩协调器。由 main.go 顶层装配后调用；nil 表示压缩关闭
-// （降级为纯滑动窗口，runOneLLM 的撞墙兜底也将透传错误不做压缩）。
+// （runOneLLM 的撞墙兜底也将透传错误不做压缩）。
 func (m *ConversationManager) SetCompactor(c *memctx.Compactor) { m.compactor = c }
 
 // SetSessionID 设置当前活跃会话标识，供压缩协调器定位工具结果存盘子目录与熔断状态隔离。
@@ -107,7 +111,12 @@ func (m *ConversationManager) SetContextWindowSize(size int) { m.contextWindowSi
 // 预览替换（改 *ToolResultBlock.Content）能反映回 manager——这是第一层压缩生效的关键。
 // 注意：调用方不得对返回切片本身做追加/截断（会改 manager 的 history 切片头），
 // 只应改切片内元素指向的对象字段；整体替换历史走 ReplaceHistory。
-func (m *ConversationManager) History() []llm.Message { return m.history }
+func (m *ConversationManager) History() []llm.Message {
+	// Callers receive a mutable view and may rewrite block contents in-place
+	// (the light compactor does this), so any cached precise usage is stale.
+	m.invalidateContextUsage()
+	return m.history
+}
 
 // ReplaceHistory 实现 memctx.ConversationHistory。
 //
@@ -118,7 +127,7 @@ func (m *ConversationManager) History() []llm.Message { return m.history }
 func (m *ConversationManager) ReplaceHistory(msgs []llm.Message) {
 	m.history = make([]llm.Message, len(msgs))
 	copy(m.history, msgs)
-	m.lastInputTokens = 0
+	m.invalidateContextUsage()
 }
 
 // Remaining 实现 memctx.ConversationHistory，返回当前窗口的剩余可用 token（下界 0）。
@@ -155,6 +164,7 @@ func (m *ConversationManager) AddUserMessage(content string) {
 		Role:    llm.RoleUser,
 		Content: []llm.ContentBlock{llm.NewTextBlock(content)},
 	})
+	m.invalidateContextUsage()
 }
 
 // AddAssistantMessage 添加一条助手消息到完整对话历史。
@@ -164,6 +174,7 @@ func (m *ConversationManager) AddAssistantMessage(content string) {
 		Role:    llm.RoleAssistant,
 		Content: []llm.ContentBlock{llm.NewTextBlock(content)},
 	})
+	m.invalidateContextUsage()
 }
 
 // AddMessage 添加一条任意角色/内容的消息到完整对话历史。
@@ -171,6 +182,7 @@ func (m *ConversationManager) AddAssistantMessage(content string) {
 // assistant 文本消息；调用方需保证 msg 的 Role/Content 合法性。
 func (m *ConversationManager) AddMessage(msg llm.Message) {
 	m.history = append(m.history, msg)
+	m.invalidateContextUsage()
 }
 
 // Reset 用给定消息替换完整对话历史。
@@ -182,7 +194,7 @@ func (m *ConversationManager) AddMessage(msg llm.Message) {
 func (m *ConversationManager) Reset(messages []llm.Message) {
 	m.history = make([]llm.Message, len(messages))
 	copy(m.history, messages)
-	m.lastInputTokens = 0
+	m.invalidateContextUsage()
 }
 
 // GetContext 返回发送给 LLM 的上下文窗口视图。
@@ -190,32 +202,32 @@ func (m *ConversationManager) Reset(messages []llm.Message) {
 // 视图组成（Step 4 起）：
 //  1. 可选的首条 user 消息（leadUserMessage），来自 SetLeadUserMessage；
 //     通常包含 AGENTS.md 合并结果 + Step 8 自动记忆
-//  2. 滑动窗口派生的最近 N 轮对话（基于完整 history）
+//  2. 完整活跃 history。历史体积由 Step 7 的轻量/摘要压缩负责控制。
 //
 // 重要：返回结果**不**包含 system 字段消息——system 字段已迁移到
 // llm.SystemPrompt（由 StreamChat 的 sp 参数携带），不在 messages 内。
 //
-// 注意：返回结果是经过窗口裁剪的视图，不一定是完整历史；持久化请使用 AllMessages。
+// 注意：返回结果是活跃历史副本；持久化请使用 AllMessages。
 // leadUserMessage 也不会出现在 AllMessages 中（它由 SetLeadUserMessage 单独管理）。
 func (m *ConversationManager) GetContext() []llm.Message {
-	// 1. 滑动窗口派生（不传 systemPrompt，让 View 不构造 system 消息）
-	windowed := m.window.View(m.history, "")
+	history := make([]llm.Message, len(m.history))
+	copy(history, m.history)
 
-	// 2. 拼接 lead user message（如果存在）到最前
+	// 拼接 lead user message（如果存在）到最前
 	if m.leadUserMessage == "" {
-		return windowed
+		return history
 	}
-	out := make([]llm.Message, 0, len(windowed)+1)
+	out := make([]llm.Message, 0, len(history)+1)
 	out = append(out, llm.Message{
 		Role:    llm.RoleUser,
 		Content: []llm.ContentBlock{llm.NewTextBlock(m.leadUserMessage)},
 	})
-	out = append(out, windowed...)
+	out = append(out, history...)
 	return out
 }
 
 // AllMessages 返回完整对话历史的副本，用于会话持久化归档。
-// 与 GetContext 不同，该结果不受滑动窗口裁剪影响，包含所有历史消息，
+// 与 GetContext 不同，该结果不包含 leadUserMessage，只包含真实历史消息，
 // 是持久化时应当使用的唯一真相源。
 func (m *ConversationManager) AllMessages() []llm.Message {
 	out := make([]llm.Message, len(m.history))
@@ -274,7 +286,12 @@ func (m *ConversationManager) RemainingTokens(maxTokens int) int {
 func (m *ConversationManager) UpdateUsage(usage *llm.TokenUsage) {
 	if usage != nil && usage.InputTokens > 0 {
 		m.lastInputTokens = usage.InputTokens
+		m.usageContextVersion = m.contextVersion
 	}
+}
+
+func (m *ConversationManager) invalidateContextUsage() {
+	m.contextVersion++
 }
 
 // ContextUsage 描述上下文窗口的使用情况，供上层（状态栏展示、溢出检查）统一使用。
@@ -302,7 +319,7 @@ type ContextUsage struct {
 // windowSize 为上下文窗口总大小（token 数），通常来自 Config.ContextWindowSize。
 func (m *ConversationManager) GetContextUsage(windowSize int) ContextUsage {
 	var used int
-	if m.lastInputTokens > 0 {
+	if m.lastInputTokens > 0 && m.usageContextVersion == m.contextVersion {
 		// 精确模式：remaining = context_window_size - last_input_tokens
 		used = m.lastInputTokens
 	} else {
@@ -589,7 +606,7 @@ func (m *ConversationManager) runOneLLM(
 						hooks.OnStreamChunk(llm.StreamChunk{Done: true})
 					}
 				}
-				m.logLLMStopReason(llmStopReason, usage, aborted)
+				m.logLLMStopReason(ctx, llmStopReason, usage, aborted)
 				return RunOneTurnResult{Text: string(textBuf), ToolUses: toolUses, Usage: usage, Aborted: aborted, LLMStopReason: llmStopReason}
 			}
 			if chunk.Err != nil {
@@ -618,7 +635,7 @@ func (m *ConversationManager) runOneLLM(
 			}
 			if chunk.Done {
 				streamDone = true
-				m.logLLMStopReason(llmStopReason, usage, aborted)
+				m.logLLMStopReason(ctx, llmStopReason, usage, aborted)
 				return RunOneTurnResult{Text: string(textBuf), ToolUses: toolUses, Usage: usage, Aborted: aborted, LLMStopReason: llmStopReason}
 			}
 		}
@@ -645,7 +662,7 @@ func (m *ConversationManager) runAutoCompaction(
 	hooks TurnHooks,
 ) {
 	if m.compactor == nil {
-		// 压缩总开关关闭（未装配协调器）：降级为纯滑动窗口，直接返回。
+		// 压缩总开关关闭（未装配协调器）：直接返回。
 		return
 	}
 	// ctx 已取消（用户中断等）：本轮即将返回，跳过压缩——避免无谓的第二层 LLM 调用，
@@ -655,8 +672,7 @@ func (m *ConversationManager) runAutoCompaction(
 	}
 	res, err := m.compactor.Compact(ctx, provider, m, m.sessionID, false)
 	if err != nil {
-		logger.Warn("自动压缩编排失败，继续使用当前历史发请求",
-			zap.String("sessionID", m.sessionID),
+		logger.WarnCtx(ctx, "自动压缩编排失败，继续使用当前历史发请求",
 			zap.String("level", string(res.Level)),
 			zap.Bool("tripped", res.Tripped),
 			zap.Error(err),
@@ -687,8 +703,7 @@ func (m *ConversationManager) emergencyCompactOnWallHit(
 	res, err := m.compactor.EmergencyCompact(ctx, provider, m, m.sessionID)
 	if err != nil {
 		// 紧急压缩失败：摘要 LLM 不可用或其它错误。记录 Warn 后返回 err（调用方据此放弃重试）。
-		logger.Warn("撞墙紧急压缩失败，将上报原始超长错误",
-			zap.String("sessionID", m.sessionID),
+		logger.WarnCtx(ctx, "撞墙紧急压缩失败，将上报原始超长错误",
 			zap.Int("beforeTokens", res.BeforeTokens),
 			zap.Int("afterTokens", res.AfterTokens),
 			zap.Bool("tripped", res.Tripped),
@@ -696,8 +711,7 @@ func (m *ConversationManager) emergencyCompactOnWallHit(
 		)
 		return err
 	}
-	logger.Info("撞墙紧急压缩成功，将用压缩后历史重试请求",
-		zap.String("sessionID", m.sessionID),
+	logger.InfoCtx(ctx, "撞墙紧急压缩成功，将用压缩后历史重试请求",
 		zap.String("level", string(res.Level)),
 		zap.Int("beforeTokens", res.BeforeTokens),
 		zap.Int("afterTokens", res.AfterTokens),
@@ -713,7 +727,7 @@ func (m *ConversationManager) emergencyCompactOnWallHit(
 //   - "tool_use"/"tool_calls"（工具调用）→ Info 级别
 //   - "canceled"（用户取消）→ Info 级别
 //   - 其他/空值 → Debug 级别
-func (m *ConversationManager) logLLMStopReason(stopReason string, usage *llm.TokenUsage, aborted bool) {
+func (m *ConversationManager) logLLMStopReason(ctx context.Context, stopReason string, usage *llm.TokenUsage, aborted bool) {
 	fields := []zap.Field{
 		zap.String("stop_reason", stopReason),
 	}
@@ -726,24 +740,24 @@ func (m *ConversationManager) logLLMStopReason(stopReason string, usage *llm.Tok
 
 	switch stopReason {
 	case "end_turn", "stop":
-		logger.Info("LLM 流正常结束", fields...)
+		logger.InfoCtx(ctx, "LLM 流正常结束", fields...)
 	case "max_tokens", "length":
 		// 输出被截断：这是用户最常遇到的问题，需醒目提示
 		outputTokens := 0
 		if usage != nil {
 			outputTokens = usage.OutputTokens
 		}
-		logger.Warn("LLM 输出被截断（达到 max_tokens 上限），建议增大配置中的 max_tokens",
+		logger.WarnCtx(ctx, "LLM 输出被截断（达到 max_tokens 上限），建议增大配置中的 max_tokens",
 			append(fields, zap.Int("output_tokens", outputTokens))...)
 	case "tool_use", "tool_calls":
-		logger.Info("LLM 请求工具调用", fields...)
+		logger.InfoCtx(ctx, "LLM 请求工具调用", fields...)
 	case "canceled":
-		logger.Info("LLM 流被用户取消", fields...)
+		logger.InfoCtx(ctx, "LLM 流被用户取消", fields...)
 	default:
 		if aborted {
-			logger.Info("LLM 流被中断", fields...)
+			logger.InfoCtx(ctx, "LLM 流被中断", fields...)
 		} else {
-			logger.Debug("LLM 流结束", fields...)
+			logger.DebugCtx(ctx, "LLM 流结束", fields...)
 		}
 	}
 }

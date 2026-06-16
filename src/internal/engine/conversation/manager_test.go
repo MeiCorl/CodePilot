@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/MeiCorl/CodePilot/src/llm"
 	"github.com/MeiCorl/CodePilot/src/internal/security"
 	"github.com/MeiCorl/CodePilot/src/internal/tool"
 	"github.com/MeiCorl/CodePilot/src/internal/tool/builtin"
+	"github.com/MeiCorl/CodePilot/src/llm"
 )
 
 func TestConversationManager_AddUserMessage(t *testing.T) {
@@ -185,14 +185,14 @@ func TestConversationManager_LeadUserMessage_IsLeadBoundary(t *testing.T) {
 	}
 }
 
-// TestConversationManager_LeadUserMessage_SurvivesSlidingWindow 验证 lead
-// 不受滑动窗口裁剪影响——即使 history 远超 maxRounds，lead 仍在 ctx[0]。
+// TestConversationManager_LeadUserMessage_WithFullHistory 验证取消滑动窗口后，
+// 即使 history 远超 maxRounds，lead 仍在 ctx[0]，且完整活跃历史会随请求发送。
 //
 // 这是 Task 5 关键验收：AGENTS.md 等"首条 user 消息"必须在多轮对话中
 // 始终被发送给 LLM，否则模型会逐渐"遗忘"项目约定。
-func TestConversationManager_LeadUserMessage_SurvivesSlidingWindow(t *testing.T) {
+func TestConversationManager_LeadUserMessage_WithFullHistory(t *testing.T) {
 	const maxRounds = 3
-	const totalRounds = 20 // 远超 maxRounds，触发窗口裁剪
+	const totalRounds = 20 // 远超 maxRounds，但不再触发窗口裁剪
 	m := NewConversationManager(maxRounds)
 	m.SetLeadUserMessage("PROJECT_RULES: use spaces")
 
@@ -202,10 +202,10 @@ func TestConversationManager_LeadUserMessage_SurvivesSlidingWindow(t *testing.T)
 	}
 
 	ctx := m.GetContext()
-	// 期望：1 条 lead + maxRounds*2 条窗口内历史 = 7 条
-	wantLen := 1 + maxRounds*2
+	// 期望：1 条 lead + 完整活跃历史
+	wantLen := 1 + totalRounds*2
 	if len(ctx) != wantLen {
-		t.Fatalf("窗口裁剪后应有 %d 条，实际 %d 条", wantLen, len(ctx))
+		t.Fatalf("完整上下文应有 %d 条，实际 %d 条", wantLen, len(ctx))
 	}
 	// 第 0 条必须是 lead（始终在）
 	if !m.IsLeadUserMessage(0) {
@@ -452,6 +452,45 @@ func TestConversationManager_GetContextUsage_UpdatesAcrossIterations(t *testing.
 	}
 }
 
+func TestConversationManager_GetContextUsage_InvalidatesAfterHistoryAppend(t *testing.T) {
+	m := NewConversationManager(50)
+
+	m.UpdateUsage(&llm.TokenUsage{InputTokens: 50000, OutputTokens: 200})
+	if usage := m.GetContextUsage(200000); usage.Used != 50000 {
+		t.Fatalf("fresh precise usage should be used, got %d", usage.Used)
+	}
+
+	m.AddAssistantMessage(strings.Repeat("history changed ", 200))
+	expected := m.TokenEstimate()
+	usage := m.GetContextUsage(200000)
+	if usage.Used != expected {
+		t.Fatalf("stale precise usage should fall back to estimate, got %d want %d", usage.Used, expected)
+	}
+	if usage.Used == 50000 {
+		t.Fatalf("stale precise input_tokens should not be reused after history append")
+	}
+}
+
+func TestConversationManager_GetContextUsage_InvalidatesAfterMutableHistoryAccess(t *testing.T) {
+	m := NewConversationManager(50)
+	m.AddUserMessage("hello")
+	m.UpdateUsage(&llm.TokenUsage{InputTokens: 50000, OutputTokens: 200})
+	if usage := m.GetContextUsage(200000); usage.Used != 50000 {
+		t.Fatalf("fresh precise usage should be used, got %d", usage.Used)
+	}
+
+	history := m.History()
+	if len(history) == 0 {
+		t.Fatal("expected mutable history")
+	}
+
+	expected := m.TokenEstimate()
+	usage := m.GetContextUsage(200000)
+	if usage.Used != expected {
+		t.Fatalf("mutable history access should invalidate precise usage, got %d want %d", usage.Used, expected)
+	}
+}
+
 func TestConversationManager_MessageCount(t *testing.T) {
 	m := NewConversationManager(5)
 	if m.MessageCount() != 0 {
@@ -464,10 +503,9 @@ func TestConversationManager_MessageCount(t *testing.T) {
 	}
 }
 
-// TestConversationManager_AllMessagesKeepsFullHistory 验证修复效果：
-// 当对话轮数超出窗口容量时，GetContext 返回被裁剪的视图，
-// 而 AllMessages 必须返回完整历史（不丢失超窗的早期消息），用于持久化归档。
-func TestConversationManager_AllMessagesKeepsFullHistory(t *testing.T) {
+// TestConversationManager_GetContextKeepsFullHistory 验证取消滑动窗口后：
+// GetContext 与 AllMessages 都保留完整活跃历史，避免裁剪破坏协议配对。
+func TestConversationManager_GetContextKeepsFullHistory(t *testing.T) {
 	const maxRounds = 2
 	const totalRounds = 5
 	m := NewConversationManager(maxRounds)
@@ -477,10 +515,10 @@ func TestConversationManager_AllMessagesKeepsFullHistory(t *testing.T) {
 		m.AddAssistantMessage("a")
 	}
 
-	// GetContext 应被窗口裁剪到最近 maxRounds 轮
+	// GetContext 不再被窗口裁剪
 	ctx := m.GetContext()
-	if len(ctx) != maxRounds*2 {
-		t.Fatalf("窗口视图应为 %d 条，实际 %d 条", maxRounds*2, len(ctx))
+	if len(ctx) != totalRounds*2 {
+		t.Fatalf("上下文视图应为完整历史 %d 条，实际 %d 条", totalRounds*2, len(ctx))
 	}
 
 	// AllMessages 应保留全部历史
@@ -643,7 +681,7 @@ func TestRunTurn_ToolUseHappensOnce(t *testing.T) {
 			// 第一次 LLM：返回 tool_use（无文本）
 			{
 				{
-					Done:    true,
+					Done:     true,
 					ToolUses: []llm.ToolUseBlock{{ID: "call-1", Name: "echo", Input: json.RawMessage(`{"msg":"ping"}`)}},
 				},
 			},
@@ -664,10 +702,10 @@ func TestRunTurn_ToolUseHappensOnce(t *testing.T) {
 	m.AddUserMessage("call echo")
 
 	var (
-		gotToolUse     *llm.ToolUseBlock
-		gotToolResult  *llm.ToolResultBlock
-		onErrorCalled  bool
-		streamChunkN   int
+		gotToolUse    *llm.ToolUseBlock
+		gotToolResult *llm.ToolResultBlock
+		onErrorCalled bool
+		streamChunkN  int
 	)
 	res := m.RunTurn(context.Background(), p, llm.NewSystemPromptFromText("system"), nil, NewToolHandler(reg, time.Second, ""), TurnHooks{
 		OnToolUse:    func(b llm.ToolUseBlock) { gotToolUse = &b },

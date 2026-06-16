@@ -2,10 +2,12 @@ package logger
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"go.uber.org/zap"
@@ -16,6 +18,20 @@ func restoreLogger() func() {
 	orig := globalLogger
 	origWriter := globalWriter
 	return func() {
+		globalLogger = orig
+		globalWriter = origWriter
+	}
+}
+
+// restoreLoggerWithClose 在 restoreLogger 基础上，先关闭本次测试创建的全局与会话 logger
+// 文件句柄，避免 Windows 下 t.TempDir 清理因句柄仍被占用而失败。
+// 关闭顺序：先会话 logger（CloseAllSessions 内部各自 Sync+Close）→ 再全局 writer（Close）→ 恢复指针。
+func restoreLoggerWithClose() func() {
+	orig := globalLogger
+	origWriter := globalWriter
+	return func() {
+		CloseAllSessions()
+		Close()
 		globalLogger = orig
 		globalWriter = origWriter
 	}
@@ -186,5 +202,190 @@ func TestMultipleLogEntries(t *testing.T) {
 	}
 	if count != 4 {
 		t.Fatalf("期望 4 条日志，实际 %d 条", count)
+	}
+}
+
+// ---- 会话级日志（Session-scoped logging）测试 ----
+
+// mkTempDir 创建一个临时目录并注册测试结束清理（忽略清理错误）。
+// 用 os.MkdirTemp 而非 t.TempDir：后者清理失败会令测试失败，而 Windows 下
+// lumberjack writer 句柄释放存在 OS 级延迟，偶发清理报错；忽略该平台性错误
+// 不影响测试结论（日志路由正确性才是验证目标）。
+func mkTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "codepilot-log-test-*")
+	if err != nil {
+		t.Fatalf("创建临时目录失败: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
+}
+
+// readSessionLog 读取会话目录下 codepilot.log 的全部内容；文件不存在返回空串。
+func readSessionLog(t *testing.T, sessionDir string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(sessionDir, logFilename))
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+// TestSessionLogRouting 验证 OpenSession 后 InfoCtx 按 ctx 中的 sessionID 路由到会话目录，
+// 且不写入全局日志（不双写）。
+func TestSessionLogRouting(t *testing.T) {
+	defer restoreLoggerWithClose()
+
+	globalDir := mkTempDir(t)
+	if err := InitFromDir(globalDir); err != nil {
+		t.Fatalf("初始化全局日志失败: %v", err)
+	}
+
+	sessionDir := mkTempDir(t)
+	const sid = "test-session-routing"
+	if err := OpenSession(sid, sessionDir); err != nil {
+		t.Fatalf("OpenSession 失败: %v", err)
+	}
+
+	ctx := WithSession(context.Background(), sid)
+	InfoCtx(ctx, "session-scoped message", zap.String("sid", sid))
+	CloseSession(sid) // 内部 Sync 刷盘
+
+	content := readSessionLog(t, sessionDir)
+	if !strings.Contains(content, "session-scoped message") {
+		t.Fatalf("会话日志文件未包含会话消息，内容: %s", content)
+	}
+	// 全局文件不应包含该会话消息（不双写）
+	globalContent := readSessionLog(t, globalDir)
+	if strings.Contains(globalContent, "session-scoped message") {
+		t.Fatal("会话消息不应写入全局日志")
+	}
+}
+
+// TestSessionLogFallbackNotOpened 验证 ctx 携带 sessionID 但未 OpenSession 时回退全局。
+func TestSessionLogFallbackNotOpened(t *testing.T) {
+	defer restoreLoggerWithClose()
+
+	globalDir := mkTempDir(t)
+	InitFromDir(globalDir)
+
+	sessionDir := mkTempDir(t)
+	const sid = "test-session-fallback"
+	// 故意不调 OpenSession
+	ctx := WithSession(context.Background(), sid)
+	InfoCtx(ctx, "fallback message")
+	Sync()
+
+	if readSessionLog(t, sessionDir) != "" {
+		t.Fatal("未 OpenSession 时不应写会话目录")
+	}
+	if !strings.Contains(readSessionLog(t, globalDir), "fallback message") {
+		t.Fatal("未 OpenSession 时应回退写全局日志")
+	}
+}
+
+// TestSessionLogFallbackNoCtx 验证无 sessionID 的 ctx 回退全局。
+func TestSessionLogFallbackNoCtx(t *testing.T) {
+	defer restoreLoggerWithClose()
+
+	globalDir := mkTempDir(t)
+	InitFromDir(globalDir)
+
+	InfoCtx(context.Background(), "no ctx message")
+	Sync()
+
+	if !strings.Contains(readSessionLog(t, globalDir), "no ctx message") {
+		t.Fatal("无 sessionID 时应回退写全局日志")
+	}
+}
+
+// TestSessionLogIdempotent 验证并发 OpenSession 同一 sessionID 幂等：缓存仅 1 条、无句柄泄漏。
+func TestSessionLogIdempotent(t *testing.T) {
+	defer restoreLoggerWithClose()
+
+	globalDir := mkTempDir(t)
+	InitFromDir(globalDir)
+
+	sessionDir := mkTempDir(t)
+	const sid = "test-session-idempotent"
+
+	var wg sync.WaitGroup
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = OpenSession(sid, sessionDir)
+		}()
+	}
+	wg.Wait()
+
+	count := 0
+	sessionLoggers.Range(func(k, v any) bool {
+		count++
+		return true
+	})
+	if count != 1 {
+		t.Fatalf("期望缓存 1 个会话 logger，实际 %d", count)
+	}
+
+	// Close 后再写：LCtx 回退全局，不应 panic
+	CloseSession(sid)
+	InfoCtx(WithSession(context.Background(), sid), "after close no panic")
+}
+
+// TestSessionLogCaller 校验 InfoCtx 的 caller 指向调用方文件（logger_test.go），
+// 以此验证会话 logger 的 AddCallerSkip 配置正确。
+func TestSessionLogCaller(t *testing.T) {
+	defer restoreLoggerWithClose()
+
+	globalDir := mkTempDir(t)
+	InitFromDir(globalDir)
+
+	sessionDir := mkTempDir(t)
+	const sid = "test-session-caller"
+	OpenSession(sid, sessionDir)
+	ctx := WithSession(context.Background(), sid)
+	callerHelper(ctx) // 在 helper 内调用 InfoCtx
+	CloseSession(sid)
+
+	content := readSessionLog(t, sessionDir)
+	var entry map[string]interface{}
+	for _, line := range strings.Split(content, "\n") {
+		if strings.Contains(line, "caller-help-msg") {
+			_ = json.Unmarshal([]byte(line), &entry)
+			break
+		}
+	}
+	if entry == nil {
+		t.Fatalf("未找到 helper 日志条目，内容: %s", content)
+	}
+	caller, _ := entry["caller"].(string)
+	// AddCallerSkip 正确时 caller 应指向调用方文件 logger_test.go，而非 logger.go
+	if !strings.Contains(caller, "logger_test.go") {
+		t.Fatalf("caller 应指向 logger_test.go，实际: %s（需检查 buildLogger 的 skip 参数）", caller)
+	}
+}
+
+// callerHelper 封装 InfoCtx 调用，用于 caller 行号校验。
+// 调用栈：测试 → callerHelper → InfoCtx → zap；AddCallerSkip(1) 应跳过 InfoCtx 指向本函数内的调用行。
+func callerHelper(ctx context.Context) {
+	InfoCtx(ctx, "caller-help-msg")
+}
+
+// TestSessionLogClose 验证 CloseSession 释放句柄、此前日志已落盘可读。
+func TestSessionLogClose(t *testing.T) {
+	defer restoreLoggerWithClose()
+
+	globalDir := mkTempDir(t)
+	InitFromDir(globalDir)
+
+	sessionDir := mkTempDir(t)
+	const sid = "test-session-close"
+	OpenSession(sid, sessionDir)
+	InfoCtx(WithSession(context.Background(), sid), "before close")
+	CloseSession(sid)
+
+	if !strings.Contains(readSessionLog(t, sessionDir), "before close") {
+		t.Fatal("Close 前的日志应已落盘")
 	}
 }

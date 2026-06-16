@@ -80,7 +80,7 @@ func (i *Interceptor) Check(ctx context.Context, toolName string, input json.Raw
 	params, err := parseInputParams(input)
 	if err != nil {
 		// JSON 解析失败不影响安全性，按空参数处理
-		logger.Warn("权限拦截器解析工具输入失败，按空参数处理",
+		logger.WarnCtx(ctx,"权限拦截器解析工具输入失败，按空参数处理",
 			zap.String("tool", toolName),
 			zap.Error(err),
 		)
@@ -92,14 +92,14 @@ func (i *Interceptor) Check(ctx context.Context, toolName string, input json.Raw
 
 	switch decision.Action {
 	case ActionAllow:
-		logger.Debug("权限检查放行",
+		logger.DebugCtx(ctx,"权限检查放行",
 			zap.String("tool", toolName),
 			zap.String("reason", decision.Reason),
 		)
 		return nil, nil // 放行
 
 	case ActionDeny:
-		logger.Info("权限检查拒绝",
+		logger.InfoCtx(ctx,"权限检查拒绝",
 			zap.String("tool", toolName),
 			zap.String("reason", decision.Reason),
 		)
@@ -110,7 +110,7 @@ func (i *Interceptor) Check(ctx context.Context, toolName string, input json.Raw
 
 	default:
 		// 未知动作，保守处理为 Deny
-		logger.Warn("权限检查返回未知动作，保守拒绝",
+		logger.WarnCtx(ctx,"权限检查返回未知动作，保守拒绝",
 			zap.String("tool", toolName),
 			zap.String("action", string(decision.Action)),
 		)
@@ -125,7 +125,7 @@ func (i *Interceptor) handleAsk(ctx context.Context, toolName string, params map
 	callback := i.getHITLCallback()
 	if callback == nil {
 		// 无 HITL 回调，视为 Deny
-		logger.Info("权限检查需要确认但无 HITL 通道，拒绝",
+		logger.InfoCtx(ctx,"权限检查需要确认但无 HITL 通道，拒绝",
 			zap.String("tool", toolName),
 		)
 		return &InterceptorResult{
@@ -150,7 +150,7 @@ func (i *Interceptor) handleAsk(ctx context.Context, toolName string, params map
 	resp, err := callback(ctx, req)
 	if err != nil {
 		// 回调失败（超时、连接断开等），视为 Deny
-		logger.Warn("HITL 回调失败，拒绝",
+		logger.WarnCtx(ctx,"HITL 回调失败，拒绝",
 			zap.String("tool", toolName),
 			zap.Error(err),
 		)
@@ -164,7 +164,7 @@ func (i *Interceptor) handleAsk(ctx context.Context, toolName string, params map
 
 	if !resp.Allowed {
 		// 用户拒绝
-		logger.Info("用户拒绝权限请求",
+		logger.InfoCtx(ctx,"用户拒绝权限请求",
 			zap.String("tool", toolName),
 		)
 		return &InterceptorResult{
@@ -191,7 +191,7 @@ func (i *Interceptor) handleAsk(ctx context.Context, toolName string, params map
 			Reason:  "用户本会话授权",
 		}
 		i.checker.AddSessionRule(sessionRule)
-		logger.Info("权限确认：本会话允许",
+		logger.InfoCtx(ctx,"权限确认：本会话允许",
 			zap.String("tool", toolName),
 			zap.String("pattern", pattern),
 		)
@@ -204,7 +204,7 @@ func (i *Interceptor) handleAsk(ctx context.Context, toolName string, params map
 			Action:  ActionAllow,
 			Reason:  fmt.Sprintf("用户永久授权：放行 %s", pattern),
 		}
-		logger.Info("权限确认：永久允许",
+		logger.InfoCtx(ctx,"权限确认：永久允许",
 			zap.String("tool", toolName),
 			zap.String("pattern", pattern),
 		)
@@ -215,7 +215,7 @@ func (i *Interceptor) handleAsk(ctx context.Context, toolName string, params map
 		}, nil
 
 	case ScopeOneTime:
-		logger.Info("权限确认：本次允许",
+		logger.InfoCtx(ctx,"权限确认：本次允许",
 			zap.String("tool", toolName),
 			zap.String("pattern", pattern),
 		)

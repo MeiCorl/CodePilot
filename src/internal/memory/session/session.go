@@ -284,6 +284,14 @@ func (sm *SessionManager) ProjectDir() string {
 	return sm.projectDir
 }
 
+// SessionDir 返回指定会话的完整目录绝对路径（{projectDir}/{sessionID}）。
+// 供 logger 会话化子系统取得「当前会话目录」，把核心会话链路日志写到该目录下
+// codepilot.log。委托私有 sessionDirPath 保持路径拼接的单一来源，避免调用方
+// 重复实现、未来目录结构变化也只需改一处。
+func (sm *SessionManager) SessionDir(id string) string {
+	return sm.sessionDirPath(id)
+}
+
 // CreateNew 创建一个新的空会话（仅在内存中生成 UUID），不立即落盘。
 // 首次追加消息时由 AppendMessages 惰性创建 session 目录与文件。
 func (sm *SessionManager) CreateNew() *Session {
@@ -395,6 +403,10 @@ func (sm *SessionManager) TruncateMessages(sessionID string) error {
 		}
 		_ = f.Close()
 	}
+	// 一并清理第二层摘要压缩的早期原文归档（history_archive.jsonl）：消息清零后这些
+	// 被摘要掉的原文已无对应活跃历史可追溯，残留只会让下次压缩把新归档追加在旧内容之后
+	// 造成混淆。归档属 best-effort 备份，其清理失败不影响「清空消息」的核心语义，故忽略错误。
+	_ = sm.ClearArchive(sessionID)
 	return sm.updateSessionMeta(sessionID, func(m *sessionMeta) {
 		m.MessageCount = 0
 		m.UpdatedAt = time.Now()

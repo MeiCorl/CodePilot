@@ -147,6 +147,29 @@ func (s *ToolResultStore) Save(sessionID, toolUseID, content string) (filePath s
 	return filePath, false, nil
 }
 
+// Clear 删除指定会话落盘的全部工具结果归档目录（<projectDir>/<sessionID>/tool_results/）。
+//
+// 供 /clear 场景清理第一层压缩产物。语义：
+//   - 幂等：目录不存在视为已清理成功（os.RemoveAll 对不存在的路径返回 nil，不报错），
+//     /clear 一个尚未产生过工具结果的新会话时直接命中此分支。
+//   - 防路径逃逸：sessionID 经 isSafeName 校验，与 Save/Exists 同约束，绝不构造越界路径，
+//     杜绝构造恶意 id 删除会话目录之外的文件（工具结果视为敏感数据，受同等约束）。
+//   - 失败（权限/IO 错误）返回 err，由调用方决定是否记日志；不影响消息清空，非致命。
+//
+// [Why] 清理范围严格对应 Save 的写入范围（同一 projectDir/sessionID/tool_results 拼接），
+// 仅删除 tool_results 子目录本身，不会误删会话目录下的其它产物——
+// messages.jsonl / history_archive.jsonl / codepilot.log 各自由其归属模块管理。
+func (s *ToolResultStore) Clear(sessionID string) error {
+	if !isSafeName(sessionID) {
+		return fmt.Errorf("非法 sessionID（含路径分隔符或为保留名）: %q", sessionID)
+	}
+	dir := filepath.Join(s.projectDir, sessionID, toolResultsDirName)
+	if err := os.RemoveAll(dir); err != nil {
+		return fmt.Errorf("删除工具结果目录失败 (%s): %w", dir, err)
+	}
+	return nil
+}
+
 // isSafeName 校验名字可作为文件名 / 目录名段使用。
 //
 // 拒绝：空串、"."、".."、含任意路径分隔符（/ 或 \，覆盖跨平台）的名字。

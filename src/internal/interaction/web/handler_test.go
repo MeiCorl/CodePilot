@@ -17,6 +17,8 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/MeiCorl/CodePilot/src/internal/config"
+	"github.com/MeiCorl/CodePilot/src/internal/logger"
+	memctx "github.com/MeiCorl/CodePilot/src/internal/memory/context"
 	"github.com/MeiCorl/CodePilot/src/internal/memory/session"
 	"github.com/MeiCorl/CodePilot/src/llm"
 	"github.com/MeiCorl/CodePilot/src/internal/tool"
@@ -128,6 +130,9 @@ func newTestRig(t *testing.T, chunks []llm.StreamChunk) *testRig {
 	h.Register(s.Router())
 	ts := httptest.NewServer(http.HandlerFunc(s.ConnectionManager().HandleWS))
 	t.Cleanup(ts.Close)
+	// 关闭本测试打开的会话级 logger，释放其 codepilot.log 文件句柄，
+	// 避免 Windows 下 t.TempDir 清理因句柄延迟占用而失败。
+	t.Cleanup(logger.CloseAllSessions)
 
 	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/"
 	client, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
@@ -1253,5 +1258,62 @@ func TestGetFileDiff_NilStore(t *testing.T) {
 	}
 	if p.Reason != "not_found" {
 		t.Errorf("Reason = %q, want %q", p.Reason, "not_found")
+	}
+}
+
+// TestClearSessionRemovesArtifacts /clear 清空当前会话上下文时，会一并清理会话目录下的
+// 两类压缩产物：第一层工具结果归档（tool_results/）与第二层摘要归档（history_archive.jsonl），
+// 且 messages.jsonl 归零，会话目录回到干净状态（保留 session_id）。
+func TestClearSessionRemovesArtifacts(t *testing.T) {
+	r := newTestRig(t, nil)
+	// 注入工具结果存盘器（模拟 main.go 无条件装配），指向与会话管理器同一 projectDir。
+	r.h.SetToolResultStore(memctx.NewToolResultStore(r.sm.ProjectDir()))
+
+	sessID := r.h.CurrentSessionID()
+	if sessID == "" {
+		t.Fatalf("当前会话 ID 不应为空")
+	}
+	// 用 session 包正规创建会话目录（meta.json + messages.jsonl + 一条历史消息）
+	if err := r.sm.AppendMessages(sessID, []llm.Message{
+		{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.NewTextBlock("历史消息")}},
+	}); err != nil {
+		t.Fatalf("AppendMessages 失败: %v", err)
+	}
+	sessionDir := r.sm.SessionDir(sessID)
+
+	// 额外预置两类压缩产物，模拟一个经历过压缩的会话
+	toolResultsDir := filepath.Join(sessionDir, "tool_results")
+	if err := os.MkdirAll(toolResultsDir, 0755); err != nil {
+		t.Fatalf("创建 tool_results 目录失败: %v", err)
+	}
+	toolResultFile := filepath.Join(toolResultsDir, "toolu_1")
+	if err := os.WriteFile(toolResultFile, []byte("被压缩落盘的工具结果"), 0644); err != nil {
+		t.Fatalf("写入工具结果文件失败: %v", err)
+	}
+	archiveFile := filepath.Join(sessionDir, "history_archive.jsonl")
+	if err := os.WriteFile(archiveFile, []byte("{}\n"), 0644); err != nil {
+		t.Fatalf("写入归档文件失败: %v", err)
+	}
+
+	// 触发 /clear
+	r.send(t, MsgTypeClearSession, nil)
+	if loaded, _ := r.recvWithFilter(t, MsgTypeSessionLoaded, 2*time.Second); loaded.Type != MsgTypeSessionLoaded {
+		t.Fatalf("应收到 session_loaded，实际 %q", loaded.Type)
+	}
+
+	// 断言：两类压缩产物均被清理
+	if _, err := os.Stat(toolResultFile); !os.IsNotExist(err) {
+		t.Fatalf("/clear 后工具结果文件应被删除: %s", toolResultFile)
+	}
+	if _, err := os.Stat(archiveFile); !os.IsNotExist(err) {
+		t.Fatalf("/clear 后 history_archive.jsonl 应被删除: %s", archiveFile)
+	}
+	// messages.jsonl 归零：重新加载会话，消息数为 0
+	sess, err := r.sm.Load(sessID)
+	if err != nil {
+		t.Fatalf("Load 失败: %v", err)
+	}
+	if len(sess.Messages) != 0 {
+		t.Fatalf("/clear 后会话消息应归零，实际 %d 条", len(sess.Messages))
 	}
 }

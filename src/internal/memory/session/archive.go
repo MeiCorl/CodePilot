@@ -148,3 +148,24 @@ func (sm *SessionManager) RewriteActiveMessages(sessionID string, msgs []llm.Mes
 		m.UpdatedAt = time.Now()
 	})
 }
+
+// ClearArchive 删除指定会话的摘要压缩归档文件（history_archive.jsonl）。
+//
+// 供 /clear 场景清理第二层压缩产物：被摘要掉的早期原文归档，在会话消息清零后已无对应
+// 活跃历史可追溯，残留只会让下次压缩把新归档追加在旧内容之后造成混淆，故一并删除。
+//
+// 语义：
+//   - 幂等：文件不存在视为已清理（os.IsNotExist 忽略）——/clear 一个尚未触发过摘要
+//     压缩的会话时直接命中此分支，不报错。
+//   - 范围一致：复用 archiveFilePath（与 ArchiveMessages 写入同一文件），保证清理与
+//     写入落点相同，不误删会话目录下的其它产物。
+//
+// [定位] 归档是 best-effort 的原文备份（见 ArchiveMessages 注释：仅用于追溯、不参与
+// LLM 上下文），其清理失败对 /clear 的核心语义（清空消息）无影响，故调用方
+// （TruncateMessages）对其错误采取忽略策略。
+func (sm *SessionManager) ClearArchive(sessionID string) error {
+	if err := os.Remove(sm.archiveFilePath(sessionID)); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("删除历史归档文件失败: %w", err)
+	}
+	return nil
+}

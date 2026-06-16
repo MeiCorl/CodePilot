@@ -15,6 +15,7 @@ import (
 
 	"github.com/MeiCorl/CodePilot/src/internal/config"
 	"github.com/MeiCorl/CodePilot/src/internal/engine/conversation"
+	"github.com/MeiCorl/CodePilot/src/internal/logger"
 	"github.com/MeiCorl/CodePilot/src/internal/memory/session"
 	"github.com/MeiCorl/CodePilot/src/llm"
 	"github.com/MeiCorl/CodePilot/src/internal/tool"
@@ -124,6 +125,7 @@ func newToolRigWithEnabled(t *testing.T, scripts [][]llm.StreamChunk, toolInstan
 	h.Register(s.Router())
 	ts := httptest.NewServer(http.HandlerFunc(s.ConnectionManager().HandleWS))
 	t.Cleanup(ts.Close)
+	t.Cleanup(logger.CloseAllSessions)
 	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/"
 	client, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
 	if err != nil {
@@ -414,6 +416,7 @@ func TestSessionLoadedIncludesToolHistory(t *testing.T) {
 	h.Register(s.Router())
 	ts := httptest.NewServer(http.HandlerFunc(s.ConnectionManager().HandleWS))
 	defer ts.Close()
+	defer logger.CloseAllSessions()
 	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/"
 	client, _, _ := websocket.DefaultDialer.Dial(wsURL, nil)
 	defer client.Close()
@@ -890,6 +893,7 @@ func TestAgentLoopConfigFromHandler(t *testing.T) {
 	h.Register(s.Router())
 	ts := httptest.NewServer(http.HandlerFunc(s.ConnectionManager().HandleWS))
 	defer ts.Close()
+	defer logger.CloseAllSessions()
 	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/"
 	client, _, _ := websocket.DefaultDialer.Dial(wsURL, nil)
 	defer client.Close()

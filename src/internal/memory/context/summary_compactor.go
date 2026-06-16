@@ -166,8 +166,7 @@ func (sc *SummaryCompactor) Compact(
 		return history, false, fmt.Errorf("重写活跃历史失败: %w", err)
 	}
 
-	logger.Info("已将历史压缩为摘要",
-		zap.String("sessionID", sessionID),
+	logger.InfoCtx(ctx, "已将历史压缩为摘要",
 		zap.Int("summarizedCount", len(toSummarize)),
 		zap.Int("keepCount", len(keep)),
 		zap.Int("summaryTokens", EstimateTextTokens(summary)),
@@ -267,8 +266,59 @@ func splitByTailTokens(history []llm.Message, keepTokens, minKeep int) (toSummar
 	if split > n-1 {
 		split = n - 1
 	}
+	split = alignSplitForToolPairs(history, split)
+	if split < 1 {
+		return nil, history
+	}
 
 	return history[:split], history[split:]
+}
+
+// alignSplitForToolPairs keeps Anthropic tool_use/tool_result protocol pairs on
+// the same side of the summary boundary. A raw tool_result cannot remain in the
+// active tail unless its matching assistant tool_use is also visible before it.
+func alignSplitForToolPairs(history []llm.Message, split int) int {
+	for split > 0 && split < len(history) &&
+		startsWithToolResult(history[split]) &&
+		assistantHasToolUseFor(history[split-1], history[split]) {
+		split--
+	}
+	return split
+}
+
+func startsWithToolResult(msg llm.Message) bool {
+	if msg.Role != llm.RoleUser {
+		return false
+	}
+	for _, block := range msg.Content {
+		if _, ok := block.(*llm.ToolResultBlock); ok {
+			return true
+		}
+	}
+	return false
+}
+
+func assistantHasToolUseFor(assistant, result llm.Message) bool {
+	if assistant.Role != llm.RoleAssistant {
+		return false
+	}
+	toolUseIDs := make(map[string]struct{})
+	for _, block := range assistant.Content {
+		if tu, ok := block.(*llm.ToolUseBlock); ok {
+			toolUseIDs[tu.ID] = struct{}{}
+		}
+	}
+	if len(toolUseIDs) == 0 {
+		return false
+	}
+	for _, block := range result.Content {
+		if tr, ok := block.(*llm.ToolResultBlock); ok {
+			if _, ok := toolUseIDs[tr.ToolUseID]; ok {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // stripDraft 剥离文本中的 <draft>...</draft> 段（含可能存在的多个），返回剩余的正式摘要。

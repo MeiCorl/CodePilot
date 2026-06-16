@@ -26,6 +26,8 @@
 package context
 
 import (
+	"context"
+
 	"github.com/MeiCorl/CodePilot/src/internal/config"
 	"github.com/MeiCorl/CodePilot/src/internal/logger"
 	"github.com/MeiCorl/CodePilot/src/llm"
@@ -59,12 +61,13 @@ func NewLightCompactor(store *ToolResultStore, cfg config.CompactionConfig) *Lig
 // compactMessage）。返回 changed 表示本轮【是否实际发生过至少一次替换】——未超阈值
 // 或全部已是预览态时返回 false（无噪音）。
 //
-// sessionID 决定存盘子目录归属（跨会话隔离）。err 正常恒为 nil。
-func (lc *LightCompactor) Compact(messages []llm.Message, sessionID string) (changed bool, err error) {
+// ctx 用于会话级日志路由（logger.WarnCtx/InfoCtx 据此把压缩日志写入对应会话目录）；
+// 本层无 LLM 调用，ctx 仅服务于日志。sessionID 决定存盘子目录归属（跨会话隔离）。err 正常恒为 nil。
+func (lc *LightCompactor) Compact(ctx context.Context, messages []llm.Message, sessionID string) (changed bool, err error) {
 	threshold := lc.cfg.ToolResultThreshold
 	previewTokens := lc.cfg.PreviewTokens
 	for i := range messages {
-		if lc.compactMessage(&messages[i], sessionID, threshold, previewTokens) {
+		if lc.compactMessage(ctx, &messages[i], sessionID, threshold, previewTokens) {
 			changed = true
 		}
 	}
@@ -82,7 +85,7 @@ func (lc *LightCompactor) Compact(messages []llm.Message, sessionID string) (cha
 // 跳过条件：已是预览态（isPreview）的 block 不进入候选，避免重复 IO。
 // 防死循环：替换失败的 block（存盘失败 / 原文≤预览预算导致无需替换）被记入 failed 集合，
 // 后续轮次排除，保证循环必然推进终止。
-func (lc *LightCompactor) compactMessage(msg *llm.Message, sessionID string, threshold, previewTokens int) bool {
+func (lc *LightCompactor) compactMessage(ctx context.Context, msg *llm.Message, sessionID string, threshold, previewTokens int) bool {
 	// 收集候选 block 索引：ToolResultBlock 且当前非预览态。
 	var candidates []int
 	for i := range msg.Content {
@@ -100,7 +103,7 @@ func (lc *LightCompactor) compactMessage(msg *llm.Message, sessionID string, thr
 	for _, i := range candidates {
 		tr := msg.Content[i].(*llm.ToolResultBlock)
 		if EstimateTextTokens(tr.Content) > threshold {
-			if lc.replaceBlock(tr, sessionID, previewTokens) {
+			if lc.replaceBlock(ctx, tr, sessionID, previewTokens) {
 				changed = true
 			}
 		}
@@ -133,7 +136,7 @@ func (lc *LightCompactor) compactMessage(msg *llm.Message, sessionID string, thr
 			}
 		}
 		tr := msg.Content[pick].(*llm.ToolResultBlock)
-		if lc.replaceBlock(tr, sessionID, previewTokens) {
+		if lc.replaceBlock(ctx, tr, sessionID, previewTokens) {
 			changed = true
 		} else {
 			// 替换未成功（存盘失败或原文≤预览预算）：标记排除，避免下轮重复选中导致死循环。
@@ -154,15 +157,14 @@ func (lc *LightCompactor) compactMessage(msg *llm.Message, sessionID string, thr
 //
 // tr 必须是 messages 历史中真实持有的 *ToolResultBlock 指针（由 compactMessage 经类型
 // 断言取得），in-place 修改才会反映到上游 history。
-func (lc *LightCompactor) replaceBlock(tr *llm.ToolResultBlock, sessionID string, previewTokens int) bool {
+func (lc *LightCompactor) replaceBlock(ctx context.Context, tr *llm.ToolResultBlock, sessionID string, previewTokens int) bool {
 	original := tr.Content
 	originalTokens := EstimateTextTokens(original)
 
 	fp, _, err := lc.store.Save(sessionID, tr.ToolUseID, original)
 	if err != nil {
 		// 存盘失败：降级保留原文，仅记 warn，不向上抛错（保证整轮压缩不被单点 IO 失败中断）。
-		logger.Warn("工具结果存盘失败，降级保留原文",
-			zap.String("sessionID", sessionID),
+		logger.WarnCtx(ctx, "工具结果存盘失败，降级保留原文",
 			zap.String("toolUseID", tr.ToolUseID),
 			zap.Int("originalTokens", originalTokens),
 			zap.Error(err),
@@ -178,8 +180,7 @@ func (lc *LightCompactor) replaceBlock(tr *llm.ToolResultBlock, sessionID string
 	}
 
 	tr.Content = preview
-	logger.Info("工具结果已存盘并替换为预览",
-		zap.String("sessionID", sessionID),
+	logger.InfoCtx(ctx, "工具结果已存盘并替换为预览",
 		zap.String("toolUseID", tr.ToolUseID),
 		zap.Int("originalTokens", originalTokens),
 		zap.String("filePath", fp),

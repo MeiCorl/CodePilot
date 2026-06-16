@@ -216,7 +216,7 @@ func (h *ToolHandler) doExecute(ctx context.Context, toolUse llm.ToolUseBlock) (
 	if h.interceptor != nil {
 		result, err := h.interceptor.Check(execCtx, toolUse.Name, toolUse.Input, t.Permission())
 		if err != nil {
-			logger.Warn("权限拦截器检查异常",
+			logger.WarnCtx(ctx,"权限拦截器检查异常",
 				zap.String("tool", toolUse.Name),
 				zap.Error(err),
 			)
@@ -240,7 +240,7 @@ func (h *ToolHandler) doExecute(ctx context.Context, toolUse llm.ToolUseBlock) (
 		for _, mw := range mws {
 			mwCtx, err := mw(execCtx, toolUse.Name, toolUse.Input, t.Permission())
 			if err != nil {
-				logger.Warn("中间件拦截工具执行",
+				logger.WarnCtx(ctx,"中间件拦截工具执行",
 					zap.String("tool", toolUse.Name),
 					zap.Error(err),
 				)
@@ -251,7 +251,7 @@ func (h *ToolHandler) doExecute(ctx context.Context, toolUse llm.ToolUseBlock) (
 	}
 
 	// 权限分级仅做信息记录，强制拦截由工具自身 + safety 包负责。
-	logger.Debug("工具开始执行",
+	logger.DebugCtx(ctx,"工具开始执行",
 		zap.String("tool", t.Name()),
 		zap.String("permission", t.Permission().String()),
 		zap.String("tool_use_id", toolUse.ID),

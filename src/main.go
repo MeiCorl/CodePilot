@@ -32,20 +32,20 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/MeiCorl/CodePilot/src/internal/config"
-	mcpconfig "github.com/MeiCorl/CodePilot/src/internal/mcp/config"
-	"github.com/MeiCorl/CodePilot/src/internal/mcp/adapter"
-	"github.com/MeiCorl/CodePilot/src/internal/mcp/session"
 	"github.com/MeiCorl/CodePilot/src/internal/engine/conversation"
 	"github.com/MeiCorl/CodePilot/src/internal/engine/prompt"
 	"github.com/MeiCorl/CodePilot/src/internal/engine/prompt/sources"
 	"github.com/MeiCorl/CodePilot/src/internal/interaction/web"
 	"github.com/MeiCorl/CodePilot/src/internal/logger"
+	"github.com/MeiCorl/CodePilot/src/internal/mcp/adapter"
+	mcpconfig "github.com/MeiCorl/CodePilot/src/internal/mcp/config"
+	"github.com/MeiCorl/CodePilot/src/internal/mcp/session"
 	memctx "github.com/MeiCorl/CodePilot/src/internal/memory/context"
 	memsession "github.com/MeiCorl/CodePilot/src/internal/memory/session"
 	"github.com/MeiCorl/CodePilot/src/internal/runtime/console"
 	"github.com/MeiCorl/CodePilot/src/internal/security"
-	"github.com/MeiCorl/CodePilot/src/llm"
 	"github.com/MeiCorl/CodePilot/src/internal/tool"
+	"github.com/MeiCorl/CodePilot/src/llm"
 	// import 触发 builtin 包的 init()，将 5 个内置工具以 cwd + 30s 兜底
 	// 注册到 tool.DefaultRegistry()；main 随后按 cfg 调
 	// builtin.RegisterWithOptions 用 cfg 中的工作目录/超时覆盖默认实例。
@@ -53,8 +53,7 @@ import (
 )
 
 const (
-	// defaultMaxRounds 滑动窗口默认保留的最大对话轮数。
-	// 50 轮 ≈ 100 条消息，足以覆盖大多数会话；Step 7 上下文管理将替换为完整策略。
+	// defaultMaxRounds 为兼容旧构造链保留的历史参数；当前不再用于裁剪上下文。
 	defaultMaxRounds = 50
 
 	// browserExitGracePeriod 浏览器关闭后等待新连接恢复的宽限期。
@@ -79,6 +78,9 @@ func run() error {
 	}
 	defer logger.Sync()
 	defer logger.Close()
+	// 关闭所有会话级 logger 并释放其文件句柄。利用 defer LIFO：本行最后注册故最先执行，
+	// 确保会话 logger 先各自 Sync+Close，再执行上面的全局 Close/Sync。
+	defer logger.CloseAllSessions()
 
 	// 2. 加载配置
 	cfg, err := config.Load()
@@ -226,13 +228,19 @@ func run() error {
 	// Step 8:把 MCP pool 注入 Handler,让 mcp_status 推送 + 远端工具 server 解析生效
 	handler.SetMCPPool(mcpPool)
 
-	// Step 7：装配上下文压缩协调器（可选，压缩总开关关闭时跳过）。
-	// 链路：ToolResultStore（注入 sessMgr 的 projectDir）+ LightCompactor + SummaryCompactor
-	// （archiver 用 sessMgr，*SessionManager 天然满足 HistoryArchiver 接口）→ Compactor 协调器。
-	// 通过 handler.SetCompactor 注入（同时转发给 ConversationManager 使每轮自动压缩生效）。
-	// enabled=false 时整体降级为纯滑动窗口，兼容 Step 1~6 行为。
+	// Step 7：装配上下文压缩子系统。
+	// ToolResultStore 无条件构造并注入 Handler——/clear 需据此清理落盘的工具结果归档，
+	// 与压缩总开关解耦：即便 compaction 关闭，残留的 tool_results 也能被 /clear 清掉
+	// （NewToolResultStore 纯内存无 IO，上提无开销）。
+	toolResultStore := memctx.NewToolResultStore(sessMgr.ProjectDir())
+	handler.SetToolResultStore(toolResultStore)
+
+	// 压缩协调器（可选，压缩总开关关闭时跳过）。
+	// 链路：LightCompactor + SummaryCompactor（archiver 用 sessMgr，*SessionManager 天然
+	// 满足 HistoryArchiver 接口）→ Compactor 协调器。通过 handler.SetCompactor 注入
+	// （同时转发给 ConversationManager 使每轮自动压缩生效）。
+	// enabled=false 时仅关闭自动压缩，不再启用滑动窗口裁剪。
 	if cfg.Compaction.IsEnabled() {
-		toolResultStore := memctx.NewToolResultStore(sessMgr.ProjectDir())
 		lightCompactor := memctx.NewLightCompactor(toolResultStore, cfg.Compaction)
 		summaryCompactor := memctx.NewSummaryCompactor(sessMgr, cfg.Compaction)
 		compactor := memctx.NewCompactor(lightCompactor, summaryCompactor, cfg.Compaction)
@@ -244,7 +252,7 @@ func run() error {
 			zap.Int("breakerThreshold", cfg.Compaction.BreakerThreshold),
 		)
 	} else {
-		logger.Info("上下文压缩已关闭（compaction.enabled=false），降级为纯滑动窗口")
+		logger.Info("上下文压缩已关闭（compaction.enabled=false），将发送完整活跃历史")
 	}
 
 	server := web.NewServer(web.DefaultAddr)

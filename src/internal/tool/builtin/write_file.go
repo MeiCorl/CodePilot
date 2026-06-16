@@ -94,7 +94,7 @@ func (t *WriteFileTool) Execute(ctx context.Context, input json.RawMessage) (str
 		before = string(data)
 	} else if !os.IsNotExist(err) {
 		// 读取失败（权限等）不影响写入主流程，仅记录后继续
-		logger.Warn("WriteFile 读取旧内容失败，diff.before 留空",
+		logger.WarnCtx(ctx,"WriteFile 读取旧内容失败，diff.before 留空",
 			zap.String("file_path", absPath), zap.Error(err))
 	}
 
@@ -133,7 +133,7 @@ func (t *WriteFileTool) recordDiff(ctx context.Context, absPath, before, after s
 		Before:   before,
 		After:    after,
 	}) {
-		logger.Warn("WriteFile diff 被 DiffSink 拒绝",
+		logger.WarnCtx(ctx,"WriteFile diff 被 DiffSink 拒绝",
 			zap.String("tool_use_id", id),
 			zap.String("file_path", absPath),
 		)

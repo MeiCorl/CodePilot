@@ -23,11 +23,11 @@ import (
 	"github.com/MeiCorl/CodePilot/src/internal/logger"
 	"github.com/MeiCorl/CodePilot/src/internal/mcp/adapter"
 	mcpsession "github.com/MeiCorl/CodePilot/src/internal/mcp/session"
-	memsession "github.com/MeiCorl/CodePilot/src/internal/memory/session"
 	memctx "github.com/MeiCorl/CodePilot/src/internal/memory/context"
+	memsession "github.com/MeiCorl/CodePilot/src/internal/memory/session"
 	"github.com/MeiCorl/CodePilot/src/internal/security"
-	"github.com/MeiCorl/CodePilot/src/llm"
 	"github.com/MeiCorl/CodePilot/src/internal/tool"
+	"github.com/MeiCorl/CodePilot/src/llm"
 )
 
 // mcpServerByName 缓存 MCP 远端工具名 → server 名的映射(由 mcpPool 在 SetMCPPool 时填充)。
@@ -72,9 +72,15 @@ type Handler struct {
 	fileDiffStore *FileDiffStore
 
 	// compactor 为上下文压缩协调器（Step 7）。nil 表示压缩总开关关闭——此时
-	// /compact 返回 compaction_disabled，自动压缩在 manager 侧见 nil 直接跳过（降级为纯滑动窗口）。
+	// /compact 返回 compaction_disabled，自动压缩在 manager 侧见 nil 直接跳过。
 	// 由 main.go 顶层装配后通过 SetCompactor 注入（同时转发给 ConversationManager）。
 	compactor *memctx.Compactor
+
+	// toolResultStore 为第一层压缩的工具结果存盘器（Step 7）。供 handleClearSession 在
+	// /clear 时清理落盘的工具结果归档目录；为 nil 时（未注入）清理跳过，不影响清空消息。
+	// 由 main.go 顶层装配后通过 SetToolResultStore 注入（与压缩总开关解耦：即便 compaction
+	// 关闭，handler 仍持有 store 以清理残留的 tool_results）。
+	toolResultStore *memctx.ToolResultStore
 
 	// interceptor 为权限拦截器；为 nil 时 ToolHandler 不做权限检查。
 	interceptor *security.Interceptor
@@ -148,16 +154,16 @@ func NewHandler(
 		contextWindowSize = defaultContextWindowSize
 	}
 	h := &Handler{
-		provider:          provider,
-		sessMgr:           sessMgr,
-		cfg:               cfg,
-		conv:              conversation.NewConversationManager(maxRounds),
-		promptBuilder:     promptBuilder,
-		contextWindowSize: contextWindowSize,
-		workdir:           workdir,
-		registry:          registry,
-		toolHandler:       toolHandler,
-		fileDiffStore:     fileDiffStore,
+		provider:           provider,
+		sessMgr:            sessMgr,
+		cfg:                cfg,
+		conv:               conversation.NewConversationManager(maxRounds),
+		promptBuilder:      promptBuilder,
+		contextWindowSize:  contextWindowSize,
+		workdir:            workdir,
+		registry:           registry,
+		toolHandler:        toolHandler,
+		fileDiffStore:      fileDiffStore,
 		pendingPermissions: make(map[string]chan security.PermissionResponse),
 	}
 	// 尝试恢复最近一个会话
@@ -182,6 +188,8 @@ func NewHandler(
 	h.conv.SetContextWindowSize(contextWindowSize)
 	if h.current != nil {
 		h.conv.SetSessionID(h.current.ID)
+		// 打开当前会话专属日志器：启动后核心链路日志即写入该会话目录的 codepilot.log。
+		h.openSessionLogger(h.current.ID)
 	}
 	return h
 }
@@ -306,6 +314,11 @@ func (h *Handler) runStream(ctx context.Context, conn *websocket.Conn) {
 	// 记录当前活跃 WebSocket 连接，供 HITL 回调使用
 	h.mu.Lock()
 	h.pendingConn = conn
+	// 持锁取当前会话 ID 并注入 ctx：下游核心链路经 logger.InfoCtx 等函数据此把会话日志
+	// 路由到对应会话目录的 codepilot.log（ctx 无 sessionID 时回退全局，不影响业务）。
+	if h.current != nil && h.current.ID != "" {
+		ctx = logger.WithSession(ctx, h.current.ID)
+	}
 	h.mu.Unlock()
 	defer func() {
 		h.mu.Lock()
@@ -505,6 +518,8 @@ func (h *Handler) handleGetCurrentSession(conn *websocket.Conn, msg Message) err
 		h.persistedMsgCount = 0
 		h.conv.SetSessionID(cur.ID)
 		h.mu.Unlock()
+		// 打开当前会话专属日志器（释放锁后再做，避免锁内做日志目录 IO）。
+		h.openSessionLogger(cur.ID)
 	}
 	if err := h.sendSessionLoaded(conn, cur); err != nil {
 		return err
@@ -555,6 +570,8 @@ func (h *Handler) handleNewSession(conn *websocket.Conn, msg Message) error {
 	h.current = h.sessMgr.CreateNew()
 	h.conv.Reset(nil)
 	h.conv.SetSessionID(h.current.ID)
+	// 打开新会话专属日志器（切换点已持 h.mu；OpenSession 自身线程安全，不会死锁）。
+	h.openSessionLogger(h.current.ID)
 	h.persistedMsgCount = 0
 	// 新会话触发 SP 重新组装（虽然 result 通常一致，但保持与切换路径一致的处理）
 	h.assembleSP()
@@ -579,9 +596,19 @@ func (h *Handler) handleClearSession(conn *websocket.Conn, msg Message) error {
 	h.conv.Reset(nil)
 	// 清空也触发 SP 重新组装（与切换会话路径保持一致语义）
 	h.assembleSP()
-	// 清空磁盘消息日志（保留 session_id），让历史列表预览/计数同步归零
+	// 清空磁盘消息日志（保留 session_id），让历史列表预览/计数同步归零。
+	// TruncateMessages 内部已一并清理第二层摘要压缩归档（history_archive.jsonl）。
 	if err := h.sessMgr.TruncateMessages(h.current.ID); err != nil {
 		logger.Warn("清空会话消息失败", zap.Error(err))
+	}
+	// 清理第一层压缩落盘的工具结果归档目录（tool_results/）——TruncateMessages 不感知
+	// context 包产物，故由 handler 持有的 store 在此补一刀，使 /clear 后会话目录彻底干净。
+	// store 未注入（nil）时跳过；清理失败仅记日志，不影响已完成的清空。
+	if h.toolResultStore != nil {
+		if err := h.toolResultStore.Clear(h.current.ID); err != nil {
+			logger.Warn("清理会话工具结果归档失败",
+				zap.String("session_id", h.current.ID), zap.Error(err))
+		}
 	}
 	h.persistedMsgCount = 0
 	// 刷新前端 ctx left 显示：清空后历史为空，remaining 应回到 ~100%
@@ -635,6 +662,8 @@ func (h *Handler) handleResumeSession(conn *websocket.Conn, msg Message) error {
 	h.current = sess
 	h.conv.Reset(sess.Messages)
 	h.conv.SetSessionID(sess.ID)
+	// 打开恢复会话专属日志器（幂等：已打开则直接复用，便于反复 resume）。
+	h.openSessionLogger(sess.ID)
 	// 恢复的消息已在磁盘上，已落盘计数对齐到其长度
 	h.persistedMsgCount = len(sess.Messages)
 	// 切换会话后重新组装 SP（确保与新会话上下文一致）
@@ -685,6 +714,8 @@ func (h *Handler) handleDeleteSession(conn *websocket.Conn, msg Message) error {
 		h.current = newCurrent
 		h.conv.Reset(newCurrent.Messages)
 		h.conv.SetSessionID(newCurrent.ID)
+		// 切换后打开新当前会话专属日志器。
+		h.openSessionLogger(newCurrent.ID)
 		// 已落盘计数对齐到新当前会话的消息数（Load 出来的有计数，CreateNew 的为 0）
 		h.persistedMsgCount = len(newCurrent.Messages)
 		// 切换会话后重新组装 SP
@@ -730,10 +761,10 @@ func (h *Handler) handleDevExportSP(conn *websocket.Conn, msg Message) error {
 		stats = append(stats, SPSourceStat{Name: s.Name, Tokens: s.Tokens})
 	}
 	return h.sendMessage(conn, MsgTypeDevExportSP, DevExportSPPayload{
-		SystemBlocks:   systemTexts,
+		SystemBlocks:    systemTexts,
 		LeadUserMessage: sp.LeadUserMessage,
-		Stats:          stats,
-		TotalTokens:    sp.TotalTokens,
+		Stats:           stats,
+		TotalTokens:     sp.TotalTokens,
 	})
 }
 
@@ -909,13 +940,37 @@ func (h *Handler) BroadcastMCPStatus() {
 	}
 }
 
+// openSessionLogger 打开（幂等）指定会话的专属日志器，使该会话核心链路日志写入其会话目录
+// 的 codepilot.log。在所有「会话切换」汇聚点（启动恢复 / new / resume / delete 后切换）调用，
+// 确保切换后目标会话的日志目录就绪。幂等：同一 sessionID 重复打开直接复用，无副作用。
+// 失败仅记全局 warn、不阻塞会话切换——logger.OpenSession 失败时 LCtx 会自动回退全局日志。
+func (h *Handler) openSessionLogger(id string) {
+	if id == "" {
+		return
+	}
+	if err := logger.OpenSession(id, h.sessMgr.SessionDir(id)); err != nil {
+		logger.Warn("打开会话日志器失败，将回退全局日志",
+			zap.String("sessionID", id),
+			zap.Error(err),
+		)
+	}
+}
+
 // SetCompactor 注入上下文压缩协调器（Step 7）。
 // 应在 main.go 构造 Handler 后、启动服务前调用一次。c 为 nil 表示压缩关闭——
-// /compact 返回 compaction_disabled，自动压缩在 manager 侧见 nil 直接跳过（降级为纯滑动窗口）。
+// /compact 返回 compaction_disabled，自动压缩在 manager 侧见 nil 直接跳过。
 // 本方法同时把协调器转发注入 ConversationManager，使 runOneLLM 每轮自动压缩生效。
 func (h *Handler) SetCompactor(c *memctx.Compactor) {
 	h.compactor = c
 	h.conv.SetCompactor(c)
+}
+
+// SetToolResultStore 注入第一层压缩的工具结果存盘器（Step 7）。
+// 应在 main.go 构造 Handler 后、启动服务前调用一次。store 由 main.go 无条件构造
+// （NewToolResultStore 纯内存无 IO），使 /clear 的工具结果清理能力与压缩总开关解耦。
+// 为 nil 时 handleClearSession 跳过 tool_results 清理，不影响清空消息。
+func (h *Handler) SetToolResultStore(s *memctx.ToolResultStore) {
+	h.toolResultStore = s
 }
 
 // handleCompact 处理前端 /compact 斜杠命令或状态栏「压缩」按钮的请求：
@@ -1265,8 +1320,8 @@ func (h *Handler) sendPermissionMode(conn *websocket.Conn) error {
 		sessionRuleCount = h.checker.SessionRuleCount()
 	}
 	return h.sendMessage(conn, MsgTypePermissionMode, PermissionModePayload{
-		Mode:            mode,
-		RuleCount:       ruleCount,
+		Mode:             mode,
+		RuleCount:        ruleCount,
 		SessionRuleCount: sessionRuleCount,
 	})
 }
@@ -1278,9 +1333,9 @@ func (h *Handler) sendPermissionMode(conn *websocket.Conn) error {
 // 内部按需进行，handler 仅负责传最基础的静态字段。
 func buildSPEnv(cfg *config.Config, workdir string) sources.Env {
 	env := sources.Env{
-		OS:     runtime.GOOS,
-		CWD:    workdir,
-		Date:   time.Now().Format("2006-01-02"),
+		OS:              runtime.GOOS,
+		CWD:             workdir,
+		Date:            time.Now().Format("2006-01-02"),
 		StaticOverrides: nil,
 	}
 	// 预留：未来 cfg 中可加 SystemPromptConfig.StaticOverrides 注入

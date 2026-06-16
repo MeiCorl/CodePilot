@@ -188,7 +188,7 @@ func (c *Compactor) Compact(
 	// ---- 第一层：每次都跑（轻量预防，无 LLM 调用，代价低）----
 	// 统计本轮替换数：对比第一层前后「处于预览态」的工具结果数差值。
 	beforePreview := countPreviewToolResults(history)
-	lightChanged, _ := c.light.Compact(history, sessionID)
+	lightChanged, _ := c.light.Compact(ctx, history, sessionID)
 	afterPreview := countPreviewToolResults(history)
 
 	result.LightChanged = lightChanged
@@ -196,8 +196,7 @@ func (c *Compactor) Compact(
 	if lightChanged {
 		// 第一层产生变更时升级层级为 light（若后续第二层也生效则再升级为 summary）。
 		result.Level = CompactionLevelLight
-		logger.Info("第一层轻量压缩完成",
-			zap.String("sessionID", sessionID),
+		logger.InfoCtx(ctx, "第一层轻量压缩完成",
 			zap.String("level", string(CompactionLevelLight)),
 			zap.Int("replacedBlocks", result.ReplacedBlocks),
 			zap.Int("beforeTokens", result.BeforeTokens),
@@ -206,8 +205,7 @@ func (c *Compactor) Compact(
 
 	// ---- 第二层：判定是否需要重量兜底 ----
 	runSummary, wasTripped, remaining := c.decideSummary(sessionID, ch, manual)
-	logger.Info("第二层摘要触发判定",
-		zap.String("sessionID", sessionID),
+	logger.InfoCtx(ctx, "第二层摘要触发判定",
 		zap.Bool("manual", manual),
 		zap.Int("remaining", remaining),
 		zap.Int("autoTriggerMargin", c.cfg.AutoTriggerMargin),
@@ -237,15 +235,13 @@ func (c *Compactor) Compact(
 		result.Tripped = nowTripped
 		result.AfterTokens = EstimateMessagesTokens(ch.History())
 		if nowTripped {
-			logger.Warn("摘要压缩失败并触发熔断，本会话暂停自动第二层",
-				zap.String("sessionID", sessionID),
+			logger.WarnCtx(ctx, "摘要压缩失败并触发熔断，本会话暂停自动第二层",
 				zap.Int("beforeTokens", result.BeforeTokens),
 				zap.Int("remaining", remaining),
 				zap.Error(err),
 			)
 		} else {
-			logger.Warn("摘要压缩失败（未达熔断阈值，自动模式稍后仍可重试）",
-				zap.String("sessionID", sessionID),
+			logger.WarnCtx(ctx, "摘要压缩失败（未达熔断阈值，自动模式稍后仍可重试）",
 				zap.Int("beforeTokens", result.BeforeTokens),
 				zap.Error(err),
 			)
@@ -259,8 +255,7 @@ func (c *Compactor) Compact(
 		result.SummaryChanged = true
 		result.Level = CompactionLevelSummary
 		c.recordSuccess(sessionID)
-		logger.Info("第二层摘要压缩完成",
-			zap.String("sessionID", sessionID),
+		logger.InfoCtx(ctx, "第二层摘要压缩完成",
 			zap.String("level", string(CompactionLevelSummary)),
 			zap.Int("beforeTokens", result.BeforeTokens),
 			zap.Int("afterTokens", EstimateMessagesTokens(newHistory)),

@@ -143,7 +143,7 @@ func (t *EditFileTool) recordDiff(ctx context.Context, absPath, before, after st
 		Before:   before,
 		After:    after,
 	}) {
-		logger.Warn("EditFile diff 被 DiffSink 拒绝",
+		logger.WarnCtx(ctx,"EditFile diff 被 DiffSink 拒绝",
 			zap.String("tool_use_id", id),
 			zap.String("file_path", absPath),
 		)

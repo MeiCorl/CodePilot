@@ -144,7 +144,7 @@ func SandboxMiddleware(workdir string, ruleProvider PathRuleProvider) Middleware
 		// 解析 input params（解析失败按空 params 处理，与 interceptor 一致）
 		params, err := parseInputParams(input)
 		if err != nil {
-			logger.Warn("SandboxMiddleware 解析工具输入失败，按空参数处理",
+			logger.WarnCtx(ctx,"SandboxMiddleware 解析工具输入失败，按空参数处理",
 				zap.String("tool", toolName),
 				zap.Error(err),
 			)
@@ -169,7 +169,7 @@ func SandboxMiddleware(workdir string, ruleProvider PathRuleProvider) Middleware
 			if ruleProvider != nil {
 				absForRule := normalizeForRule(pathStr, workdir)
 				if matched, reason := ruleProvider.MatchPathRule(toolName, absForRule); matched {
-					logger.Info("SandboxMiddleware 越界路径被路径级规则放行",
+					logger.InfoCtx(ctx,"SandboxMiddleware 越界路径被路径级规则放行",
 						zap.String("tool", toolName),
 						zap.String("param_key", paramKey),
 						zap.String("raw_path", pathStr),
@@ -181,7 +181,7 @@ func SandboxMiddleware(workdir string, ruleProvider PathRuleProvider) Middleware
 					return WithPathResolver(ctx, resolver), nil
 				}
 			}
-			logger.Info("SandboxMiddleware 拦截越界路径",
+			logger.InfoCtx(ctx,"SandboxMiddleware 拦截越界路径",
 				zap.String("tool", toolName),
 				zap.String("param_key", paramKey),
 				zap.String("raw_path", pathStr),
