@@ -244,6 +244,7 @@ func (h *Handler) Register(router *Router) {
 	router.Register(MsgTypePermissionResponse, h.handlePermissionResponse)
 	router.Register(MsgTypeSetPermissionMode, h.handleSetPermissionMode)
 	router.Register(MsgTypeCompact, h.handleCompact)
+	router.Register(MsgTypeDump, h.handleDump)
 }
 
 // ModelName 返回当前配置中的模型名，供状态栏展示。
@@ -1037,6 +1038,71 @@ func (h *Handler) runManualCompact(ctx context.Context, conn *websocket.Conn) {
 	if err != nil {
 		_ = h.sendStreamError(conn, "compaction_failed", fmt.Sprintf("压缩失败: %v", err))
 	}
+}
+
+// handleDump 处理前端 /dump 斜杠命令：把当前会话内存中的完整历史上下文 +
+// System Prompt 快照导出为会话目录下的 dump.json / dump.md 两份文件。
+//
+// 流程（全程同步、ms 级，不开 goroutine）：
+//  1. stream.tryAcquire 抢占流式状态；busy（已有 runStream / 压缩进行中）→
+//     返回 stream_error(busy)。tryAcquire 成功后保证无并发 runStream 改写
+//     history，此刻取到的快照是一致的。
+//  2. defer release 兜底释放流式状态。
+//  3. 持 h.mu 临界区复制 sp 快照、取 current 会话元信息与 sessionID；
+//     current 为 nil（理论不会，构造时即创建/恢复）→ no_active_session。
+//  4. AllMessages() 取历史副本（tryAcquire 已保证无并发写入）。
+//  5. buildSessionDump + writeDumpFiles 落盘到 SessionDir。
+//  6. 成功 → dump_result（含两个绝对路径）；失败 → stream_error(dump_failed)。
+//
+// [为什么同步执行] dump 只做内存读 + 两次小文件写，无 LLM 调用、无阻塞 IO，
+// 同步执行比异步 goroutine 更简单（无需 pendingConn 管理与 panic 兜底），
+// 且 tryAcquire 已串行化，不存在与 runStream 的并发。
+func (h *Handler) handleDump(conn *websocket.Conn, msg Message) error {
+	// 抢占流式状态：保证此刻无并发 runStream 改写 history，快照一致。
+	ctx, busy := h.stream.tryAcquire()
+	if busy {
+		return h.sendStreamError(conn, "busy", "当前已有请求进行中，请稍后再试")
+	}
+	defer h.stream.release(ctx)
+
+	// 持锁复制 SP 快照与会话元信息：h.sp 在 assembleSP 后同一会话内不变，
+	// 此处复制值类型即可安全释放锁后使用。
+	h.mu.Lock()
+	sp := h.sp
+	session := h.current
+	h.mu.Unlock()
+
+	if session == nil {
+		return h.sendStreamError(conn, "no_active_session", "当前无活跃会话，无法导出")
+	}
+
+	// 历史副本：AllMessages 内部 copy，不含 leadUserMessage（已在 SP 段单独导出）。
+	messages := h.conv.AllMessages()
+
+	sd := buildSessionDump(session.ID, session.CreatedAt, session.UpdatedAt, sp, messages, time.Now())
+	dir := h.sessMgr.SessionDir(session.ID)
+	jsonPath, mdPath, err := writeDumpFiles(dir, sd)
+	if err != nil {
+		logger.Warn("会话导出写盘失败",
+			zap.String("session_id", session.ID),
+			zap.String("dir", dir),
+			zap.Error(err),
+		)
+		return h.sendStreamError(conn, "dump_failed", fmt.Sprintf("导出失败: %v", err))
+	}
+
+	logger.Info("会话已导出",
+		zap.String("session_id", session.ID),
+		zap.Int("message_count", len(messages)),
+		zap.String("json_path", jsonPath),
+		zap.String("md_path", mdPath),
+	)
+	return h.sendMessage(conn, MsgTypeDumpResult, DumpResultPayload{
+		OK:        true,
+		JSONPath:  jsonPath,
+		MDPath:    mdPath,
+		SessionID: session.ID,
+	})
 }
 
 // sendCompactionEvent 推送一轮压缩结果给前端（Step 7 可观测性）。

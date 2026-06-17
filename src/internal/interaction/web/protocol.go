@@ -33,6 +33,10 @@ const (
 	// 立即执行一次手动上下文压缩（第二层摘要，无视余量与熔断）。
 	// 服务端通过 MsgTypeCompactionEvent 回推本轮压缩结果。
 	MsgTypeCompact = "compact"
+	// MsgTypeDump 由前端 /dump 斜杠命令触发，请求后端把当前会话内存中的
+	// 完整历史上下文 + System Prompt 快照导出为会话目录下的 dump.json / dump.md。
+	// 服务端通过 MsgTypeDumpResult 回推导出结果（含两个文件绝对路径）。
+	MsgTypeDump = "dump"
 )
 
 // 服务端 → 客户端 消息类型常量。
@@ -64,6 +68,10 @@ const (
 	//   - light（第一层工具结果预览化）：轻量感知（状态栏压缩计数/小标记，不打扰）。
 	// 自动压缩（每轮 API 请求前）与手动压缩（/compact）共用本消息，Manual 字段区分来源。
 	MsgTypeCompactionEvent = "compaction_event"
+	// MsgTypeDumpResult 是 /dump（MsgTypeDump）请求的响应消息。
+	// OK=true 时 JSONPath / MDPath 携带两个导出文件的绝对路径；
+	// OK=false 时 Err 携带失败原因（busy / no_active_session / dump_failed）。
+	MsgTypeDumpResult = "dump_result"
 )
 
 // 流式结束原因与 Agent 状态的取值常量。
@@ -274,6 +282,24 @@ type DevExportSPPayload struct {
 	LeadUserMessage string   `json:"lead_user_message"`
 	Stats           []SPSourceStat `json:"stats"`
 	TotalTokens     int      `json:"total_tokens"`
+}
+
+// DumpPayload /dump 斜杠命令请求体（客户端 → 服务端）。
+// 当前无入参（导出当前会话全量快照到固定文件名），预留结构体以便后续扩展
+// （如指定导出目录、自定义文件名等）。
+type DumpPayload struct{}
+
+// DumpResultPayload /dump 导出结果（服务端 → 客户端）。
+//   - OK=true：JSONPath / MDPath 为会话目录下 dump.json / dump.md 的绝对路径，
+//     前端据 toast 提示用户「已导出到 …」并定位文件。
+//   - OK=false：Err 携带失败原因；常见取值 busy（已有请求进行中）、
+//     no_active_session（无当前会话）、dump_failed（写盘失败，含根因）。
+type DumpResultPayload struct {
+	OK        bool   `json:"ok"`
+	JSONPath  string `json:"json_path,omitempty"`
+	MDPath    string `json:"md_path,omitempty"`
+	SessionID string `json:"session_id,omitempty"`
+	Err       string `json:"err,omitempty"`
 }
 
 // GetFileDiffPayload 文件 diff 查询请求（客户端 → 服务端）。

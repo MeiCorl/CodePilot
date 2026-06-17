@@ -101,6 +101,8 @@
           exec: () => sendWS(MsgType.ClearSession, {}) },
         { cmd: '/compact',       desc: '手动压缩上下文（历史摘要化）',
           exec: () => sendWS(MsgType.Compact, {}) },
+        { cmd: '/dump',          desc: '导出当前会话上下文与 System Prompt 到本地文件（dump.json/dump.md）',
+          exec: () => sendWS(MsgType.Dump, {}) },
     ];
 
     // ---- 工具函数 ----
@@ -233,6 +235,9 @@
         // Step 7：上下文压缩（手动触发 + 事件推送）
         Compact:          'compact',
         CompactionEvent:  'compaction_event',
+        // /dump：导出当前会话上下文 + System Prompt 到本地文件（dump.json/dump.md）
+        Dump:             'dump',
+        DumpResult:       'dump_result',
     };
 
     // abortMarker 与后端 agent_loop.go 中的 abortMarker 常量保持一致，
@@ -291,6 +296,7 @@
             case MsgType.PermissionMode:    return onPermissionMode(msg.payload);
             case MsgType.MCPStatus:         return onMCPStatus(msg.payload);
             case MsgType.CompactionEvent:   return onCompactionEvent(msg.payload);
+            case MsgType.DumpResult:        return onDumpResult(msg.payload);
             default: console.warn('未知消息类型:', msg.type, msg.payload);
         }
     }
@@ -2949,6 +2955,18 @@
         if (!dom.compactValue) return;
         const n = state.compactLightCount || 0;
         dom.compactValue.textContent = n > 0 ? ('⚡' + n) : '–';
+    }
+
+    // onDumpResult 处理后端 /dump 导出结果推送。
+    // 成功：toast 提示两个文件的绝对路径（会话目录下 dump.json / dump.md）；
+    // 失败：toast 提示根因（busy / no_active_session / dump_failed）。
+    function onDumpResult(p) {
+        if (p && p.ok) {
+            showCompactionToast('已导出到：' + (p.json_path || '') + ' · ' + (p.md_path || ''), 'summary');
+        } else {
+            const reason = (p && p.err) ? p.err : '未知原因';
+            showCompactionToast('导出失败：' + reason, 'error');
+        }
     }
 
     // showCompactionToast 显示一个顶部 toast，type 决定配色与停留时长。
