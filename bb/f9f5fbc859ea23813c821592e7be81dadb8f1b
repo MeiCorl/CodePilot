@@ -1,0 +1,45 @@
+src/internal/interaction/web/dump.go
+  s_e299df5af060af::t_964b6a97cadaf8 1-20,22-157,159-240,243-286
+  s_e299df5af060af::t_acecfb0d62c532 241-242
+  s_e299df5af060af::t_9a9d23f38faca2 158
+  s_e299df5af060af::t_8248959ad3faea 21
+README.md
+  s_72647ddd92b01f::t_317db7f3cb1586 3,5,7-8,16-17,21,23,25-43,45,47-67,75-310,312,314-329,357,445-452,454,479-480,544,594
+src/internal/interaction/web/protocol.go
+  s_e299df5af060af::t_fd11618e0c279f 36-39
+  s_e299df5af060af::t_a0103367ee5a14 287-302
+  s_e299df5af060af::t_b0d62924856a70 71-74
+src/internal/interaction/web/static/app.js
+  s_e299df5af060af::t_60a7a528890919 104-105
+  s_e299df5af060af::t_f89300e36074fc 238-240
+  s_e299df5af060af::t_66dede5717ad8b 2960-2969
+  s_e299df5af060af::t_d5701e9c4e14b8 299
+src/internal/interaction/web/handler.go
+  s_e299df5af060af::t_1473238b1164d9 247
+  s_e299df5af060af::t_b7a79e93cfca66 1043-1105
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.3",
+  "base_commit_sha": "bbf9f5fbc859ea23813c821592e7be81dadb8f1b",
+  "prompts": {},
+  "logical_commit_id": "bbf9f5fbc859ea23813c821592e7be81dadb8f1b",
+  "sessions": {
+    "s_72647ddd92b01f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "80edf683-8b16-4ce9-b6c5-99565d82500d",
+        "model": "glm-5.2"
+      },
+      "human_author": "meichao <1504-meichao@users.noreply.git.sysop.bigo.sg>"
+    },
+    "s_e299df5af060af": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "39aa4d81-7413-4adc-8bff-b8682730463f",
+        "model": "glm-5.2"
+      },
+      "human_author": "meichao <1504-meichao@users.noreply.git.sysop.bigo.sg>"
+    }
+  }
+}
