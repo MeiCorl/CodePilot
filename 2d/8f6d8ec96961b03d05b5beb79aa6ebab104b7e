@@ -1,0 +1,15 @@
+.harness/skills/specs/SKILL.md
+  h_3d401542af48ce 4
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.3",
+  "base_commit_sha": "2d8f6d8ec96961b03d05b5beb79aa6ebab104b7e",
+  "prompts": {},
+  "logical_commit_id": "bc49415a93c4d07e71c2416260560109b5864536",
+  "humans": {
+    "h_3d401542af48ce": {
+      "author": "meichao <1504-meichao@users.noreply.git.sysop.bigo.sg>"
+    }
+  }
+}
