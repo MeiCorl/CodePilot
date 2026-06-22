@@ -1,0 +1,204 @@
+docs/step8-记忆系统/checklist.md
+  s_664f93ccd645a3::t_973f29fe1ae107 9,11-12,14,16-17,19,21-22,24,26-27,29,31-32,34,36-37
+  s_cccc21d2e612ee::t_0b73e5028dc5db 152
+  s_664f93ccd645a3::t_37ed5c92692402 1-8,10,13,15,18,20,23,25,28,30,33,35,38-42,44,47,49,52,54,57,59,62,64,67,69,72,74,79-83,85,88,90,93,95,98,100,103,105,112-116,118,121,123,126,128,131,133,136,138,141,143,146,148,153-157,159,162,164,167,169,172,174,177,179,182,184,187,189,192,194,197,199,202,204,207,209,216-220,222,225,227,237,243-247,249,252,254,257,259,262,264,267,269,275-279,287,290,292,295,297,300,302,305,307,310,312,315,317,320,322
+  s_674f2d8f5396ac::t_5373599beff6f2 84,86-87,89,91-92,94,96-97,99,101-102,104,106-111
+  s_715ed77745d068::t_af535488ef3125 221,223-224,226,228-236,238-242
+  s_045d109652021d::t_b1c291a1d8efed 248,250-251,253,255-256,258,260-261,263,265-266,268,270-273
+  s_045d109652021d::t_fd9df1837a629d 274
+  s_e52c7cc27ea338::t_fec99e6b9893ee 280-286,288-289,291,293-294,296,298-299,301,303-304,306,308-309,311,313-314,316,318-319,321,323-324
+  s_664f93ccd645a3::t_0f793c999e6c73 43,45-46,48,50-51,53,55-56,58,60-61,63,65-66,68,70-71,73,75-78
+  s_986c6e0e387eb5::t_44de9fa887c30b 158,160-161,163,165-166,168,170-171,173,175-176,178,180-181,183,185-186,188,190-191,193,195-196,198,200-201,203,205-206,208,210-215
+  s_cccc21d2e612ee::t_20f62c58c1ee04 117,119-120,122,124-125,127,129-130,132,134-135,137,139-140,142,144-145,147,149-151
+src/internal/engine/prompt/sources/memory_index.go
+  s_715ed77745d068::t_ad8d716040f1ac 162-165,167,170,172,175,178,180
+  s_715ed77745d068::t_fd9e1f9504dff1 93,96,102-103
+  s_715ed77745d068::t_7b7891c3634776 24,26-29,35-36,38-50,55-57,59-62,67-73,75-77,79-84
+  s_664f93ccd645a3::t_fcbf1949637137 1,3-5,7-11,19-21,30-33,53,58,65,87-88,90,92,94-95,97-98,100-101,104-109,112-116,118-126,136,144-161,166,168-169,171,173-174,176-177,179,181-182
+  s_715ed77745d068::t_2f6f6c39d2bdcc 135
+src/internal/security/sandbox.go
+  s_674f2d8f5396ac::t_a0f6e750b7bf61 127-134
+  s_674f2d8f5396ac::t_dbd5e0b0a91719 201-216
+  s_674f2d8f5396ac::t_53c1b55efb5e58 28-31,43-64,72-73,79-90,92,99-101,104-105,112
+src/internal/engine/conversation/manager_test.go
+  s_045d109652021d::t_c240235c8b26b9 13-18
+src/internal/interaction/web/handler.go
+  s_045d109652021d::t_33a9bc6d238e1c 442-447,450-459
+  s_045d109652021d::t_a3effc84b812b4 26
+  s_53680b62782efc::t_ca9cf7edbd94fa 523
+  s_045d109652021d::t_a240cdd06748e2 498-520
+  s_045d109652021d::t_7ec23e5116b2f6 319-320,324-331,335-340
+  s_045d109652021d::t_d5d13e1953d270 1036-1041
+  s_045d109652021d::t_e3f7a9b0456e96 86-91
+  s_045d109652021d::t_ef7f5442a51775 303-304
+src/internal/interaction/web/protocol.go
+  s_e299df5af060af::t_b0d62924856a70 71-72
+src/internal/memory/autolearn/store.go
+  s_674f2d8f5396ac::t_297ebf86637eb6 47-52
+  s_664f93ccd645a3::t_8a9af0ed936b8b 1-46,53-101,125-249,259-492
+  s_674f2d8f5396ac::t_77a728f01d9309 102-124
+  s_664f93ccd645a3::t_a530c0b3b25aef 250-258
+docs/step8-记忆系统/tasks.md
+  s_664f93ccd645a3::t_534b92fce98f25 48
+  s_664f93ccd645a3::t_396bcb944ce33f 54-57,60-61
+  s_986c6e0e387eb5::t_ccbf87e317c84f 161-171
+  s_cccc21d2e612ee::t_07e20fd42a5218 118
+  s_045d109652021d::t_9da3fc9498985d 235-242
+  s_715ed77745d068::t_a4551d6fedf310 196,202-213
+  s_986c6e0e387eb5::t_4ba9c66c1b1320 155
+  s_cccc21d2e612ee::t_cafd9948fa1178 124-128
+  s_e52c7cc27ea338::t_cd7e2fcfc2e08b 274-276
+  s_664f93ccd645a3::t_15f57e85529740 1-8,10-13,20-47,49-52,58-59,62-80,90-117,119-122,129-154,156-159,172-195,197-200,214-233,243-273,277-301
+  s_664f93ccd645a3::t_dc729932546166 15-19
+  s_674f2d8f5396ac::t_721fa6e0c44238 81-89
+  s_664f93ccd645a3::t_6d13e89a7dfd8a 9
+src/internal/memory/autolearn/sanitizer.go
+  s_cccc21d2e612ee::t_ac389f316a6e2b 1-8,21-24,40,42-44,46,48-49,71-72,74-77,80-86,89-93
+  s_cccc21d2e612ee::t_288fbb11604f26 9-20,25-39,41,45,47,50-70,73,78-79,87-88
+src/internal/config/config.go
+  s_715ed77745d068::t_28d7625aef0c9b 360-371,373-412
+  s_715ed77745d068::t_48096b2fc2d7ef 249-255
+  s_715ed77745d068::t_c9dc7fbb2205d5 321
+  s_715ed77745d068::t_030dda99496d08 157-192
+  s_715ed77745d068::t_517b8d090c6fde 54-57
+.harness/PROGRESS.md
+  s_e52c7cc27ea338::t_3fd65c4dbd7dd3 27
+  s_e52c7cc27ea338::t_c918fd0af69ba2 218-236
+  s_e52c7cc27ea338::t_ae97668a36dc1c 17-18,20-21
+  s_e52c7cc27ea338::t_33efe649bc3e8c 262
+src/internal/interaction/web/static/app.js
+  s_e299df5af060af::t_f89300e36074fc 239
+README.md
+  s_f27b64c0a81c5a::t_12f45d2f333e38 45-55
+  s_f27b64c0a81c5a::t_f8210dec12f028 193-199
+  s_f27b64c0a81c5a::t_98e152e3a7c0f5 645,649,658,662
+  s_f27b64c0a81c5a::t_23111f7af1d81d 331-353
+  s_f27b64c0a81c5a::t_119e3fbdbe81c1 496-501
+  s_f27b64c0a81c5a::t_1e2dbd84b21141 593-623
+  s_f27b64c0a81c5a::t_35cdd2d25dbfe7 79-84
+  s_f27b64c0a81c5a::t_bf56ad05b97368 426
+config/setting.example.json
+  s_715ed77745d068::t_18900959a4b382 116-122
+src/internal/memory/autolearn/types.go
+  s_664f93ccd645a3::t_2c668cf45cd79f 1-167
+src/internal/memory/autolearn/prompt.go
+  s_cccc21d2e612ee::t_1b16a9dc1caeec 206-209
+  s_cccc21d2e612ee::t_58b747dc7a8847 1-205,210-343
+src/main.go
+  s_045d109652021d::t_7f088b8d254dd2 73-87,91,93,95-96,98-99
+  s_674f2d8f5396ac::t_200cff065c7f69 198-208
+  s_045d109652021d::t_f6fecdce548f8a 251-270,272,276,281-285
+  s_674f2d8f5396ac::t_3cf2f97cb918f8 88-90,92,94,97,100-103
+  s_674f2d8f5396ac::t_ceb8b07ae71048 43
+  s_045d109652021d::t_f4679ff120021e 296-297
+src/internal/engine/prompt/builder_test.go
+  s_045d109652021d::t_79b746cfb7f9fb 348
+  s_045d109652021d::t_ba1d0bdbf5d846 12
+  s_045d109652021d::t_2fbc1cc33f6db1 303-325
+  s_045d109652021d::t_e532698dc00ac6 481-484,491-493,497,505,507,509-510,514,518-522
+  s_045d109652021d::t_1b3988ee543937 614
+  s_045d109652021d::t_7ddd9fcd7ad187 447,455,460,468,470,474
+src/internal/security/sandbox_middleware.go
+  s_674f2d8f5396ac::t_f3b305ff99728b 202-204,207-211
+  s_674f2d8f5396ac::t_06489584649c7f 121-147,156-158,162,164-175
+  s_674f2d8f5396ac::t_c9e6d905b643ee 205-206
+docs/step8-记忆系统/spec.md
+  s_664f93ccd645a3::t_b3086c85a4e0f2 1-92
+src/internal/memory/autolearn/reviewer.go
+  s_715ed77745d068::t_debfa25eef9258 62-70
+  s_986c6e0e387eb5::t_cb9e2ea625ed73 1-61,71-549
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.3",
+  "base_commit_sha": "1bc837f702339d5c7c0cd0ff08ef934abd128277",
+  "prompts": {},
+  "logical_commit_id": "95f4cc63b3e6cc449536beba1630d10b1bda588c",
+  "humans": {
+    "h_04e25195537956": {
+      "author": "meichao <meichao@bigo.sg>"
+    }
+  },
+  "sessions": {
+    "s_045d109652021d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c99344fe-1721-4127-92d9-642abd70d314",
+        "model": "glm-5.2"
+      },
+      "human_author": "meichao <1504-meichao@users.noreply.git.sysop.bigo.sg>"
+    },
+    "s_53680b62782efc": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1d6b361d-b812-42f8-8ec6-921282549791",
+        "model": "glm-5.2"
+      },
+      "human_author": "meichao <1504-meichao@users.noreply.git.sysop.bigo.sg>"
+    },
+    "s_664f93ccd645a3": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "9f28371e-16d8-45c5-ae9c-0e0244078705",
+        "model": "glm-5.2"
+      },
+      "human_author": "meichao <1504-meichao@users.noreply.git.sysop.bigo.sg>"
+    },
+    "s_674f2d8f5396ac": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "5e74159f-e952-4569-ae7c-f3813a68703a",
+        "model": "glm-5.2"
+      },
+      "human_author": "meichao <1504-meichao@users.noreply.git.sysop.bigo.sg>"
+    },
+    "s_715ed77745d068": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a3ecd60c-b52b-4cd4-ac53-7f4b561d2f3c",
+        "model": "glm-5.2"
+      },
+      "human_author": "meichao <1504-meichao@users.noreply.git.sysop.bigo.sg>"
+    },
+    "s_986c6e0e387eb5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "44629156-a44d-4a3f-b3b2-97267d838c8f",
+        "model": "glm-5.2"
+      },
+      "human_author": "meichao <1504-meichao@users.noreply.git.sysop.bigo.sg>"
+    },
+    "s_cccc21d2e612ee": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cb2a2042-757c-43c7-84cb-0983081f9229",
+        "model": "glm-5.2"
+      },
+      "human_author": "meichao <1504-meichao@users.noreply.git.sysop.bigo.sg>"
+    },
+    "s_e299df5af060af": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "39aa4d81-7413-4adc-8bff-b8682730463f",
+        "model": "glm-5.2"
+      },
+      "human_author": "meichao <1504-meichao@users.noreply.git.sysop.bigo.sg>"
+    },
+    "s_e52c7cc27ea338": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f2c79e85-c0d2-4b11-bf4a-747504a766e1",
+        "model": "glm-5.2"
+      },
+      "human_author": "meichao <1504-meichao@users.noreply.git.sysop.bigo.sg>"
+    },
+    "s_f27b64c0a81c5a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "a64939f5-ae01-407f-aecd-e96c964cdb40",
+        "model": "MiniMax-M3"
+      },
+      "human_author": "meichao <1504-meichao@users.noreply.git.sysop.bigo.sg>"
+    }
+  }
+}
