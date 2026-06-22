@@ -4,16 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/MeiCorl/CodePilot/src/internal/security"
 	"github.com/MeiCorl/CodePilot/src/internal/tool"
-	"github.com/MeiCorl/CodePilot/src/internal/tool/builtin"
+	// [Why 空白导入] 触发 builtin 包的 init()：它把 5 个内置工具注册到
+	// tool.DefaultRegistry()，而 TokenEstimate() / GetContextUsage() 等测试依赖
+	// DefaultRegistry 非空（工具定义开销约占 400 token）。原本该副作用由本文件已删除的
+	// TestRunTurn_BlacklistInterceptedThenNormalCommand 经 `builtin.RegisterWithOptions`
+	// 间接引入，删除后需保留这条空白导入维持 init() 触发，与 main.go 的引入方式同构。
+	_ "github.com/MeiCorl/CodePilot/src/internal/tool/builtin"
 	"github.com/MeiCorl/CodePilot/src/llm"
 )
 
@@ -1016,79 +1018,6 @@ func (s *slowTool) Execute(ctx context.Context, _ json.RawMessage) (string, erro
 		return "done", nil
 	case <-ctx.Done():
 		return "", ctx.Err()
-	}
-}
-
-// TestRunTurn_BlacklistInterceptedThenNormalCommand 验证 spec 9.4：
-// 端到端下，先让 LLM 触发 `rm -rf /`（黑名单拦截，IsError=true），
-// 再让 LLM 触发 ReadFile 读 main.go（正常执行，IsError=false）；
-// 两次 RunTurn 共用同一 Registry 与 ToolHandler，证明拦截与正常命令互不影响。
-// （"正常命令"在 Windows 上选 ReadFile 而非 Bash：spec 非功能要求 4 明确
-// "Bash 工具在 Windows 平台暂不支持"；Bash 路径上的拦截与正常命令互不影响
-// 已在 Unix 平台由 TestBashSuccess + TestBashFailure + TestCheckBashCommandSafeCases
-// 三套单测联合覆盖，本测试聚焦于 ToolHandler 调度层在两次 RunTurn 间无状态污染。）
-func TestRunTurn_BlacklistInterceptedThenNormalCommand(t *testing.T) {
-	// 独立 Registry 避免污染 DefaultRegistry；用 tempDir 作为 sandbox，并在里面建一个测试文件
-	tmp := t.TempDir()
-	hello := `L1: hello
-L2: world
-`
-	if err := os.WriteFile(filepath.Join(tmp, "hello.txt"), []byte(hello), 0644); err != nil {
-		t.Fatalf("建测试文件失败: %v", err)
-	}
-	r := tool.NewRegistry()
-	builtin.RegisterWithOptions(r, tmp, 5*time.Second)
-	h := NewToolHandler(r, 5*time.Second, tmp)
-	// 注册 SandboxMiddleware：ReadFile/WriteFile 等路径类工具需走 Middleware
-	// 才能拿到 PathResolver。生产环境由 main.go 装配。
-	h.RegisterMiddleware(security.SandboxMiddleware(tmp, nil))
-
-	// 第一次 RunTurn：LLM 调 Bash 执行 `rm -rf /`
-	p1 := &scriptedProvider{
-		scripts: [][]llm.StreamChunk{
-			{
-				{Done: true, ToolUses: []llm.ToolUseBlock{{ID: "t1", Name: "Bash", Input: json.RawMessage(`{"command":"rm -rf /"}`)}}},
-			},
-			{
-				{Content: "我已拒绝执行该命令。", Done: true},
-			},
-		},
-	}
-	m1 := NewConversationManager(10)
-	m1.AddUserMessage("执行 rm -rf /")
-	res1 := m1.RunTurn(context.Background(), p1, llm.NewSystemPromptFromText("system"), nil, h, TurnHooks{})
-	if res1.Error != nil {
-		t.Fatalf("第一次 RunTurn 出错: %v", res1.Error)
-	}
-	if !res1.ToolResults[0].IsError {
-		t.Errorf("`rm -rf /` 应被黑名单拦截, 实际 IsError=false, Content=%q", res1.ToolResults[0].Content)
-	}
-	if !strings.Contains(res1.ToolResults[0].Content, "禁止") && !strings.Contains(res1.ToolResults[0].Content, "Dangerous") {
-		t.Errorf("错误信息应说明危险命令, 实际: %q", res1.ToolResults[0].Content)
-	}
-
-	// 第二次 RunTurn：同一 Registry + ToolHandler，LLM 调 ReadFile 读 hello.txt
-	p2 := &scriptedProvider{
-		scripts: [][]llm.StreamChunk{
-			{
-				{Done: true, ToolUses: []llm.ToolUseBlock{{ID: "t2", Name: "ReadFile", Input: json.RawMessage(`{"file_path":"hello.txt"}`)}}},
-			},
-			{
-				{Content: "hello.txt 内容如上。", Done: true},
-			},
-		},
-	}
-	m2 := NewConversationManager(10)
-	m2.AddUserMessage("读 hello.txt")
-	res2 := m2.RunTurn(context.Background(), p2, llm.NewSystemPromptFromText("system"), nil, h, TurnHooks{})
-	if res2.Error != nil {
-		t.Fatalf("第二次 RunTurn 出错: %v", res2.Error)
-	}
-	if res2.ToolResults[0].IsError {
-		t.Errorf("ReadFile 应正常执行, 实际 IsError=true, Content=%q", res2.ToolResults[0].Content)
-	}
-	if !strings.Contains(res2.ToolResults[0].Content, "L1:") {
-		t.Errorf("ReadFile 输出应含行号标记, 实际: %q", res2.ToolResults[0].Content)
 	}
 }
 

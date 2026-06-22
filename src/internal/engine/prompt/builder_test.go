@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/MeiCorl/CodePilot/src/internal/engine/prompt/sources"
+	"github.com/MeiCorl/CodePilot/src/internal/memory/autolearn"
 )
 
 // fakeSource 是测试用 Source 实现，支持预设 Name / Content / Placement / Tokens / 错误。
@@ -299,15 +300,29 @@ func (a *anonymousSource) Assemble(_ context.Context, _ sources.Env) (sources.Se
 // Task 4 集成测试：4 个真实 Source 端到端串联 + enabled 开关
 // =====================================================================
 
-// stubMemoryProvider 允许测试中预设 Recall 返回值，
-// 避免每次都依赖 NoopMemoryProvider（仅在验证 Noop 行为时使用 Noop）。
-type stubMemoryProvider struct {
-	fragments []string
-	err       error
-}
-
-func (s *stubMemoryProvider) Recall(_ context.Context, _ string) ([]string, error) {
-	return s.fragments, s.err
+// newTestMemoryIndexSource 构造一个指向临时目录的 memory 索引注入 Source，
+// 供 builder 集成测试使用（Step 8 起替代 Step 4 时代的 Recall-based stubMemoryProvider——
+// 真实实现改为读 MEMORY.md 索引文件，Recall/Provider 抽象已废弃）。
+//
+// memIndex 为预写入项目级 MEMORY.md 的文本内容；空串表示无记忆（Source 注入空内容、
+// 但仍产出名为 "memory" 的 Stats 条目，让 WebUI 能区分「启用但无记忆」与「未注册」）。
+// 用户级根恒为空临时目录（不写 MEMORY.md），保证测试只受 memIndex 控制。
+func newTestMemoryIndexSource(t *testing.T, memIndex string) *sources.MemoryIndexSource {
+	t.Helper()
+	userRoot := autolearn.UserMemoryRoot(t.TempDir())
+	projRoot := autolearn.ProjectMemoryRoot(t.TempDir())
+	if memIndex != "" {
+		if err := os.MkdirAll(projRoot, 0o755); err != nil {
+			t.Fatalf("创建项目级 memory 目录失败: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(projRoot, "MEMORY.md"), []byte(memIndex), 0o644); err != nil {
+			t.Fatalf("写项目级 MEMORY.md 失败: %v", err)
+		}
+	}
+	return sources.NewMemoryIndexSource(
+		autolearn.NewStore(userRoot, projRoot),
+		sources.MemoryIndexOptions{Enabled: true},
+	)
 }
 
 // makeRealFourSourceBuilder 构造一个含 4 个真实 Source 的 Builder：
@@ -330,7 +345,7 @@ func makeRealFourSourceBuilder(t *testing.T, projectAgentsMD string) (*Builder, 
 	agentsSrc.HomeDirForTest = home
 	agentsSrc.GetwdForTest = func() (string, error) { return cwd, nil }
 
-	memSrc := sources.NewMemorySource(&stubMemoryProvider{}, nil)
+	memSrc := newTestMemoryIndexSource(t, "") // 无记忆 → 注入空内容
 
 	b := NewBuilder(
 		sources.NewStaticSource(),
@@ -429,7 +444,7 @@ func TestBuilder_RealFourSources_EndToEnd(t *testing.T) {
 	}
 }
 
-// TestBuilder_RealFourSources_NoMemoryByDefault 验证 NoopMemoryProvider 默认无记忆。
+// TestBuilder_RealFourSources_NoMemoryByDefault 验证无 MEMORY.md 时 memory Source 注入空内容。
 func TestBuilder_RealFourSources_NoMemoryByDefault(t *testing.T) {
 	home := t.TempDir()
 	cwd := t.TempDir()
@@ -437,12 +452,12 @@ func TestBuilder_RealFourSources_NoMemoryByDefault(t *testing.T) {
 	agentsSrc.HomeDirForTest = home
 	agentsSrc.GetwdForTest = func() (string, error) { return cwd, nil }
 
-	// 用真实的 NoopMemoryProvider
+	// 用真实 MemoryIndexSource + 空 Store（无 MEMORY.md → 无记忆注入）
 	b := NewBuilder(
 		sources.NewStaticSource(),
 		sources.NewEnvironmentSource(),
 		agentsSrc,
-		sources.NewMemorySource(sources.NewNoopMemoryProvider(), nil),
+		newTestMemoryIndexSource(t, ""),
 	)
 
 	sp, err := b.Assemble(context.Background(), sources.Env{OS: "linux", CWD: cwd})
@@ -450,41 +465,36 @@ func TestBuilder_RealFourSources_NoMemoryByDefault(t *testing.T) {
 		t.Fatalf("Assemble 失败: %v", err)
 	}
 
-	// Noop memory 不贡献内容，LeadUserMessage 应为空
+	// 空 memory 不贡献内容，LeadUserMessage 应为空（无 AGENTS.md + 无记忆）
 	if sp.LeadUserMessage != "" {
-		t.Errorf("NoopMemoryProvider 下 LeadUserMessage 应为空，得到 %q", sp.LeadUserMessage)
+		t.Errorf("无记忆时 LeadUserMessage 应为空，得到 %q", sp.LeadUserMessage)
 	}
 	// 但 memory 仍出现在 Stats（让 WebUI 区分「启用但无记忆」与「未注册」）
 	if len(sp.Stats) != 4 {
-		t.Errorf("Stats 应有 4 条（含 Noop memory 占位），得到 %d 条", len(sp.Stats))
+		t.Errorf("Stats 应有 4 条（含 memory 占位），得到 %d 条", len(sp.Stats))
 	}
 	if sp.Stats[3].Name != "memory" || sp.Stats[3].Tokens != 0 {
 		t.Errorf("Stats[3] 应为 memory/Tokens=0，得到 %+v", sp.Stats[3])
 	}
 }
 
-// TestBuilder_RealFourSources_MemoryWithFragments 验证 memory 真实有片段时
-// 正确拼入 LeadUserMessage（用 stub MemoryProvider）。
-func TestBuilder_RealFourSources_MemoryWithFragments(t *testing.T) {
-	b, _ := makeRealFourSourceBuilder(t, "") // 无项目级 AGENTS.md
-
-	// 替换最后一个 Source 为带 stub memory 的版本
-	stub := &stubMemoryProvider{
-		fragments: []string{"user prefers tabs", "project uses Go 1.26"},
-	}
-	// 重新构造：前 3 个 Source 不变，memory 替换为带 stub 的
+// TestBuilder_RealFourSources_MemoryWithIndex 验证项目级 MEMORY.md 有索引条目时
+// memory Source 把索引注入 LeadUserMessage（用 autolearn.Store 真实落盘，Step 8 起替代
+// Step 4 的 Recall-based 片段注入测试）。
+func TestBuilder_RealFourSources_MemoryWithIndex(t *testing.T) {
 	home := t.TempDir()
 	cwd := t.TempDir()
 	agentsSrc := sources.NewAgentsMDSource()
 	agentsSrc.HomeDirForTest = home
 	agentsSrc.GetwdForTest = func() (string, error) { return cwd, nil }
-	memSrc := sources.NewMemorySource(stub, nil)
 
-	b = NewBuilder(
+	// 预置一条项目级记忆索引（格式与 autolearn.renderIndex 一致）
+	memIndex := "## user_preference\n- [user_preference](pref-tabs.md)——user prefers tabs\n"
+	b := NewBuilder(
 		sources.NewStaticSource(),
 		sources.NewEnvironmentSource(),
 		agentsSrc,
-		memSrc,
+		newTestMemoryIndexSource(t, memIndex),
 	)
 
 	sp, err := b.Assemble(context.Background(), sources.Env{OS: "linux", CWD: cwd})
@@ -492,56 +502,24 @@ func TestBuilder_RealFourSources_MemoryWithFragments(t *testing.T) {
 		t.Fatalf("Assemble 失败: %v", err)
 	}
 
-	// 验证 LeadUserMessage 含 memory 片段
+	// 验证 LeadUserMessage 含 memory 索引简介 + <memory_index> 包裹
 	if !strings.Contains(sp.LeadUserMessage, "user prefers tabs") {
-		t.Errorf("LeadUserMessage 应包含 memory 片段 'user prefers tabs'")
+		t.Errorf("LeadUserMessage 应包含 memory 索引简介 'user prefers tabs'，实际:\n%s", sp.LeadUserMessage)
 	}
-	if !strings.Contains(sp.LeadUserMessage, "project uses Go 1.26") {
-		t.Errorf("LeadUserMessage 应包含 memory 片段 'project uses Go 1.26'")
-	}
-	if !strings.Contains(sp.LeadUserMessage, "<memories>") {
-		t.Errorf("memory 片段应被 <memories> 包裹")
-	}
-	// memory 用 "---" 分隔多片段
-	if !strings.Contains(sp.LeadUserMessage, "---") {
-		t.Errorf("memory 多片段应被 --- 分隔")
+	if !strings.Contains(sp.LeadUserMessage, "<memory_index>") {
+		t.Errorf("memory 索引应被 <memory_index> 包裹，实际:\n%s", sp.LeadUserMessage)
 	}
 	// memory 应贡献非零 token
 	if sp.Stats[3].Tokens <= 0 {
-		t.Errorf("memory 段 Tokens 应 > 0（含真实片段），得到 %d", sp.Stats[3].Tokens)
+		t.Errorf("memory 段 Tokens 应 > 0（含真实索引），得到 %d", sp.Stats[3].Tokens)
 	}
 }
 
-// TestBuilder_RealFourSources_MemoryProviderError 验证 memory provider 出错时
-// Assemble 透传错误（Source 错误应让上层感知）。
-func TestBuilder_RealFourSources_MemoryProviderError(t *testing.T) {
-	home := t.TempDir()
-	cwd := t.TempDir()
-	agentsSrc := sources.NewAgentsMDSource()
-	agentsSrc.HomeDirForTest = home
-	agentsSrc.GetwdForTest = func() (string, error) { return cwd, nil }
-
-	boom := errors.New("vector db connection lost")
-	memSrc := sources.NewMemorySource(&stubMemoryProvider{err: boom}, nil)
-
-	b := NewBuilder(
-		sources.NewStaticSource(),
-		sources.NewEnvironmentSource(),
-		agentsSrc,
-		memSrc,
-	)
-
-	_, err := b.Assemble(context.Background(), sources.Env{OS: "linux", CWD: cwd})
-	if err == nil {
-		t.Fatalf("预期返回错误，得到 nil")
-	}
-	if !strings.Contains(err.Error(), "memory") {
-		t.Errorf("错误信息应包含 source 名称 'memory'，得到: %v", err)
-	}
-	if !errors.Is(err, boom) {
-		t.Errorf("错误应包装原始错误，得到: %v", err)
-	}
-}
+// 注：原 TestBuilder_RealFourSources_MemoryProviderError（验证 memory provider 出错时 Assemble
+// 透传错误）已移除——Step 8 起 memory Source 改为读 MEMORY.md 索引文件，新契约是「索引缺失/
+// 读失败一律静默降级为空 Section、绝不向 Builder 上抛错误」（见 memory_index.go Assemble 的
+// 缺失降级与 store==nil 短路）。该降级行为已由 memory_index_test.go 覆盖（单边缺失/nil store），
+// 不再需要在 builder 层重复测试错误透传。
 
 // TestBuilder_Disabled_ShortCircuit 验证 enabled=false 时直接返回零值 SystemPrompt，
 // 不调用任何 Source（不消耗 token、不读磁盘、不发起 git 命令）。
@@ -633,7 +611,7 @@ func TestTask6_BuilderWith4RealSources(t *testing.T) {
 		sources.NewStaticSource(),
 		sources.NewEnvironmentSource(),
 		sources.NewAgentsMDSource(),
-		sources.NewMemorySource(sources.NewNoopMemoryProvider(), nil),
+		newTestMemoryIndexSource(t, ""), // 无记忆 → 注入空内容，仍占用 memory Stats 槽位
 	)
 
 	env := sources.Env{

@@ -113,5 +113,12 @@
         "keep_recent_tokens": 10000,
         "keep_recent_min_messages": 5,
         "breaker_threshold": 3
+    },
+
+    "memory": {
+        "enabled": true,
+        "index_max_lines": 200,
+        "index_max_bytes": 25600,
+        "review_model": ""
     }
 }

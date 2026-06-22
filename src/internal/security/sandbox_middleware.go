@@ -118,6 +118,33 @@ type MiddlewareFunc func(
 // SandboxMiddleware：路径类工具的硬兜底中间件
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// MiddlewareOption：SandboxMiddleware 的可选能力（functional options）
+// ---------------------------------------------------------------------------
+
+// middlewareConfig 承载 SandboxMiddleware 的可选项，由 functional option 填充。
+// 采用 option 模式而非改 SandboxMiddleware 签名，目的是对既有调用点
+// （main.go 与既有单测的 SandboxMiddleware(workdir, provider) 形式）零侵入。
+type middlewareConfig struct {
+	// readRoots 附加只读根（绝对路径），仅对读取类工具（perm==PermRead）放宽沙箱。
+	// Step 8 用于放行 ~/.codepilot/memory 与 <cwd>/.codepilot/memory，使 LLM
+	// 能 ReadFile/Glob/Grep 读取记忆文件。写入/执行类工具忽略此项（纵深防御）。
+	readRoots []string
+}
+
+// MiddlewareOption 配置 SandboxMiddleware 的可选能力。
+type MiddlewareOption func(*middlewareConfig)
+
+// WithReadRoots 注入「附加只读根」——仅对读取类工具（perm==PermRead）放宽沙箱，
+// 使其可读取工作目录之外的白名单目录（Step 8 用于放行 memory 目录）。
+// 写入/执行类工具不受影响：memory 目录对 WriteFile/EditFile 仍被沙箱拦截，
+// 记忆只能经 autolearn.Store 受控写入，避免 LLM 绕过索引维护直接改文件。
+func WithReadRoots(roots []string) MiddlewareOption {
+	return func(c *middlewareConfig) {
+		c.readRoots = roots
+	}
+}
+
 // SandboxMiddleware 返回一个 MiddlewareFunc，对路径类工具执行沙箱解析。
 //
 // 行为：
@@ -126,16 +153,26 @@ type MiddlewareFunc func(
 //  3. path 为空时：
 //     - Glob / Grep 默认 workdir（与原工具行为一致）
 //     - 其它工具透传（由工具自身报"path 不能为空"）
-//  4. 调 security.ResolveInSandbox(pathStr, workdir) 校验
-//  5. 失败 → 查 ruleProvider（NEW）→ 命中则放行；未命中则返回 ErrPathOutsideSandbox
+//  4. 沙箱校验：读取类工具（perm==PermRead）附带附加只读根调
+//     ResolveInSandboxWithRoots，其余工具调 ResolveInSandbox（仅 workdir）
+//  5. 失败 → 查 ruleProvider → 命中则放行；未命中则返回 ErrPathOutsideSandbox
 //  6. 成功 → 在 ctx 注入 PathResolver{abs: {paramKey: absPath}} 后放行
 //
 // ruleProvider 为 nil 时走旧硬兜底逻辑（用于向后兼容与单测）。
+// opts 为空时（默认）不附带任何附加根，行为与改造前完全一致。
 //
-// 注意：Middleware 持有的 workdir / ruleProvider 在闭包内捕获；并发 Execute
-// 场景下多个 goroutine 会各自拿到独立的 PathResolver 实例，无共享状态。
-func SandboxMiddleware(workdir string, ruleProvider PathRuleProvider) MiddlewareFunc {
-	return func(ctx context.Context, toolName string, input json.RawMessage, _ tool.ToolPermission) (context.Context, error) {
+// 注意：Middleware 持有的 workdir / ruleProvider / readRoots 在闭包内捕获；
+// 并发 Execute 场景下多个 goroutine 会各自拿到独立的 PathResolver 实例，
+// 无共享状态（readRoots 切片构建后只读共享，安全）。
+func SandboxMiddleware(workdir string, ruleProvider PathRuleProvider, opts ...MiddlewareOption) MiddlewareFunc {
+	cfg := middlewareConfig{}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	// 闭包捕获 cfg.readRoots（构建后只读），供每次工具调用按 perm 决定是否启用。
+	readRoots := cfg.readRoots
+
+	return func(ctx context.Context, toolName string, input json.RawMessage, perm tool.ToolPermission) (context.Context, error) {
 		paramKey, isPath := IsPathTool(toolName)
 		if !isPath {
 			return ctx, nil
@@ -162,7 +199,16 @@ func SandboxMiddleware(workdir string, ruleProvider PathRuleProvider) Middleware
 			}
 		}
 
-		absPath, err := ResolveInSandbox(pathStr, workdir)
+		// 沙箱校验：仅读取类工具（PermRead）启用附加只读根（WithReadRoots），
+		// 放行 ~/.codepilot/memory 等白名单目录；写入/执行类工具仅认 workdir，
+		// 防止 memory 目录被 WriteFile/EditFile 直接写入（纵深防御）。
+		// err 复用上方 parseInputParams 已声明的同名变量（同作用域，不可重新 :=）。
+		var absPath string
+		if perm == tool.PermRead && len(readRoots) > 0 {
+			absPath, err = ResolveInSandboxWithRoots(pathStr, workdir, readRoots)
+		} else {
+			absPath, err = ResolveInSandbox(pathStr, workdir)
+		}
 		if err != nil {
 			// 越界：若 ruleProvider 配置了路径级 allow 规则，查询是否命中；
 			// 命中则放行（注入 PathResolver 携带规范化路径），未命中则保持硬兜底。

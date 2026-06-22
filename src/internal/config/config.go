@@ -51,6 +51,10 @@ type Config struct {
 	// 留空（零值）时由 setDefaults 填充默认值；总开关默认开启，enabled=false 可整体
 	// 降级为纯滑动窗口，兼容 Step 1~6 行为。
 	Compaction CompactionConfig `json:"compaction,omitempty"`
+	// Memory 为自动学习记忆配置（Step 8），控制记忆系统的总开关与索引注入阈值。
+	// 留空（零值）时由 setDefaults 填充默认值；总开关默认开启，enabled=false 可整体
+	// 降级为无记忆状态（Source 不注入、Reviewer 不触发），兼容 Step 1~7 行为。
+	Memory MemoryConfig `json:"memory,omitempty"`
 }
 
 // MCPConfig 是 MCP 客户端的整体配置段,对应 setting.json 中 "mcp" 对象。
@@ -150,6 +154,42 @@ func (c CompactionConfig) IsEnabled() bool {
 	return *c.Enabled
 }
 
+// MemoryConfig 是自动学习记忆（Step 8）的配置段，对应 setting.json 中 "memory" 对象。
+//
+// 记忆系统分两路消费本配置：
+//   - 索引注入侧（memory Source）：IndexMaxLines / IndexMaxBytes 控制合并后的两级
+//     MEMORY.md 索引注入 LeadUserMessage 时的体积上限，超限截断防撑爆上下文；
+//   - 后台回顾侧（Reviewer）：Enabled 总开关控制是否触发回顾 LLM 调用。
+//
+// 字段语义与默认值：
+//   - Enabled：记忆总开关。默认 true；显式设 false 时整体降级为无记忆状态
+//     （Source 不注入索引、Reviewer 不触发回顾）。
+//     使用 *bool 指针以区分「未配置（→默认 true）」与「显式关闭（false）」——
+//     Go 的 bool 零值是 false，若用值类型将无法表达「默认开启」，与 CompactionConfig 同理。
+//   - IndexMaxLines：索引注入的行数上限。合并后的索引文本超过此行数时截断。默认 200。
+//   - IndexMaxBytes：索引注入的字节上限。截断后的文本超过此字节数时再按字节截断。默认 25KB。
+//   - ReviewModel：回顾 LLM 专用模型（预留字段）。首版固定复用主 provider/主模型，
+//     不实现运行时热切换；此处仅作配置占位，便于后续扩展（见 spec Out of Scope）。
+type MemoryConfig struct {
+	// Enabled 为记忆总开关；nil 视为 true（默认开启），通过 IsEnabled() 访问。
+	Enabled *bool `json:"enabled,omitempty"`
+	// IndexMaxLines 为索引注入的行数上限，默认 200。
+	IndexMaxLines int `json:"index_max_lines,omitempty"`
+	// IndexMaxBytes 为索引注入的字节上限，默认 25KB（25600 字节）。
+	IndexMaxBytes int `json:"index_max_bytes,omitempty"`
+	// ReviewModel 为回顾专用模型预留字段，首版不启用热切换。
+	ReviewModel string `json:"review_model,omitempty"`
+}
+
+// IsEnabled 返回记忆总开关的最终生效值：未配置（nil）时默认 true，否则取显式设置。
+// 调用方（main.go 装配 Source/Reviewer）统一通过本方法读取，避免到处判 nil。
+func (m MemoryConfig) IsEnabled() bool {
+	if m.Enabled == nil {
+		return true
+	}
+	return *m.Enabled
+}
+
 // ToolsConfig 是工具系统的配置项。
 //
 // Enabled 列表为空时视为"启用全部已注册工具"；否则按 Name 白名单过滤。
@@ -206,6 +246,13 @@ const (
 	defaultCompactionKeepRecentTokens    = 10000 // 近期原文保留量（token）
 	defaultCompactionKeepRecentMinMsgs   = 5     // 近期原文最少保留条数
 	defaultCompactionBreakerThreshold    = 3     // 熔断阈值（连续失败次数）
+
+	// ---- Step 8 自动学习记忆默认值 ----
+	// 与 Compaction 同模式：数值字段「==0 填默认」，Enabled 是 *bool 用下方布尔常量取址填充，
+	// 以表达「未配置 → 默认开启」。
+	defaultMemoryEnabled       = true
+	defaultMemoryIndexMaxLines = 200       // 索引注入行数上限
+	defaultMemoryIndexMaxBytes = 25 * 1024 // 索引注入字节上限（25KB）
 )
 
 // Load 从 ~/.codepilot/setting.json 加载配置文件。
@@ -271,6 +318,7 @@ func (c *Config) setDefaults() {
 		c.ContextSafetyMargin = defaultContextSafetyMargin
 	}
 	applyCompactionDefaults(&c.Compaction)
+	applyMemoryDefaults(&c.Memory)
 }
 
 // applyCompactionDefaults 为 Compaction 配置段填充默认值。
@@ -307,6 +355,61 @@ func applyCompactionDefaults(c *CompactionConfig) {
 	if c.BreakerThreshold == 0 {
 		c.BreakerThreshold = defaultCompactionBreakerThreshold
 	}
+}
+
+// applyMemoryDefaults 为 Memory 配置段填充默认值。
+//
+// 单独抽成函数以便 config 包测试与 MergeMemory 直接调用（无需构造完整 Config）。
+// 数值字段沿用「==0 填默认」的既有模式；Enabled 作为 *bool，nil 时填默认 true，
+// 从而区分「用户未配置（→开启）」与「用户显式 enabled=false（→关闭）」。
+func applyMemoryDefaults(m *MemoryConfig) {
+	if m == nil {
+		return
+	}
+	if m.Enabled == nil {
+		on := defaultMemoryEnabled
+		m.Enabled = &on
+	}
+	if m.IndexMaxLines == 0 {
+		m.IndexMaxLines = defaultMemoryIndexMaxLines
+	}
+	if m.IndexMaxBytes == 0 {
+		m.IndexMaxBytes = defaultMemoryIndexMaxBytes
+	}
+	// ReviewModel 为预留字段，首版不填默认（空串即「复用主 provider/主模型」）。
+}
+
+// MergeMemory 合并全局与项目级 memory 配置，返回填好默认值的最终生效配置。
+//
+// 多层合并机制沿用 Step 5 权限系统的「项目级覆盖全局」语义（见 security.LoadPermissions），
+// 区别在于 memory 为标量配置，故做【字段级覆盖】而非列表拼接：
+//   - Enabled：项目级显式设置（非 nil）时覆盖全局，否则沿用全局；
+//   - IndexMaxLines / IndexMaxBytes：项目级显式设置（非 0）时覆盖全局，否则沿用全局；
+//   - ReviewModel：项目级显式设置（非空）时覆盖全局，否则沿用全局。
+//
+// [Why 必须传原始解析值] 合并依据「是否显式配置」判断覆盖——Enabled 用 *bool 的 nil、
+// 数值用 0、字符串用空串来识别「该层未配置此项」。因此调用方必须传入 JSON 解析后、
+// 【尚未 applyMemoryDefaults】的原始值；若传入已填默认的值，默认值会被误判为「显式配置」
+// 而错误覆盖（如项目级未配 enabled 被 setDefaults 填成默认 true，会覆盖全局显式 false）。
+// 本函数内部在合并完成后调用 applyMemoryDefaults 填充最终默认值，调用方无需再填。
+//
+// 参数 global 为全局 memory 配置原始值，project 为项目级原始值（可为零值，表示无项目级配置）。
+func MergeMemory(global, project MemoryConfig) MemoryConfig {
+	merged := global
+	if project.Enabled != nil {
+		merged.Enabled = project.Enabled
+	}
+	if project.IndexMaxLines != 0 {
+		merged.IndexMaxLines = project.IndexMaxLines
+	}
+	if project.IndexMaxBytes != 0 {
+		merged.IndexMaxBytes = project.IndexMaxBytes
+	}
+	if project.ReviewModel != "" {
+		merged.ReviewModel = project.ReviewModel
+	}
+	applyMemoryDefaults(&merged)
+	return merged
 }
 
 // validate 校验配置项的合法性。

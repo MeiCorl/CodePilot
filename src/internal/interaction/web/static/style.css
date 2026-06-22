@@ -1062,6 +1062,143 @@ body {
 }
 
 
+/* ============================================================================
+ * Memory Review Message — 自动记忆回顾展示块（Step 8 可观测性）
+ * ========================================================================== */
+
+.message-memory {
+    align-self: stretch;
+    max-width: 90%;
+    margin: 0;
+    display: flex;
+    align-items: stretch;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--r-md);
+    overflow: visible;
+    font-family: var(--font-mono);
+    font-size: var(--fs-sm);
+    line-height: 1.55;
+}
+
+.message-memory::before {
+    content: "";
+    flex-shrink: 0;
+    width: 2px;
+    background: var(--fg-faint);
+    border-radius: var(--r-md) 0 0 var(--r-md);
+}
+.message-memory[data-status="started"]::before     { background: var(--thinking); }
+.message-memory[data-status="completed"]::before   { background: var(--success); }
+.message-memory[data-status="no_decision"]::before { background: var(--fg-faint); }
+.message-memory[data-status="error"]::before       { background: var(--error); }
+
+.message-memory-content {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+}
+
+.message-memory-header {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-3);
+    padding: var(--sp-3) var(--sp-4);
+    user-select: none;
+}
+
+.message-memory-icon {
+    width: 22px;
+    height: 22px;
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--r-sm);
+    color: var(--fg-muted);
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 1;
+    letter-spacing: 0;
+}
+.message-memory[data-status="started"] .message-memory-icon     { color: var(--thinking); border-color: var(--thinking); }
+.message-memory[data-status="completed"] .message-memory-icon   { color: var(--success); border-color: var(--success); }
+.message-memory[data-status="no_decision"] .message-memory-icon { color: var(--fg-muted); border-color: var(--border-strong); }
+.message-memory[data-status="error"] .message-memory-icon       { color: var(--error); border-color: var(--error); }
+
+.message-memory-name {
+    color: var(--fg);
+    font-weight: 600;
+    font-size: var(--fs-sm);
+    letter-spacing: 0.02em;
+    flex-shrink: 0;
+}
+
+.message-memory-summary {
+    color: var(--fg-dim);
+    font-size: var(--fs-xs);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+    min-width: 0;
+}
+
+.message-memory-status {
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: var(--fs-xs);
+    letter-spacing: 0.04em;
+    background: var(--bg);
+    color: var(--fg-muted);
+    border: 1px solid var(--border-strong);
+    text-transform: lowercase;
+    font-family: var(--font-mono);
+    line-height: 1.4;
+    flex-shrink: 0;
+}
+.message-memory[data-status="started"] .message-memory-status {
+    color: var(--thinking);
+    background: var(--thinking-dim);
+    border-color: var(--thinking);
+}
+.message-memory[data-status="started"] .message-memory-status::before {
+    content: "";
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--thinking);
+    margin-right: 5px;
+    vertical-align: middle;
+    animation: thinkingBounce 1.2s var(--ease-out) infinite;
+}
+.message-memory[data-status="completed"] .message-memory-status {
+    color: var(--success);
+    background: var(--success-dim);
+    border-color: var(--success);
+}
+.message-memory[data-status="no_decision"] .message-memory-status {
+    color: var(--fg-muted);
+    background: var(--bg);
+    border-color: var(--border-strong);
+}
+.message-memory[data-status="error"] .message-memory-status {
+    color: var(--error);
+    background: var(--error-dim);
+    border-color: var(--error);
+}
+
+.message-memory-duration {
+    margin-left: auto;
+    color: var(--fg-dim);
+    font-size: var(--fs-xs);
+    letter-spacing: 0.04em;
+    flex-shrink: 0;
+}
+
 /* 错误卡片 */
 .error-card {
     align-self: stretch;

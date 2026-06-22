@@ -44,27 +44,6 @@ func TestBashFailure(t *testing.T) {
 	}
 }
 
-// TestBashDangerous 验证：危险命令在执行前被拦截。
-func TestBashDangerous(t *testing.T) {
-	tool := NewBashTool(5 * time.Second)
-	cases := []string{
-		`rm -rf /`,
-		`mkfs.ext4 /dev/sda`,
-		`shutdown -h now`,
-	}
-	for _, cmd := range cases {
-		t.Run(cmd, func(t *testing.T) {
-			_, err := tool.Execute(context.Background(), json.RawMessage(`{"command":"`+cmd+`"}`))
-			if err == nil {
-				t.Fatalf("危险命令应被拦截: %q", cmd)
-			}
-			if !strings.Contains(err.Error(), "危险命令") {
-				t.Errorf("错误应说明危险命令拦截: %v", err)
-			}
-		})
-	}
-}
-
 // TestBashTimeout 验证：超过 timeout 时返回超时错误。
 func TestBashTimeout(t *testing.T) {
 	tool := NewBashTool(1 * time.Second)

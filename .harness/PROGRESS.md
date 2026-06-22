@@ -14,17 +14,17 @@
 | 指标     | 数值                                                    |
 | ------ | ----------------------------------------------------- |
 | 计划总步骤数 | 12（含子步骤后实际更多）                                         |
-| 已完成步骤数 | 11（Step 1 / Step 1.1 / Step 1.2 / Step 1.3 / Step 1.4 / Step 2 / Step 3 / Step 4 / Step 5 / Step 6 / Step 7）  |
-| 当前最新版本 | V1.4.0                                                |
+| 已完成步骤数 | 12（Step 1 / Step 1.1 / Step 1.2 / Step 1.3 / Step 1.4 / Step 2 / Step 3 / Step 4 / Step 5 / Step 6 / Step 7 / Step 8）  |
+| 当前最新版本 | V1.5.0                                                |
 | 进行中步骤  | —                                                    |
-| 下一步骤   | Step 8 — 记忆系统（需先 `/specs` 触发需求澄清）                       |
-| 最近更新   | 2026-06-16                                            |
+| 下一步骤   | Step 9 — 快捷命令系统（需先 `/specs` 触发需求澄清）                      |
+| 最近更新   | 2026-06-18                                            |
 
 
 进度条：
 
 ```
-[███████████████████████████████] 11/12 步骤完成（~92%，Step 8 待开始）
+[█████████████████████████████░░░░] 8/12 主线步骤完成（Step 1-8 已完成，Step 9 待开始）
 ```
 
 ---
@@ -215,6 +215,25 @@
 
 ---
 
+### Step 8 — 记忆系统（自动学习记忆，V1.5.0）
+
+- **完成时间**：2026-06-18（代码与端到端验证完成，待 release 提交）
+- **设计文档**：[docs/step8-记忆系统/](../docs/step8-记忆系统/)
+- **Task 完成数**：8 / 8
+- **核心交付能力**：
+  1. **4 类自动学习记忆分级存储**：`user_preference`/`user_feedback`（用户级 `~/.codepilot/memory/`，跨项目生效）/ `project_knowledge`/`reference`（项目级 `<cwd>/.codepilot/memory/`，跟随项目）；单条记忆独立 md 文件（语义化 slug）+ YAML frontmatter；`MEMORY.md` 按 4 类分块索引（`- [type](file.md)——简介`）
+  2. **memory Source 索引注入召回**：实现 `prompt.Source` 的 `MemoryIndexSource`，会话启动合并用户级 + 项目级两个 MEMORY.md（项目级在前更相关），外层包 `<memory_index>` 作为 LeadUserMessage 注入（与 AGENTS.md 同构）；体积上限 200 行 / 25KB 截断 + warn 日志；任一侧缺失 / 空索引静默降级
+  3. **后台异步回顾器**：监听 AgentLoop `OnLoopDone`，智能节流（仅 `completed` + 实质输入触发，aborted / error / max_iterations / context_overflow / 纯闲聊一律跳过）；per-session 串行（inflight map + drop 策略）+ panic recover + 全链路静默降级
+  4. **独立无状态回顾 LLM 通道**：回顾用独立 `context.Background()` 派生 + ReviewTimeout(60s)，自带本轮快照（用户输入 + 最终回复 + 工具调用名摘要）做独立 LLM 调用，**绝不回写主对话历史**（编译期设计保证：Reviewer 不持有 ConversationManager / history 字段）
+  5. **LLM 比对索引去重 / 更新**：回顾 prompt 注入当前两级 MEMORY.md 索引，由回顾 LLM 决策 new / update；update 覆盖同 slug 文件 + 刷新索引简介 + 保留 CreatedAt，消除冗余与自相矛盾；update 虚构 slug 被跳过防误覆盖
+  6. **敏感信息双层防护**：回顾 prompt 硬性约束禁止记录密钥 / 密码 / token / 凭证 + sanitizer 正则兜底脱敏（高熵凭证 / Bearer / 键值对口令三类独立 replace 模板，幂等）
+  7. **ReadFile 沙箱白名单按需读取**：functional option `security.WithReadRoots` 注入附加只读根（仅 PermRead 放行 memory 目录，PermWrite / PermExec 仍仅认 workdir——纵深防御）；`IsPathOutsideSandbox` 故意不感知附加根，「沙箱放行 ≠ 权限绕过」双层语义；ReadFile 工具侧零改动
+  8. **配置驱动 + 三层降级**：`setting.json` 新增 `memory` 段（enabled / index_max_lines / index_max_bytes / review_model）+ 全局 + 项目级字段级合并；enabled=false 时 config.IsEnabled → Source Assemble 短路 → Reviewer OnLoopDone 短路三层降级为无记忆状态
+  9. **架构纯净度**：autolearn 包仅依赖 llm + logger，不 import conversation / config（用 `ReviewRequest` 解耦 `AgentLoopResult`、`ReviewerConfig` 解耦 config）；handler 层负责 `AgentLoopResult → ReviewRequest` 适配 + `config → 组件配置` wire
+  10. **端到端验证（Task 8）**：跨组件 e2e 5 用例（回顾闭环 / 去重更新 / 跨会话召回 / 按需读取 / 节流 / 异常降级）+ handler 层 e2e 3 用例（真实 testRig：completed 触发回顾 + 主历史不污染 / 闲聊节流 / nil reviewer 不 panic）全绿；`go test ./...` 全量 22 包零回归；真实进程启动冒烟通过（main.go 顶层装配 buildMemoryRoots → Store + MemoryIndexSource + Reviewer + SetReviewer + SandboxMiddleware(WithReadRoots) 正确就绪）
+
+---
+
 ## 🕓 待完成步骤
 
 > 下列步骤按 [PROJECT.md](./PROJECT.md) 计划顺序排列，开始下一步前请先用 `/specs` 触发需求澄清并生成 spec / tasks / checklist 三文档。
@@ -222,7 +241,6 @@
 
 | 编号  | 步骤名                   | 所属架构层 | 状态      | 计划目录                             |
 | --- | --------------------- | ----- | ------- | -------------------------------- |
-| 8   | 记忆系统                  | 记忆层   | ⏳ 待开始   | `docs/step8-记忆系统/`               |
 | 9   | 快捷命令系统                | 工具层   | ⏳ 待开始   | `docs/step9-快捷命令系统/`             |
 | 10  | Skill 系统              | 工具层   | ⏳ 待开始   | `docs/step10-Skill系统/`           |
 | 11  | Hook 系统               | 工具层   | ⏳ 待开始   | `docs/step11-Hook系统/`            |
@@ -241,7 +259,7 @@
 | 第 1 层：交互层 | WebUI（HTTP + WebSocket + 富文本渲染 + 流式 Markdown 实时渲染 + SP 可观测性 + 开发者模式 Export + 工具块「查看改动」双栏 diff 弹窗 + 权限确认对话框 + 状态栏权限模式展示 + MCP server 来源徽标 + MCP 健康状态区） | —            |
 | 第 2 层：引擎层 | 对话管理 + Agent Loop（ReAct 循环迭代 + 多工具并行 + 迭代上限 + 溢出保护）、完整 System Prompt（Builder + 4 Source + 模板变量 + Anthropic 缓存切片） | —                                            |
 | 第 3 层：工具层 | 工具抽象 + Registry + 6 内置工具（ReadFile/WriteFile/EditFile/Bash/Glob/Grep）+ 路径沙箱 + Bash 黑名单 + 批量执行 + 进程内 FileDiffStore + **MCP 客户端**（JSON-RPC 2.0 + stdio/HTTP 双传输 + Session 三阶段握手 + 连接池 + 适配器自动注册 + 指数退避重连 + 10 个 E2E 集成用例全绿 + 真实启动冒烟 healthy=2 tools=4） | 快捷命令系统（Step 9）、Skill 系统（Step 10）、Hook（Step 11）、SubAgent（Step 12） |
-| 第 4 层：记忆层 | 会话持久化、上下文滑动窗口 + **高级上下文管理（Step 7）**（两层压缩：轻量预防工具结果存盘预览 + 重量摘要兜底 + 撞墙紧急压缩 + 会话级熔断 + 历史原文归档 + compaction 可观测性 + 全阈值可配置） | 自动记忆（Step 8）                |
+| 第 4 层：记忆层 | 会话持久化、上下文滑动窗口 + **高级上下文管理（Step 7）**（两层压缩：轻量预防工具结果存盘预览 + 重量摘要兜底 + 撞墙紧急压缩 + 会话级熔断 + 历史原文归档 + compaction 可观测性 + 全阈值可配置）+ **自动学习记忆（Step 8）**（4 类记忆分级存储 + MEMORY.md 索引注入召回 + 后台异步回顾独立 LLM 通道 + LLM 比对去重更新 + ReadFile 沙箱白名单按需读取 + 配置驱动 + 全链路静默降级） | —                |
 | 第 5 层：安全层 | 完整权限系统（三层模式 + 可配置规则 + 多层配置合并 + HITL 确认 + 权限拦截器 + 危险命令黑名单增强 + 路径沙箱策略化 + 双层防护） | —                                            |
 
 

@@ -40,6 +40,7 @@ import (
 	"github.com/MeiCorl/CodePilot/src/internal/mcp/adapter"
 	mcpconfig "github.com/MeiCorl/CodePilot/src/internal/mcp/config"
 	"github.com/MeiCorl/CodePilot/src/internal/mcp/session"
+	"github.com/MeiCorl/CodePilot/src/internal/memory/autolearn"
 	memctx "github.com/MeiCorl/CodePilot/src/internal/memory/context"
 	memsession "github.com/MeiCorl/CodePilot/src/internal/memory/session"
 	"github.com/MeiCorl/CodePilot/src/internal/runtime/console"
@@ -67,6 +68,37 @@ func main() {
 		fmt.Fprintln(os.Stderr, "[error]", err)
 		os.Exit(1)
 	}
+}
+
+// buildMemoryRoots 计算记忆系统的用户级与项目级根目录（绝对路径）。
+//
+// [Why 单一入口] 这是记忆子系统路径的唯一计算入口——autolearn.Store 落盘目录、
+// SandboxMiddleware 附加只读根（Step 8 Task 3）、memory 索引注入 Source 读取来源、
+// Reviewer 写入目标全部从此处取根，保证「记忆实际目录」「沙箱放行范围」「注入来源」
+// 三者同源不漂移。homeDir 取不到或为空时 userRoot 返回空（仅用项目级，降级不阻塞
+// 启动）；toolWorkdir 为空时 projectRoot 返回空。
+func buildMemoryRoots(toolWorkdir string) (userRoot, projectRoot string) {
+	if homeDir, err := os.UserHomeDir(); err == nil && homeDir != "" {
+		userRoot = autolearn.UserMemoryRoot(homeDir)
+	}
+	projectRoot = autolearn.ProjectMemoryRoot(toolWorkdir)
+	return userRoot, projectRoot
+}
+
+// buildMemoryReadRoots 计算记忆系统的「附加只读根」，供沙箱放行读取类工具
+// 访问工作目录之外的记忆文件（Step 8 Task 3）。
+//
+// 基于 buildMemoryRoots 派生，过滤空串根（避免把相对路径误当合法绝对根）。
+func buildMemoryReadRoots(toolWorkdir string) []string {
+	userRoot, projectRoot := buildMemoryRoots(toolWorkdir)
+	var roots []string
+	if userRoot != "" {
+		roots = append(roots, userRoot)
+	}
+	if projectRoot != "" {
+		roots = append(roots, projectRoot)
+	}
+	return roots
 }
 
 // run 是主流程入口；返回 error 表示启动或运行过程中发生不可恢复错误。
@@ -163,7 +195,17 @@ func run() error {
 	// 注入 checker 作为 PathRuleProvider，使越界但被"永久/本会话允许"的
 	// 路径（目录级 glob 规则）在 Middleware 层也得到放行，避免双层防护
 	// 对已授权路径的"硬兜底误杀"。
-	toolHandler.RegisterMiddleware(security.SandboxMiddleware(toolWorkdir, checker))
+	//
+	// Step 8 Task 3：注入「记忆目录附加只读根」，使读取类工具（ReadFile/
+	// Glob/Grep）能读取工作目录之外的记忆文件。根来源与 Store 落盘目录同源
+	// （autolearn.UserMemoryRoot / ProjectMemoryRoot），保证沙箱放行范围与记忆
+	// 实际目录一致。仅 PermRead 工具生效（写入类工具不能直接改 memory，纵深防御）；
+	// 沙箱放行仅解除路径限制，权限层 permission.Decide 仍照常按 mode 决策
+	// （跨 workdir 读取用户级 memory 在 Strict 模式仍走 Ask/Deny）。
+	memoryReadRoots := buildMemoryReadRoots(toolWorkdir)
+	toolHandler.RegisterMiddleware(security.SandboxMiddleware(
+		toolWorkdir, checker, security.WithReadRoots(memoryReadRoots),
+	))
 
 	logger.Info("权限系统就绪",
 		zap.String("mode", string(checker.Mode())),
@@ -206,17 +248,41 @@ func run() error {
 		}
 	}
 
-	// 7. 构造 System Prompt Builder（Step 4：分层 SP 体系）。
-	// 4 个 Source 按注册顺序产出内容：
+	// 7. 构造记忆子系统（Step 8）+ System Prompt Builder（Step 4）。
+	//
+	// 记忆子系统：路径来源 buildMemoryRoots（与沙箱附加只读根同源）。Store 作为记忆
+	// 持久化底座，同时供【索引注入 Source】（会话启动读两级 MEMORY.md → LeadUserMessage）
+	// 与【后台回顾 Reviewer】（每轮 AgentLoop 结束异步写记忆 + 刷索引）共用同一实例，
+	// 避免两份根计算漂移。memory.enabled=false 时仍构造两者——Source 的 Assemble 与
+	// Reviewer 的 OnLoopDone 内部按 Enabled 短路（Task 6 三层短路：config.IsEnabled →
+	// Source → Reviewer），降级为无记忆状态，不阻塞启动。
+	memUserRoot, memProjectRoot := buildMemoryRoots(toolWorkdir)
+	memoryStore := autolearn.NewStore(memUserRoot, memProjectRoot)
+	memEnabled := cfg.Memory.IsEnabled()
+	memoryReviewer := autolearn.NewReviewer(provider, memoryStore, autolearn.ReviewerConfig{
+		Enabled:       memEnabled,
+		ReviewTimeout: 60 * time.Second, // 固定 60s，首版不纳入 setting.json（spec Out of Scope）
+	})
+	logger.Info("记忆系统就绪",
+		zap.Bool("enabled", memEnabled),
+		zap.String("user_root", memUserRoot),
+		zap.String("project_root", memProjectRoot),
+	)
+
+	// System Prompt Builder：4 个 Source 按注册顺序产出内容：
 	//   - static:       5 个硬编码子模块（角色/行为/代码质量/工具/安全）
 	//   - environment:  OS + CWD + Git 状态
 	//   - agents_md:    全局 + 项目级 AGENTS.md 合并
-	//   - memory:       自动记忆（Step 8 接入；当前为 NoopMemoryProvider）
+	//   - memory:       自动记忆索引注入（Step 8，读两级 MEMORY.md → LeadUserMessage）
 	promptBuilder := prompt.NewBuilder(
 		sources.NewStaticSource(),
 		sources.NewEnvironmentSource(),
 		sources.NewAgentsMDSource(),
-		sources.NewMemorySource(sources.NewNoopMemoryProvider(), nil),
+		sources.NewMemoryIndexSource(memoryStore, sources.MemoryIndexOptions{
+			Enabled:  memEnabled,
+			MaxLines: cfg.Memory.IndexMaxLines,
+			MaxBytes: cfg.Memory.IndexMaxBytes,
+		}),
 	)
 
 	// 8. 构造 Handler / Server
@@ -227,6 +293,8 @@ func run() error {
 	handler.SetInterceptor(interceptor, checker)
 	// Step 8:把 MCP pool 注入 Handler,让 mcp_status 推送 + 远端工具 server 解析生效
 	handler.SetMCPPool(mcpPool)
+	// Step 8：注入自动记忆回顾器，让每轮 AgentLoop 结束后异步回顾本轮对话、沉淀记忆。
+	handler.SetReviewer(memoryReviewer)
 
 	// Step 7：装配上下文压缩子系统。
 	// ToolResultStore 无条件构造并注入 Handler——/clear 需据此清理落盘的工具结果归档，

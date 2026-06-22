@@ -76,6 +76,7 @@
         userScrolledUp: false,         // 用户向上滚动后停止自动滚动
         sessionsTableActive: false,    // /sessions 表格视图是否启用（true 时 session_list 响应会渲染表格）
         _toolById: {},                 // tool_use_id -> DOM 节点，用于 end 事件定位
+        _memoryReviewById: {},         // review_id -> DOM 节点，用于自动记忆事件定位
         // Step 1.4：file_diff 单次回包按 tool_use_id 路由到对应弹窗回调。
         // 每个 callback 自行处理「找到/没找到/超时」，处理完即从 map 移除。
         _fileDiffCallbacks: {},        // tool_use_id -> { resolve, timer, modal }
@@ -235,6 +236,7 @@
         // Step 7：上下文压缩（手动触发 + 事件推送）
         Compact:          'compact',
         CompactionEvent:  'compaction_event',
+        MemoryReviewEvent: 'memory_review_event',
         // /dump：导出当前会话上下文 + System Prompt 到本地文件（dump.json/dump.md）
         Dump:             'dump',
         DumpResult:       'dump_result',
@@ -296,6 +298,7 @@
             case MsgType.PermissionMode:    return onPermissionMode(msg.payload);
             case MsgType.MCPStatus:         return onMCPStatus(msg.payload);
             case MsgType.CompactionEvent:   return onCompactionEvent(msg.payload);
+            case MsgType.MemoryReviewEvent: return onMemoryReviewEvent(msg.payload);
             case MsgType.DumpResult:        return onDumpResult(msg.payload);
             default: console.warn('未知消息类型:', msg.type, msg.payload);
         }
@@ -1270,6 +1273,7 @@
         state._streamingBuffer = '';
         // 切换会话时清空工具 id 索引（旧的 DOM 节点已不在 DOM 树里）
         state._toolById = {};
+        state._memoryReviewById = {};
         if (!state.messages.length) {
             renderEmptyState();
             return;
@@ -1591,6 +1595,101 @@
         // Step 8:同步/更新 server 来源徽标。end 消息可能携带 server 字段(用于 start 未带 server 的兜底)
         if (endPayload.server) {
             ensureMCPServerBadge(node, endPayload.server);
+        }
+    }
+
+    function onMemoryReviewEvent(p) {
+        if (!p || !p.review_id || !p.status) return;
+        let node = state._memoryReviewById[p.review_id];
+        if (!node) {
+            node = appendMemoryReviewNode(p);
+            state._memoryReviewById[p.review_id] = node;
+        } else {
+            updateMemoryReviewNode(node, p);
+        }
+        scrollToBottomIfNeeded();
+    }
+
+    function appendMemoryReviewNode(p) {
+        const empty = dom.messages.querySelector('.messages-empty');
+        if (empty) empty.remove();
+
+        const wrap = document.createElement('div');
+        wrap.className = 'message-memory';
+        wrap.dataset.reviewId = p.review_id;
+        wrap.dataset.status = p.status || 'started';
+
+        const content = document.createElement('div');
+        content.className = 'message-memory-content';
+
+        const header = document.createElement('div');
+        header.className = 'message-memory-header';
+
+        const icon = document.createElement('span');
+        icon.className = 'message-memory-icon';
+        icon.textContent = 'M';
+        header.appendChild(icon);
+
+        const name = document.createElement('span');
+        name.className = 'message-memory-name';
+        name.textContent = '自动记忆';
+        header.appendChild(name);
+
+        const summary = document.createElement('span');
+        summary.className = 'message-memory-summary';
+        header.appendChild(summary);
+
+        const status = document.createElement('span');
+        status.className = 'message-memory-status';
+        header.appendChild(status);
+
+        const dur = document.createElement('span');
+        dur.className = 'message-memory-duration';
+        header.appendChild(dur);
+
+        content.appendChild(header);
+        wrap.appendChild(content);
+        dom.messages.appendChild(wrap);
+        updateMemoryReviewNode(wrap, p);
+        return wrap;
+    }
+
+    function updateMemoryReviewNode(node, p) {
+        if (!node || !p) return;
+        const status = p.status || node.dataset.status || 'started';
+        node.dataset.status = status;
+        const summary = node.querySelector('.message-memory-summary');
+        if (summary) summary.textContent = memoryReviewSummary(p);
+        const statusEl = node.querySelector('.message-memory-status');
+        if (statusEl) statusEl.textContent = memoryReviewStatusLabel(status);
+        const dur = node.querySelector('.message-memory-duration');
+        if (dur) dur.textContent = p.duration_ms ? formatDuration(p.duration_ms) : '';
+    }
+
+    function memoryReviewStatusLabel(status) {
+        switch (status) {
+            case 'started': return 'running';
+            case 'completed': return 'saved';
+            case 'no_decision': return 'checked';
+            case 'error': return 'failed';
+            default: return status || 'review';
+        }
+    }
+
+    function memoryReviewSummary(p) {
+        switch (p.status) {
+            case 'started':
+                return '正在回顾本轮对话，判断是否需要沉淀长期记忆';
+            case 'completed':
+                return (p.applied || 0) > 0
+                    ? `已沉淀 ${p.applied} 条长期记忆`
+                    : '回顾完成，未写入新的记忆';
+            case 'no_decision':
+                return '已回顾，本轮没有需要沉淀的长期记忆';
+            case 'error':
+                return p.err ? ('自动记忆回顾失败：' + p.err) : '自动记忆回顾失败';
+            default:
+                return '自动记忆状态更新';
         }
     }
 

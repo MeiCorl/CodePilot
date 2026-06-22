@@ -23,6 +23,7 @@ import (
 	"github.com/MeiCorl/CodePilot/src/internal/logger"
 	"github.com/MeiCorl/CodePilot/src/internal/mcp/adapter"
 	mcpsession "github.com/MeiCorl/CodePilot/src/internal/mcp/session"
+	"github.com/MeiCorl/CodePilot/src/internal/memory/autolearn"
 	memctx "github.com/MeiCorl/CodePilot/src/internal/memory/context"
 	memsession "github.com/MeiCorl/CodePilot/src/internal/memory/session"
 	"github.com/MeiCorl/CodePilot/src/internal/security"
@@ -81,6 +82,12 @@ type Handler struct {
 	// 由 main.go 顶层装配后通过 SetToolResultStore 注入（与压缩总开关解耦：即便 compaction
 	// 关闭，handler 仍持有 store 以清理残留的 tool_results）。
 	toolResultStore *memctx.ToolResultStore
+
+	// reviewer 为自动学习记忆的后台异步回顾器（Step 8）。nil 表示记忆总开关关闭或未注入——
+	// 此时 OnLoopDone 不触发任何回顾。由 main.go 顶层装配后通过 SetReviewer 注入；
+	// 回顾器内部对 provider/store/Enabled 做 nil/短路判断，故 OnLoopDone 调用方仅需判
+	// h.reviewer != nil 即可，无需感知内部依赖。
+	reviewer *autolearn.Reviewer
 
 	// interceptor 为权限拦截器；为 nil 时 ToolHandler 不做权限检查。
 	interceptor *security.Interceptor
@@ -293,8 +300,8 @@ func (h *Handler) handleUserInput(conn *websocket.Conn, msg Message) error {
 	// 状态切到 thinking
 	_ = h.sendStatusUpdate(conn, StatusThinking)
 
-	// 启动 goroutine 处理流式
-	go h.runStream(acquired, conn)
+	// 启动 goroutine 处理流式（传入本轮用户输入，供 Step 8 记忆回顾快照使用）
+	go h.runStream(acquired, conn, p.Text)
 
 	return nil
 }
@@ -309,17 +316,28 @@ func (h *Handler) handleUserInput(conn *websocket.Conn, msg Message) error {
 //  3. 退出前：把完整 history 持久化、推 stream_done + context_usage、
 //     释放流式状态机、切回 idle。
 //
+// userInput 为本轮用户原始输入，Step 8 起作为后台记忆回顾快照的一部分（节流判断 +
+// 回顾上下文），故从 handleUserInput 显式传入，避免回顾器反向依赖历史回溯。
+//
 // ctx 在 abort_stream 时被 cancel；AgentLoop 内部会响应 ctx 取消并
 // 把当前 LLM 流 / 工具执行一并中断，由 runStream 根据 StopReason 映射退出原因。
-func (h *Handler) runStream(ctx context.Context, conn *websocket.Conn) {
-	// 记录当前活跃 WebSocket 连接，供 HITL 回调使用
+func (h *Handler) runStream(ctx context.Context, conn *websocket.Conn, userInput string) {
+	// 持锁快照本轮关键上下文：活跃连接、会话 ID、RunAgentLoop 前的历史消息数。
+	//   - sessionID：注入 ctx 路由会话日志 + 作为 ReviewRequest.SessionID；
+	//   - historyBefore：用户消息已在 handleUserInput 加入 history，故此处计数含本轮
+	//     用户消息，RunAgentLoop 追加的 assistant/tool 消息即「本轮新增」范围，供
+	//     OnLoopDone 提取本轮工具调用名摘要。
+	var sessionID string
+	var historyBefore int
 	h.mu.Lock()
 	h.pendingConn = conn
-	// 持锁取当前会话 ID 并注入 ctx：下游核心链路经 logger.InfoCtx 等函数据此把会话日志
-	// 路由到对应会话目录的 codepilot.log（ctx 无 sessionID 时回退全局，不影响业务）。
 	if h.current != nil && h.current.ID != "" {
-		ctx = logger.WithSession(ctx, h.current.ID)
+		sessionID = h.current.ID
+		// 持锁取当前会话 ID 并注入 ctx：下游核心链路经 logger.InfoCtx 等函数据此把会话日志
+		// 路由到对应会话目录的 codepilot.log（ctx 无 sessionID 时回退全局，不影响业务）。
+		ctx = logger.WithSession(ctx, sessionID)
 	}
+	historyBefore = h.conv.MessageCount()
 	h.mu.Unlock()
 	defer func() {
 		h.mu.Lock()
@@ -421,10 +439,27 @@ func (h *Handler) runStream(ctx context.Context, conn *websocket.Conn) {
 				Max:     maxIterations,
 			})
 		},
-		// OnLoopDone 在 AgentLoop 结束后回调，用于增量保存会话。
-		// 确保即使 AgentLoop 正常完成，会话也能在 stream_done 之前落盘。
+		// OnLoopDone 在 AgentLoop 结束后回调：
+		//   1. 增量保存会话，确保 stream_done 之前落盘；
+		//   2. Step 8：把本轮结果适配为 autolearn.ReviewRequest，触发后台异步记忆回顾。
+		//      回顾器内部做节流（非 completed / 空输入 / 纯闲聊跳过）+ per-session 串行 +
+		//      异步派发，本回调立即返回不阻塞响应流。reviewer 为 nil（记忆关闭）或
+		//      Enabled=false 时回顾器内部短路，不产生任何回顾。
 		OnLoopDone: func(result conversation.AgentLoopResult) {
 			h.saveCurrentSession()
+			if h.reviewer == nil {
+				return
+			}
+			h.reviewer.OnLoopDone(autolearn.ReviewRequest{
+				SessionID:     sessionID,
+				Completed:     result.StopReason == conversation.StopReasonCompleted,
+				UserInput:     userInput,
+				FinalReply:    result.FinalText,
+				ToolCallNames: h.collectTurnToolCallNames(historyBefore),
+				OnEvent: func(evt autolearn.ReviewEvent) {
+					_ = h.sendMemoryReviewEvent(conn, evt)
+				},
+			})
 		},
 	}
 
@@ -460,6 +495,32 @@ func (h *Handler) runStream(ctx context.Context, conn *websocket.Conn) {
 	reason := mapStopReason(result.StopReason)
 	_ = h.sendStreamDone(conn, reason)
 	_ = h.sendContextUsage(conn)
+}
+
+// collectTurnToolCallNames 从本轮 AgentLoop 新增的历史消息中提取去重保序的工具调用名摘要。
+//
+// historyBefore 为本轮 RunAgentLoop 开始前 conv 的消息数（由 runStream 在持锁快照时记录），
+// 仅扫描该索引之后新增的 assistant 消息中的 tool_use 块，避免把历史轮的工具名混入本轮
+// 回顾快照。回顾只需工具名（不含入参出参全文），既控制回顾成本又避免敏感数据进入回顾上下文。
+// 边界防御：historyBefore 越界时回退到从头扫描，绝不 panic。
+func (h *Handler) collectTurnToolCallNames(historyBefore int) []string {
+	all := h.conv.AllMessages()
+	if historyBefore < 0 || historyBefore > len(all) {
+		historyBefore = 0
+	}
+	seen := make(map[string]struct{})
+	var names []string
+	for _, m := range all[historyBefore:] {
+		for _, block := range m.Content {
+			if tu, ok := block.(*llm.ToolUseBlock); ok && tu.Name != "" {
+				if _, exists := seen[tu.Name]; !exists {
+					seen[tu.Name] = struct{}{}
+					names = append(names, tu.Name)
+				}
+			}
+		}
+	}
+	return names
 }
 
 // saveCurrentSession 把当前 ConversationManager 中「尚未落盘的新消息」追加持久化到磁盘。
@@ -974,6 +1035,15 @@ func (h *Handler) SetToolResultStore(s *memctx.ToolResultStore) {
 	h.toolResultStore = s
 }
 
+// SetReviewer 注入自动学习记忆的后台回顾器（Step 8）。
+// 应在 main.go 构造 Handler 后、启动服务前调用一次。reviewer 持有 provider + store +
+// 配置，由 runStream 装配到每轮 AgentLoop 的 OnLoopDone 回调。为 nil 时（记忆总开关
+// 关闭）OnLoopDone 直接跳过回顾，主流程不受影响。ReviewerConfig.Enabled=false 时
+// 回顾器内部短路，故可无脑注入、由配置决定是否真正触发。
+func (h *Handler) SetReviewer(r *autolearn.Reviewer) {
+	h.reviewer = r
+}
+
 // handleCompact 处理前端 /compact 斜杠命令或状态栏「压缩」按钮的请求：
 // 触发一次手动上下文压缩（第二层摘要，无视余量与熔断）。
 //
@@ -1122,6 +1192,19 @@ func (h *Handler) sendCompactionEvent(conn *websocket.Conn, res memctx.Compactio
 		Tripped:        res.Tripped,
 		Manual:         manual,
 		Err:            errText,
+	})
+}
+func (h *Handler) sendMemoryReviewEvent(conn *websocket.Conn, evt autolearn.ReviewEvent) error {
+	return h.sendMessage(conn, MsgTypeMemoryReviewEvent, MemoryReviewEventPayload{
+		ReviewID:   evt.ReviewID,
+		SessionID:  evt.SessionID,
+		Status:     string(evt.Status),
+		StartedAt:  evt.StartedAt,
+		FinishedAt: evt.FinishedAt,
+		DurationMs: evt.Duration.Milliseconds(),
+		Total:      evt.Total,
+		Applied:    evt.Applied,
+		Err:        evt.Err,
 	})
 }
 

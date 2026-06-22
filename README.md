@@ -42,6 +42,17 @@ CodePilot 是一个从零构建的终端 AI Coding Agent（类似 Claude Code / 
 - **跨项目隔离**：按 workdir basename 分目录存放会话，跨项目天然隔离
 - **优雅中断**：中断时保留已完成迭代 + 写入 `abortMarker`，LLM 后续轮次能"理解"前序已取消，支持恢复
 
+### 🧠 自动学习记忆
+
+- **4 类记忆分级存储**：`user_preference` / `user_feedback`（用户级，跨项目生效）+ `project_knowledge` / `reference`（项目级，跟随项目）；单条记忆独立 md 文件 + YAML frontmatter，`MEMORY.md` 按 4 类分块索引
+- **MEMORY.md 索引注入召回**：会话启动合并用户级 + 项目级两个索引，外层包 `<memory_index>` 作为 LeadUserMessage 注入（与 AGENTS.md 同构）；体积上限 200 行 / 25KB 截断
+- **后台异步回顾器**：监听 `AgentLoop.OnLoopDone`，智能节流（仅 `completed` + 实质输入触发）+ per-session 串行 + panic recover + 全链路静默降级
+- **独立 LLM 通道**：回顾用独立 `context.Background()` 派生 + ReviewTimeout(60s)，自带本轮快照做独立 LLM 调用，**绝不回写主对话历史**
+- **LLM 比对索引去重 / 更新**：回顾 prompt 注入当前两级索引，由 LLM 决策 new / update；update 覆盖同 slug + 保留 CreatedAt；虚构 slug 被跳过防误覆盖
+- **敏感信息双层防护**：回顾 prompt 硬性约束禁止记录密钥 / token / 凭证 + sanitizer 正则兜底脱敏（高熵凭证 / Bearer / 键值对口令三类独立模板）
+- **ReadFile 沙箱白名单**：附加只读根（仅 PermRead 放行 memory 目录，PermWrite / PermExec 仍仅认 workdir）；「沙箱放行 ≠ 权限绕过」双层语义
+- **三层降级**：`setting.json` 中 `memory.enabled=false` → config 短路 → Source Assemble 短路 → Reviewer OnLoopDone 短路
+
 ### 📝 提示词体系
 
 - **分层 System Prompt**：`Builder` 模式组装 4 个 Source（static / environment / agents_md / memory）
@@ -65,13 +76,12 @@ CodePilot 是一个从零构建的终端 AI Coding Agent（类似 Claude Code / 
 
 ### 计划支持功能
 
-| 功能           | 所属阶段    | 说明                                        |
-| ------------ | ------- | ----------------------------------------- |
-| **记忆系统**     | Step 8  | 自动记忆用户偏好与项目约定，跨会话持久化（System Prompt 已留接入位） |
-| **快捷命令系统**   | Step 9  | `/help`、`/clear`、`/init` 等斜杠命令，快速触发操作     |
-| **Skill 系统** | Step 10 | 可插拔技能模块，封装复杂工作流为可复用技能                     |
-| **Hook 系统**  | Step 11 | 工具执行前后的钩子机制，支持日志、拦截、过滤                    |
-| **SubAgent** | Step 12 | 子代理系统，支持并行调度、上下文隔离与结果回传                   |
+| 功能         | 所属阶段    | 说明                                       |
+| ---------- | ------- | ---------------------------------------- |
+| **快捷命令系统** | Step 9  | `/help`、`/clear`、`/init` 等斜杠命令，快速触发操作    |
+| **Skill 系统** | Step 10 | 可插拔技能模块，封装复杂工作流为可复用技能                    |
+| **Hook 系统** | Step 11 | 工具执行前后的钩子机制，支持日志、拦截、过滤                   |
+| **SubAgent** | Step 12 | 子代理系统，支持并行调度、上下文隔离与结果回传                  |
 
 ---
 
@@ -180,6 +190,13 @@ cp config/setting.example.openai.json ~/.codepilot/setting.json
         "keep_recent_tokens": 10000,
         "keep_recent_min_messages": 5,
         "breaker_threshold": 3
+    },
+
+    "memory": {
+        "enabled": true,
+        "index_max_lines": 200,
+        "index_max_bytes": 25600,
+        "review_model": ""
     }
 }
 ```
@@ -311,6 +328,30 @@ cp config/setting.example.openai.json ~/.codepilot/setting.json
 
 > 两层压缩的工作机制（L1 预览化 / L2 摘要 / 熔断 / 紧急压缩）详见后文「核心机制详解 · 上下文压缩」。
 
+##### 自动学习记忆
+
+| 参数                          | 说明                                                              | 默认值      |
+| --------------------------- | --------------------------------------------------------------- | -------- |
+| `memory.enabled`            | 自动学习记忆总开关；`false` 时 config → Source → Reviewer 三层降级为无记忆状态     | `true`   |
+| `memory.index_max_lines`    | 会话启动注入的 MEMORY.md 索引行数上限                                  | `200`    |
+| `memory.index_max_bytes`    | 会话启动注入的 MEMORY.md 索引字节上限（超阈值截断并 warn 日志）                     | `25600`  |
+| `memory.review_model`       | 回顾专用 LLM 模型名（留空 = 复用主 `model`）                              | `""`     |
+
+**存储布局**（按 `setting.json` 中字段级合并：全局 + 项目级叠加）：
+
+```
+~/.codepilot/memory/                # 用户级（跨项目生效）
+├── MEMORY.md                       #   索引（4 类分块：user_preference/user_feedback/...）
+├── indent-style.md                 #   单条记忆（YAML frontmatter + 正文）
+└── ...
+<cwd>/.codepilot/memory/            # 项目级（跟随当前项目）
+├── MEMORY.md
+├── api-docs-link.md
+└── ...
+```
+
+> 记忆的写入由后台异步回顾器自动完成，无需用户感知；ReadFile 工具经沙箱白名单按需读取单条记忆文件，避免把全文塞进上下文。详见后文「核心机制详解 · 自动学习记忆」。
+
 ### 使用说明
 
 1. **开始对话**：在 Web UI 底部输入框输入你的需求，按回车发送
@@ -382,7 +423,7 @@ CodePilot/
 │   │   │       │   ├── static.go        #       静态 5 子模块（角色/行为/代码质量/工具/安全）
 │   │   │       │   ├── environment.go   #       OS / CWD / Git 状态采集
 │   │   │       │   ├── agents_md.go     #       全局 + 项目级 AGENTS.md 合并
-│   │   │       │   └── memory.go        #       自动记忆接入位（Step 8 接入）
+│   │   │       │   └── memory_index.go  #       4 类自动学习记忆 MEMORY.md 索引注入（Step 8）
 │   │   │       ├── template/            #     模板变量渲染
 │   │   │       │   ├── env.go           #       Env 结构（OS / CWD / Date / StaticOverrides）
 │   │   │       │   └── render.go        #       {{OS}} / {{CWD}} / {{GIT_BRANCH}} 等替换
@@ -452,6 +493,12 @@ CodePilot/
 │   │   │   │   └── window.go            #     滑动窗口（⚠️ 当前未使用，Step 7 改用两层压缩）
 │   │   │   └── session/
 │   │   │       └── session.go           #     会话管理器（按项目分目录 + append-only JSONL）
+│   │   │   └── autolearn/                #   自动学习记忆（Step 8）
+│   │   │       ├── types.go              #     数据模型（4 类记忆 + 存储域 + Frontmatter）
+│   │   │       ├── store.go              #     文件持久化（MEMORY.md 索引 + 原子写 + 路径逃逸防护）
+│   │   │       ├── prompt.go             #     回顾专用 prompt 模板（独立 LLM 通道）
+│   │   │       ├── sanitizer.go          #     敏感信息脱敏（凭证 / Bearer / 键值对口令三类模板）
+│   │   │       └── reviewer.go           #     后台异步回顾器（per-session 串行 + panic recover）
 │   │   ├── logger/                      # 日志系统
 │   │   │   └── logger.go                #   基于 zap 的异步文件日志
 │   │   └── runtime/                     # 运行时工具
@@ -543,6 +590,38 @@ CodePilot 在每次 LLM 请求前自动执行两层压缩，**无需用户感知
 
 > 各阈值的配置项详见「快速开始 · 配置项参考 · 上下文压缩」。
 
+### 🧠 自动学习记忆（4 类分级 + 后台回顾）
+
+CodePilot 在每次 Agent Loop 结束后，自动由**独立 LLM 通道**回顾本轮对话，按 4 类记忆分级沉淀为独立 md 文件；新会话启动时把两级 `MEMORY.md` 索引注入 LeadUserMessage，让 Agent「想起」之前沉淀的偏好、反馈、项目知识与参考信息。
+
+**4 类记忆分级**：
+
+| 类型                   | 存储域                          | 何时沉淀                                       |
+| -------------------- | ---------------------------- | ------------------------------------------ |
+| `user_preference`    | 用户级 `~/.codepilot/memory/` | 用户明确表达的做事方式约定（如「缩进用 4 空格」），跨所有项目生效            |
+| `user_feedback`      | 用户级 `~/.codepilot/memory/` | 用户对 Agent 输出的纠正性反馈与正确做法                        |
+| `project_knowledge`  | 项目级 `<cwd>/.codepilot/memory/` | 关于当前项目的技术架构、部署运维、内部约定等信息                       |
+| `reference`          | 项目级 `<cwd>/.codepilot/memory/` | 外部链接与资料（API 文档地址、内部 wiki 链接、DB 手册位置）           |
+
+**关键设计**：
+
+- **后台异步 + 节流**：回顾器监听 `AgentLoop.OnLoopDone`，仅当 `completed` + 本轮有实质输入时才触发；aborted / error / max_iterations / context_overflow / 纯闲聊一律跳过
+- **per-session 串行**：inflight map + drop 策略；同一会话多次结束只串行一次，避免覆盖竞态
+- **独立 LLM 通道**：回顾用独立 `context.Background()` 派生 + `ReviewTimeout(60s)`，自带本轮快照（用户输入 + 最终回复 + 工具名摘要）做独立 LLM 调用；**Reviewer 不持有 `ConversationManager` 引用，编译期保证绝不回写主对话历史**
+- **LLM 比对索引去重 / 更新**：回顾 prompt 注入当前两级 `MEMORY.md` 索引，由回顾 LLM 决策 new / update：
+  - `new` → 新建 `<slug>.md` + 在 MEMORY.md 索引追加 `- [type](slug.md)——简介`
+  - `update` → 覆盖同 slug 文件 + 刷新索引简介 + 保留 `CreatedAt`，消除冗余与自相矛盾
+  - 虚构 slug（LLM 自创但索引中不存在）被跳过防误覆盖
+- **敏感信息双层防护**：
+  1. **Prompt 硬性约束**：明确禁止记录密钥 / 密码 / token / 凭证
+  2. **Sanitizer 正则兜底**：对高熵凭证 / Bearer / 键值对口令三类独立 replace 模板（幂等），如 `sk-XXXX...` → `[REDACTED_API_KEY]`
+- **ReadFile 沙箱白名单按需读取**：通过 `security.WithReadRoots` 注入附加只读根（仅 `PermRead` 放行 memory 目录，`PermWrite` / `PermExec` 仍仅认 workdir）；`IsPathOutsideSandbox` 故意不感知附加根，「**沙箱放行 ≠ 权限绕过**」双层语义，纵深防御
+- **三层降级**：`memory.enabled=false` 时 `config.IsEnabled` → Source `Assemble` 短路 → Reviewer `OnLoopDone` 短路 → 整体降级为无记忆状态（不报错、不污染提示词）
+
+**架构纯净度**：autolearn 包仅依赖 `llm` + `logger`，不 import `conversation` / `config`（用 `ReviewRequest` 解耦 `AgentLoopResult`、`ReviewerConfig` 解耦 config）；handler 层负责 `AgentLoopResult → ReviewRequest` 适配 + `config → 组件配置` wire。
+
+> 详见设计文档 [docs/step8-记忆系统/](docs/step8-记忆系统/)。
+
 ---
 
 ## 🛠️ 技术栈
@@ -563,11 +642,11 @@ CodePilot 在每次 LLM 请求前自动执行两层压缩，**无需用户感知
 
 ## 📊 项目进度
 
-> 当前最新版本 **V1.4.0** · 最近更新 **2026-06-16** · 进行中 **—**（11/12 步骤完成，下一步 Step 8 记忆系统）
+> 当前最新版本 **V1.5.0** · 最近更新 **2026-06-18** · 进行中 **—**（8/12 主线步骤完成，下一步 Step 9 快捷命令系统）
 > 详细进度见 [.harness/PROGRESS.md](.harness/PROGRESS.md)
 
 ```
-[███████████████████████████████] 11/12 步骤完成（~92%，Step 8 待开始）
+[█████████████████████████████░░░░] 8/12 主线步骤完成（Step 1-8 已完成，Step 9 待开始）
 
 ✅ Step 1    — LLM 打通（双 Provider + 流式）
 ✅ Step 1.1  — UI 界面重构（TUI → WebUI）
@@ -576,11 +655,11 @@ CodePilot 在每次 LLM 请求前自动执行两层压缩，**无需用户感知
 ✅ Step 1.4  — WebUI 工具展示优化（双栏 diff 弹窗）
 ✅ Step 2    — 工具系统集成（Tool/Registry/Builtin）
 ✅ Step 3    — ReAct 与 Agent Loop 实现（多轮迭代 + 工具错误回灌 + 优雅中断）
-✅ Step 4    — System Prompt 设计（Builder + 4 Source + 模板变量）
+✅ Step 4    — System Prompt 设计（Builder + 4 Source + 模板变量 + Anthropic 缓存切片）
 ✅ Step 5    — 权限系统设计（运行时档位切换 + HITL + 危险命令黑名单 + 路径沙箱）
 ✅ Step 6    — MCP 协议实现（JSON-RPC + stdio/HTTP + 连接池 + 适配器 + 重连）
 ✅ Step 7    — 上下文管理（两层压缩 L1 工具结果预览化 + L2 整体摘要 + 熔断 + 紧急压缩）
-⏳ Step 8    — 记忆系统（自动记忆用户偏好与项目约定，跨会话持久化）
+✅ Step 8    — 记忆系统（4 类自动学习记忆 + MEMORY.md 索引注入 + 后台异步回顾 + 敏感脱敏）
 ⏳ Step 9    — 快捷命令系统
 ⏳ Step 10   — Skill 系统
 ⏳ Step 11   — Hook 系统

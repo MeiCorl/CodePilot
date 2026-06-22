@@ -68,6 +68,8 @@ const (
 	//   - light（第一层工具结果预览化）：轻量感知（状态栏压缩计数/小标记，不打扰）。
 	// 自动压缩（每轮 API 请求前）与手动压缩（/compact）共用本消息，Manual 字段区分来源。
 	MsgTypeCompactionEvent = "compaction_event"
+	// MsgTypeMemoryReviewEvent 由后端推送，告知前端自动记忆回顾的生命周期状态。
+	MsgTypeMemoryReviewEvent = "memory_review_event"
 	// MsgTypeDumpResult 是 /dump（MsgTypeDump）请求的响应消息。
 	// OK=true 时 JSONPath / MDPath 携带两个导出文件的绝对路径；
 	// OK=false 时 Err 携带失败原因（busy / no_active_session / dump_failed）。
@@ -258,11 +260,11 @@ type ToolCallDisplay struct {
 //
 // 前端「状态栏 SP 区域」直接渲染这两个字段；鼠标悬停展示各 Source 小计。
 type ContextUsagePayload struct {
-	Used           int            `json:"used"`
-	Limit          int            `json:"limit"`
-	PercentLeft    int            `json:"percent_left"`
-	SPTotalTokens  int            `json:"sp_total_tokens,omitempty"`
-	SPBreakdown    []SPSourceStat `json:"sp_breakdown,omitempty"`
+	Used          int            `json:"used"`
+	Limit         int            `json:"limit"`
+	PercentLeft   int            `json:"percent_left"`
+	SPTotalTokens int            `json:"sp_total_tokens,omitempty"`
+	SPBreakdown   []SPSourceStat `json:"sp_breakdown,omitempty"`
 }
 
 // SPSourceStat 描述单个 Source 在 System Prompt 中的 token 开销。
@@ -278,10 +280,10 @@ type SPSourceStat struct {
 // Stats / TotalTokens 与 context_usage 中携带的 SP 信息一致，
 // 仅 TotalTokens 是精确累加值（与 Stats 求和一致）。
 type DevExportSPPayload struct {
-	SystemBlocks    []string `json:"system_blocks"`
-	LeadUserMessage string   `json:"lead_user_message"`
+	SystemBlocks    []string       `json:"system_blocks"`
+	LeadUserMessage string         `json:"lead_user_message"`
 	Stats           []SPSourceStat `json:"stats"`
-	TotalTokens     int      `json:"total_tokens"`
+	TotalTokens     int            `json:"total_tokens"`
 }
 
 // DumpPayload /dump 斜杠命令请求体（客户端 → 服务端）。
@@ -488,6 +490,20 @@ type CompactionEventPayload struct {
 	Tripped        bool   `json:"tripped"`
 	Manual         bool   `json:"manual,omitempty"`
 	Err            string `json:"err,omitempty"`
+}
+
+// MemoryReviewEventPayload 后端 → 前端：自动记忆回顾生命周期事件。
+// Status 取值：started / no_decision / completed / error。
+type MemoryReviewEventPayload struct {
+	ReviewID   string    `json:"review_id"`
+	SessionID  string    `json:"session_id,omitempty"`
+	Status     string    `json:"status"`
+	StartedAt  time.Time `json:"started_at,omitempty"`
+	FinishedAt time.Time `json:"finished_at,omitempty"`
+	DurationMs int64     `json:"duration_ms,omitempty"`
+	Total      int       `json:"total,omitempty"`
+	Applied    int       `json:"applied,omitempty"`
+	Err        string    `json:"err,omitempty"`
 }
 
 // Encode 编码消息为 JSON 字节。
