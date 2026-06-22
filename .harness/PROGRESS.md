@@ -14,17 +14,17 @@
 | 指标     | 数值                                                    |
 | ------ | ----------------------------------------------------- |
 | 计划总步骤数 | 12（含子步骤后实际更多）                                         |
-| 已完成步骤数 | 12（Step 1 / Step 1.1 / Step 1.2 / Step 1.3 / Step 1.4 / Step 2 / Step 3 / Step 4 / Step 5 / Step 6 / Step 7 / Step 8）  |
-| 当前最新版本 | V1.5.0                                                |
+| 已完成步骤数 | 13（Step 1 / Step 1.1 / Step 1.2 / Step 1.3 / Step 1.4 / Step 2 / Step 3 / Step 4 / Step 5 / Step 6 / Step 7 / Step 8 / Step 9） |
+| 当前最新版本 | V1.5.0（Step 9 为文档补记，不新增版本）                              |
 | 进行中步骤  | —                                                    |
-| 下一步骤   | Step 9 — 快捷命令系统（需先 `/specs` 触发需求澄清）                      |
-| 最近更新   | 2026-06-18                                            |
+| 下一步骤   | Step 10 — Skill 系统（需先 `/specs` 触发需求澄清）                     |
+| 最近更新   | 2026-06-22                                            |
 
 
 进度条：
 
 ```
-[█████████████████████████████░░░░] 8/12 主线步骤完成（Step 1-8 已完成，Step 9 待开始）
+[█████████████████████████████████░░░] 9/12 主线步骤完成（Step 1-9 已完成，Step 10 待开始）
 ```
 
 ---
@@ -234,6 +234,25 @@
 
 ---
 
+### Step 9 — 快捷命令系统（回顾式补记，V1.5.0）
+
+- **完成时间**：2026-06-22（能力已在 Step 1.1 / Step 7 / 后续调试能力中分散落地，本次仅归档标记完成）
+- **代表 commit**：`a54be70` `Release V1.0.1: 重构UI界面,使用Web页面代替TUI交互`；`c620b4f` `接入上下文管理`；`bbf9f5f` `新增dump命令：支持将当前会话内存上下文导出`
+- **设计文档**：[docs/step9-快捷命令系统/](../docs/step9-快捷命令系统/)
+- **Task 完成数**：6 / 6
+- **核心交付能力**：
+  1. WebUI `/` 快捷命令候选下拉：支持前缀过滤、上下键选择、Enter/Tab 执行或补全、鼠标点击选择
+  2. 会话管理命令：`/new` 创建新会话、`/sessions` 表格查看历史会话、`/resume <id>` 按前缀恢复历史会话、`/clear` 清空当前会话上下文
+  3. 上下文管理命令：`/compact` 手动触发上下文压缩，推送 `compaction_event` 并刷新 context usage
+  4. 调试导出命令：`/dump` 导出当前会话上下文与 System Prompt 快照到 `dump.json` / `dump.md`
+  5. WebSocket 命令协议：快捷命令转为 `new_session` / `list_sessions` / `resume_session` / `clear_session` / `compact` / `dump` 等业务消息，避免误送入 LLM
+  6. 后端独立处理器：命令通过 handler router 分发到会话、压缩、导出等独立处理器，失败时返回结构化错误或专用结果消息
+  7. 并发保护：`/compact` 与 `/dump` 复用 `stream.tryAcquire` busy 保护，避免与 Agent Loop 并发改写历史
+  8. 验证覆盖：会话类命令已有 `handler_test.go` 覆盖；`/compact` 已有 handler 层 e2e；`/dump` 已有 JSON / Markdown / 文件写入测试；`/` 候选下拉在 Step 1.1 checklist 中有验证记录
+- **后续备注**：当前阶段不强制重构命令注册表；若 Step 10 Skill 系统、Step 11 Hook 系统或 Step 12 SubAgent 需要动态命令扩展，再按实际需求设计统一命令注册与帮助系统。
+
+---
+
 ## 🕓 待完成步骤
 
 > 下列步骤按 [PROJECT.md](./PROJECT.md) 计划顺序排列，开始下一步前请先用 `/specs` 触发需求澄清并生成 spec / tasks / checklist 三文档。
@@ -241,7 +260,6 @@
 
 | 编号  | 步骤名                   | 所属架构层 | 状态      | 计划目录                             |
 | --- | --------------------- | ----- | ------- | -------------------------------- |
-| 9   | 快捷命令系统                | 工具层   | ⏳ 待开始   | `docs/step9-快捷命令系统/`             |
 | 10  | Skill 系统              | 工具层   | ⏳ 待开始   | `docs/step10-Skill系统/`           |
 | 11  | Hook 系统               | 工具层   | ⏳ 待开始   | `docs/step11-Hook系统/`            |
 | 12  | SubAgent              | 工具层   | ⏳ 待开始   | `docs/step12-SubAgent/`          |
@@ -258,7 +276,7 @@
 | --------- | ----------------------------------------------------- | ------------------------------------------- |
 | 第 1 层：交互层 | WebUI（HTTP + WebSocket + 富文本渲染 + 流式 Markdown 实时渲染 + SP 可观测性 + 开发者模式 Export + 工具块「查看改动」双栏 diff 弹窗 + 权限确认对话框 + 状态栏权限模式展示 + MCP server 来源徽标 + MCP 健康状态区） | —            |
 | 第 2 层：引擎层 | 对话管理 + Agent Loop（ReAct 循环迭代 + 多工具并行 + 迭代上限 + 溢出保护）、完整 System Prompt（Builder + 4 Source + 模板变量 + Anthropic 缓存切片） | —                                            |
-| 第 3 层：工具层 | 工具抽象 + Registry + 6 内置工具（ReadFile/WriteFile/EditFile/Bash/Glob/Grep）+ 路径沙箱 + Bash 黑名单 + 批量执行 + 进程内 FileDiffStore + **MCP 客户端**（JSON-RPC 2.0 + stdio/HTTP 双传输 + Session 三阶段握手 + 连接池 + 适配器自动注册 + 指数退避重连 + 10 个 E2E 集成用例全绿 + 真实启动冒烟 healthy=2 tools=4） | 快捷命令系统（Step 9）、Skill 系统（Step 10）、Hook（Step 11）、SubAgent（Step 12） |
+| 第 3 层：工具层 | 工具抽象 + Registry + 6 内置工具（ReadFile/WriteFile/EditFile/Bash/Glob/Grep）+ 路径沙箱 + Bash 黑名单 + 批量执行 + 进程内 FileDiffStore + **MCP 客户端**（JSON-RPC 2.0 + stdio/HTTP 双传输 + Session 三阶段握手 + 连接池 + 适配器自动注册 + 指数退避重连 + 10 个 E2E 集成用例全绿 + 真实启动冒烟 healthy=2 tools=4）+ **快捷命令系统**（`/new` / `/sessions` / `/resume` / `/clear` / `/compact` / `/dump`，WebUI 候选下拉 + WebSocket 命令协议 + 后端独立处理器） | Skill 系统（Step 10）、Hook（Step 11）、SubAgent（Step 12） |
 | 第 4 层：记忆层 | 会话持久化、上下文滑动窗口 + **高级上下文管理（Step 7）**（两层压缩：轻量预防工具结果存盘预览 + 重量摘要兜底 + 撞墙紧急压缩 + 会话级熔断 + 历史原文归档 + compaction 可观测性 + 全阈值可配置）+ **自动学习记忆（Step 8）**（4 类记忆分级存储 + MEMORY.md 索引注入召回 + 后台异步回顾独立 LLM 通道 + LLM 比对去重更新 + ReadFile 沙箱白名单按需读取 + 配置驱动 + 全链路静默降级） | —                |
 | 第 5 层：安全层 | 完整权限系统（三层模式 + 可配置规则 + 多层配置合并 + HITL 确认 + 权限拦截器 + 危险命令黑名单增强 + 路径沙箱策略化 + 双层防护） | —                                            |
 
@@ -277,4 +295,3 @@
   - [🧭 架构层覆盖度](#-架构层覆盖度)：根据新增能力将相应组件从「待落地」迁到「已落地」
 3. **commit 信息**：若新步骤已 release，引用 `git log --oneline` 中的 commit hash 与 message
 4. **日期格式**：完成时间统一使用 `YYYY-MM-DD`
-
