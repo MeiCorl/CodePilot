@@ -1,8 +1,7 @@
 ---
-
 name: specs
-
-## description: Spec 工作流技能 —— 需求澄清、任务拆解、功能验证三文档生成（spec/tasks/checklist）、支持断点续做
+description: Spec 工作流技能 —— 需求澄清、任务拆解、功能验证三文档生成（spec/tasks/checklist）、支持断点续做
+---
 
 # Spec 工作流技能
 
