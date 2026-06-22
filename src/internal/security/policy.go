@@ -107,9 +107,9 @@ func (s Scope) String() string { return string(s) }
 // 匹配逻辑：
 //   - Tool: "*" 匹配所有工具，否则精确匹配大驼峰工具名（如 "Bash"、"WriteFile"）
 //   - Pattern:
-//   路径类工具：对 file_path/path/base_dir 参数做 glob 匹配
-//   Bash 工具：对 command 参数做命令前缀匹配
-//   "*" 或空字符串：匹配所有参数
+//     路径类工具：对 file_path/path/base_dir 参数做 glob 匹配
+//     Bash 工具：对 command 参数做命令前缀匹配
+//     "*" 或空字符串：匹配所有参数
 type Rule struct {
 	// Tool 为目标工具名，大驼峰格式（如 "Bash"、"WriteFile"）；"*" 匹配所有工具。
 	Tool string `json:"tool"`
@@ -173,4 +173,70 @@ type PermissionResponse struct {
 	Allowed bool `json:"allowed"`
 	// Scope 表示用户的授权范围：once / session / permanent。
 	Scope Scope `json:"scope"`
+}
+
+// PathSandboxAction 根据路径是否越过工作目录、工具读写权限与当前权限模式，
+// 返回路径类工具在沙箱策略阶段的默认动作。
+//
+// 规则：
+//   - 沙箱内：读操作允许；写操作 strict 询问，default/permissive 允许。
+//   - 沙箱外：读操作 strict 拒绝，default/permissive 允许。
+//   - 沙箱外：写操作 strict 拒绝，default 询问，permissive 允许。
+func PathSandboxAction(mode Mode, perm tool.ToolPermission, outside bool) Action {
+	if !outside {
+		switch perm {
+		case tool.PermRead:
+			return ActionAllow
+		case tool.PermWrite:
+			if mode == ModeStrict {
+				return ActionAsk
+			}
+			return ActionAllow
+		case tool.PermExec:
+			return ModeDefaultAction(mode, perm)
+		default:
+			return ActionAsk
+		}
+	}
+
+	switch perm {
+	case tool.PermRead:
+		if mode == ModeStrict {
+			return ActionDeny
+		}
+		return ActionAllow
+	case tool.PermWrite:
+		switch mode {
+		case ModeStrict:
+			return ActionDeny
+		case ModeDefault:
+			return ActionAsk
+		case ModePermissive:
+			return ActionAllow
+		}
+	case tool.PermExec:
+		return ModeDefaultAction(mode, perm)
+	}
+	return ActionAsk
+}
+
+func pathSandboxReason(mode Mode, perm tool.ToolPermission, outside bool, action Action) string {
+	location := "沙箱路径内"
+	if outside {
+		location = "沙箱路径外"
+	}
+	return location + "：" + perm.String() + " 操作在 " + string(mode) + " 模式下" + actionText(action)
+}
+
+func actionText(action Action) string {
+	switch action {
+	case ActionAllow:
+		return "自动放行"
+	case ActionAsk:
+		return "需要用户确认"
+	case ActionDeny:
+		return "被拒绝"
+	default:
+		return string(action)
+	}
 }

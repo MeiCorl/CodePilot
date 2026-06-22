@@ -240,15 +240,23 @@ cp config/setting.example.openai.json ~/.codepilot/setting.json
 | `permissions.mode`   | 权限模式：`strict` / `default` / `permissive`              | `default`  |
 | `permissions.rules`  | 自定义规则列表，每条含 `tool` / `pattern` / `action` / 可选 `reason` | `[]`       |
 
-**三种权限模式速查**：
+**权限校验顺序**：
 
-| 模式            | icon | 工具行为             | 越界路径 | 适用场景             |
-| ------------- | ---- | ---------------- | ---- | ---------------- |
-| 严格 strict     | 🔒   | 读放行，写/执行需确认      | 拒绝   | 处理陌生项目、批量改动前谨慎评估 |
-| 默认 default    | 🛡   | 读/写放行，Bash 执行需确认 | 需确认  | 日常开发（推荐起始档位）     |
-| 放行 permissive | 🔓   | 除黑名单外全部自动放行      | 放行   | 高度信任的本地项目、自动化批处理 |
+1. `Bash` 命中危险命令黑名单时直接拒绝，任何模式与 `allow` 规则都不能绕过。
+2. 命中 `permissions.rules` 显式规则时，按规则的 `allow` / `deny` / `ask` 决策；其中 `allow` 会直接放行，不再进入模式矩阵。
+3. 未命中显式规则时，按下方权限模式矩阵兜底。
 
-> 模式切换是**运行时内存态**，重启 CodePilot 后回到 `setting.json` 中配置的档位。若需永久切换，编辑全局或项目级 `setting.json` 中的 `permissions.mode`。
+**权限模式矩阵**：
+
+| 场景 | strict | default | permissive |
+| --- | --- | --- | --- |
+| 路径工具：沙箱内读（`ReadFile` / `Glob` / `Grep`） | allow | allow | allow |
+| 路径工具：沙箱内写（`WriteFile` / `EditFile`） | ask | allow | allow |
+| 路径工具：沙箱外读 | deny | allow | allow |
+| 路径工具：沙箱外写 | deny | ask | allow |
+| 执行类工具（`Bash` / MCP 工具等，非黑名单） | ask | ask | allow |
+
+> `Bash` 不会解析 shell 命令内部的 `cd` 路径；例如 `cd <workdir> && ls -la` 仍属于执行类工具，在 `default` 模式下会按上表走 `ask`。模式切换是**运行时内存态**，重启 CodePilot 后回到 `setting.json` 中配置的档位。若需永久切换，编辑全局或项目级 `setting.json` 中的 `permissions.mode`。
 
 **自定义规则**：在 `permissions.rules` 中按需声明，每条规则包含 `tool`（工具名）、`pattern`（参数匹配模式）、`action`（动作）三个字段：
 

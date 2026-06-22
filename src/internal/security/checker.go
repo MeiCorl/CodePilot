@@ -17,15 +17,14 @@ import (
 // 的 PathTools / IsPathTool 中，Checker 内部不再持有副本，避免双份定义。
 
 // Checker 是权限检查器的核心实现，负责：
-//  1. 硬安全预检（Bash 黑名单）
-//  2. 路径越界策略检查（根据档位决定 Ask/Deny/Allow）
-//  3. 会话级规则匹配（内存，优先级最高）
-//  4. 配置级规则匹配（项目级在前，全局在后）
-//  5. 档位默认策略兜底
+//  1. Bash 黑名单硬安全预检
+//  2. 会话级 / 配置级显式规则匹配
+//  3. 路径类工具的沙箱内外策略判断
+//  4. 非路径工具按权限模式兜底
 //
 // Checker 是并发安全的：
-//   - mode 与 sessionRules 通过 RWMutex 保护，
-//   - Decide() 可被多个 goroutine 并发调用。
+//   - mode、sessionRules 与 oneTimePathRules 通过 RWMutex 保护，
+//   - Decide() 可被多个 goroutine 并发调用，
 //   - SetMode() 用于 WebUI 状态栏「权限模式」下拉切换，运行时生效。
 type Checker struct {
 	// mode 为当前生效的权限模式（由 LoadPermissions 合并后的最终值，
@@ -35,12 +34,14 @@ type Checker struct {
 	rules []Rule
 	// workdir 为当前工作目录（用于路径越界检查）
 	workdir string
-	// mu 保护 mode 与 sessionRules 的并发读写。
-	// 注意：mode 之所以也纳入 mu 保护，是因为 WebUI 切换模式时
-	// Decide() 可能在多个 goroutine 并发读取 mode，不加锁会产生数据竞争。
+	// mu 保护 mode、sessionRules 与 oneTimePathRules 的并发读写。
 	mu sync.RWMutex
 	// sessionRules 为会话级临时规则（内存，用户选择"本会话允许"时追加）
 	sessionRules []Rule
+	// oneTimePathRules 为一次性路径放行规则（内存，用户选择"本次允许"时追加）。
+	// 它只供 SandboxMiddleware 消费一次，用来让已通过 HITL 的越界路径穿过
+	// 沙箱硬兜底；命中后立即删除，避免"本次允许"退化为会话级授权。
+	oneTimePathRules []Rule
 }
 
 // NewChecker 根据合并后的策略创建权限检查器。
@@ -59,47 +60,14 @@ func NewChecker(policy *PermissionPolicy, workdir string) *Checker {
 // Decide 执行一次完整的权限检查，返回最终决策。
 //
 // 检查流程（按优先级从高到低）：
-//  1. 路径级规则预检：路径类工具 + 路径级 allow 规则命中时直接 Allow（Step 0）
-//  2. 硬安全预检：Bash 工具命中黑名单直接 Deny，不受档位和规则影响（Step 1）
-//  3. 路径越界检查（Step 1.5）——**仅做"标记"，不提前 return**：
-//     - 不论 read 还是 write/exec 越界，都仅记录 outsidePath/outsideWorkdir，
-//       让流程 fall-through 到 Step 2/3/4，由「setting.json 规则 + mode 兜底」
-//       共同决定最终动作
-//  4. 会话级规则匹配：遍历 sessionRules，命中第一条即返回（Step 2）
-//  5. 配置级规则匹配：遍历 rules（项目级在前、全局在后），命中第一条即返回（Step 3）
-//  6. 档位默认策略：无规则命中时根据 mode + perm 确定默认动作（Step 4）
-//
-// 越界路径由「setting.json 规则 + mode 兜底」共同决策的好处：
-//   - 用户显式配置 deny 规则 → Step 3 命中 Deny（与 mode 无关，最严格）
-//   - 用户显式配置 ask 规则 → Step 3 命中 Ask（弹 HITL 窗）
-//   - 用户显式配置 allow 规则（路径 glob 或工具级）→ Step 3 命中 Allow
-//   - 无规则 → 走 mode 兜底：Strict/Ask, Default/Ask(for exec) / Allow(for read|write),
-//     Permissive/Allow
-//
-// 配合 ToolHandler 的执行链：Checker 放行后 SandboxMiddleware 仍做硬兜底
-// 校验（路径越界时直接返回 ErrPathOutsideSandbox，工具 Execute 不会被调用），
-// 防止「Permissive + 无规则 越界路径」被静默放行。
+//  1. Bash 黑名单：命中直接 Deny，不受任何配置绕过。
+//  2. 显式权限规则：会话级规则优先，其次配置级规则；命中 allow/deny/ask
+//     即按规则返回，allow 不再进入后续沙箱策略判断。
+//  3. 路径沙箱策略：路径类工具按"是否在工作目录内 + 读写权限 + 当前模式"
+//     决定 Allow / Ask / Deny。
+//  4. 非路径工具兜底：按 mode + permission 使用通用默认策略。
 func (c *Checker) Decide(_ context.Context, toolName string, params map[string]interface{}, perm tool.ToolPermission) Decision {
-	// Step 0 — 路径级规则预检（NEW）。
-	// 对路径类工具，先把所有路径绝对化（相对路径基于 workdir 拼接），
-	// 走 MatchPathRule 查 session 优先 / config 次之的 allow 规则。
-	// 命中即直接 Allow 短路（不再走 Step 1.5 越界检查）。
-	// 注意：放在 Step 1 黑名单之前是**安全的**——黑名单仅作用于 Bash，
-	// 而路径规则仅对路径类工具生效，作用域无重叠。
-	if paramKey, isPathTool := IsPathTool(toolName); isPathTool && c.workdir != "" {
-		pathValue := extractStringParam(params, paramKey)
-		if pathValue != "" {
-			absForRule := normalizeForRule(pathValue, c.workdir)
-			if matched, reason := c.MatchPathRule(toolName, absForRule); matched {
-				return Decision{
-					Action: ActionAllow,
-					Reason: reasonOrDefault(reason, "路径级规则命中"),
-				}
-			}
-		}
-	}
-
-	// Step 1 — 硬安全预检（Bash 黑名单，不可被配置绕过）
+	// Step 1 — 硬安全预检（Bash 黑名单，不可被配置绕过）。
 	if toolName == "Bash" {
 		cmd := extractStringParam(params, "command")
 		if cmd != "" {
@@ -112,100 +80,91 @@ func (c *Checker) Decide(_ context.Context, toolName string, params map[string]i
 		}
 	}
 
-	// Step 1.5 — 路径越界检查（标记而非硬拦截）
-	//
-	// 此处不再做任何"提前 return 硬决策"（不论 read 还是 write/exec），
-	// 仅把越界状态降级为流程级标记：outsidePath/outsideWorkdir。
-	// 让 Step 2（sessionRules）→ Step 3（configRules）→ Step 4（mode 兜底）
-	// 有机会介入决策。这样所有越界路径都按"1→2→3"流程走：
-	//   黑名单 → 用户规则（setting.json）→ mode 兜底
-	//
-	// ToolHandler 后端的 SandboxMiddleware 仍负责硬兜底校验（即便 Checker
-	// 放行，越界路径在 Middleware 也会被 ErrPathOutsideSandbox 拦住），
-	// 形成纵深防御——这是 read 越界"无规则被 mode 兜底 Allow"也不
-	// 致数据泄露的安全保证。
 	var (
-		outsidePath    string
-		outsideWorkdir string
+		pathValue string
+		isPath    bool
+		outside   bool
 	)
-	if paramKey, isPathTool := IsPathTool(toolName); isPathTool && c.workdir != "" {
-		pathValue := extractStringParam(params, paramKey)
+	if paramKey, ok := IsPathTool(toolName); ok && c.workdir != "" {
+		isPath = true
+		pathValue = extractStringParam(params, paramKey)
 		if pathValue != "" {
-			outside, _ := IsPathOutsideSandbox(pathValue, c.workdir)
-			if outside {
-				// 越界：仅记录，让流程 fall-through
-				outsidePath = pathValue
-				outsideWorkdir = c.workdir
-			}
+			outside, _ = IsPathOutsideSandbox(pathValue, c.workdir)
 		}
 	}
 
-	// Step 2 — 会话级规则匹配（优先级最高）
+	// Step 2 — 显式规则匹配（会话级优先，配置级其次）。
 	c.mu.RLock()
 	for i := range c.sessionRules {
-		if matchRule(c.sessionRules[i], toolName, params) {
-			rule := c.sessionRules[i] // 值拷贝
+		if c.matchRule(c.sessionRules[i], toolName, params) {
+			rule := c.sessionRules[i]
 			c.mu.RUnlock()
 			return Decision{
 				Action:      rule.Action,
 				Reason:      ruleReason(&rule),
 				MatchedRule: &rule,
-				TargetPath:  outsidePath,
-				Workdir:     outsideWorkdir,
+				TargetPath:  pathValue,
+				Workdir:     c.workdir,
 			}
 		}
 	}
 	c.mu.RUnlock()
 
-	// Step 3 — 配置级规则匹配（项目级在前、全局在后）
 	for i := range c.rules {
-		if matchRule(c.rules[i], toolName, params) {
-			rule := c.rules[i] // 值拷贝
+		if c.matchRule(c.rules[i], toolName, params) {
+			rule := c.rules[i]
 			return Decision{
 				Action:      rule.Action,
 				Reason:      ruleReason(&rule),
 				MatchedRule: &rule,
-				TargetPath:  outsidePath,
-				Workdir:     outsideWorkdir,
+				TargetPath:  pathValue,
+				Workdir:     c.workdir,
 			}
 		}
 	}
 
-	// Step 4 — 档位默认策略兜底
-	// 同样在函数顶部快照 mode，避免被并发 SetMode 撕裂。
 	c.mu.RLock()
 	mode := c.mode
 	c.mu.RUnlock()
-	action := ModeDefaultAction(mode, perm)
-	reason := modeDefaultReason(mode, action)
-	if outsidePath != "" {
-		// 越界场景下追加"目标路径在工作目录外"提示，让日志/UI 能区分
-		// 「in-sandbox 因 mode 兜底放行/询问/拒绝」与「越界后被 mode 兜底」。
-		reason = reason + "（目标路径在工作目录外）"
+
+	// Step 3 — 路径沙箱策略。
+	if isPath && pathValue != "" {
+		action := PathSandboxAction(mode, perm, outside)
+		return Decision{
+			Action:     action,
+			Reason:     pathSandboxReason(mode, perm, outside, action),
+			TargetPath: pathValue,
+			Workdir:    c.workdir,
+		}
 	}
+
+	// Step 4 — 非路径工具兜底。
+	action := ModeDefaultAction(mode, perm)
 	return Decision{
-		Action:     action,
-		Reason:     reason,
-		TargetPath: outsidePath,
-		Workdir:    outsideWorkdir,
+		Action: action,
+		Reason: modeDefaultReason(mode, action),
 	}
 }
 
-// MatchPathRule 实现 PathRuleProvider 接口，查询路径类工具的 allow 规则。
+// MatchPathRule 实现 PathRuleProvider 接口，查询沙箱外路径是否可被放行。
 //
-// 匹配顺序：会话级（内存）→ 配置级（项目级在前、全局在后），命中第一条即返回。
-// 匹配条件（同时满足）：
-//  1. rule.Action == ActionAllow（deny/ask 规则不参与放行查询）
-//  2. rule.Tool == toolName（路径规则严格匹配工具名；Tool="*" 不参与
-//     防止「用 * 工具匹配所有 ReadFile 越界」的越权风险）
-//  3. rule.Pattern == "" / "*" → 视为工具级豁免，命中
-//  4. 其他 → filepath.Match(pattern, absPath) 命中
+// 匹配顺序：
+//  1. 一次性路径授权（命中后消费）
+//  2. 会话级 / 配置级显式 allow 规则
+//  3. 当前权限模式对沙箱外路径的默认放行策略
 //
-// 本方法是 SandboxMiddleware 越界查询的入口，并发安全（持 RLock）。
+// 本方法是 SandboxMiddleware 越界查询的入口，并发安全。
 func (c *Checker) MatchPathRule(toolName, absPath string) (bool, string) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
+	for i := range c.oneTimePathRules {
+		if c.ruleAllowsPath(c.oneTimePathRules[i], toolName, absPath) {
+			rule := c.oneTimePathRules[i]
+			c.oneTimePathRules = append(c.oneTimePathRules[:i], c.oneTimePathRules[i+1:]...)
+			return true, reasonOrDefault(rule.Reason, "一次性路径授权")
+		}
+	}
 	for i := range c.sessionRules {
 		if c.ruleAllowsPath(c.sessionRules[i], toolName, absPath) {
 			return true, c.sessionRules[i].Reason
@@ -216,18 +175,21 @@ func (c *Checker) MatchPathRule(toolName, absPath string) (bool, string) {
 			return true, c.rules[i].Reason
 		}
 	}
+	if perm, ok := PathToolPermission(toolName); ok {
+		action := PathSandboxAction(c.mode, perm, true)
+		if action == ActionAllow {
+			return true, pathSandboxReason(c.mode, perm, true, action)
+		}
+	}
 	return false, ""
 }
 
-// ruleAllowsPath 判断单条规则是否对该 (toolName, absPath) 放行。
-//
-// 注意：仅精确 toolName 匹配，不接受 Tool="*"——这是有意为之的安全策略，
-// 避免「用 * 工具匹配所有 ReadFile 越界」的潜在越权。
+// ruleAllowsPath 判断单条 allow 规则是否对该 (toolName, absPath) 放行。
 func (c *Checker) ruleAllowsPath(rule Rule, toolName, absPath string) bool {
 	if rule.Action != ActionAllow {
 		return false
 	}
-	if rule.Tool != toolName {
+	if !matchToolName(rule.Tool, toolName) {
 		return false
 	}
 	pattern := rule.Pattern
@@ -255,10 +217,6 @@ func (c *Checker) Mode() Mode {
 
 // SetMode 运行时切换权限模式。WebUI 状态栏下拉切换、自动化脚本
 // 临时调整档位等场景使用，调用后立即对后续 Decide() 生效。
-//
-// 入参 mode 必须是合法的档位（ModeStrict / ModeDefault / ModePermissive），
-// 非法值会被忽略（保护机制，避免前端误传字符串导致 Checker 进入无效状态）。
-// rules、sessionRules、workdir 等其他字段保持不变。
 func (c *Checker) SetMode(mode Mode) {
 	switch mode {
 	case ModeStrict, ModeDefault, ModePermissive:
@@ -291,6 +249,14 @@ func (c *Checker) AddSessionRule(rule Rule) {
 	c.sessionRules = append(c.sessionRules, rule)
 }
 
+// AddOneTimePathRule 追加一条一次性路径放行规则。
+// 用户选择"本次允许"时由 Interceptor 调用，随后 SandboxMiddleware 命中即消费。
+func (c *Checker) AddOneTimePathRule(rule Rule) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.oneTimePathRules = append(c.oneTimePathRules, rule)
+}
+
 // ClearSessionRules 清空所有会话级临时规则。
 func (c *Checker) ClearSessionRules() {
 	c.mu.Lock()
@@ -305,36 +271,46 @@ func (c *Checker) ClearSessionRules() {
 // matchRule 判断一条规则是否匹配当前工具调用。
 //
 // 匹配逻辑：
-//   - rule.Tool: "*" 匹配所有工具，否则精确匹配大驼峰工具名
+//   - rule.Tool: 支持精确工具名、"*"、以及 filepath.Match 风格 glob
 //   - rule.Pattern:
-//   路径类工具 → 对 file_path/path 参数做 glob 匹配
-//   Bash 工具 → 对 command 参数做命令前缀匹配
-//   "*" 或空 → 匹配所有参数
+//     路径类工具 → 对 file_path/path 参数做 glob 匹配（同时尝试原始路径与规范化绝对路径）
+//     Bash 工具 → 对 command 参数做命令前缀匹配
+//     "*" 或空 → 匹配所有参数
 func matchRule(rule Rule, toolName string, params map[string]interface{}) bool {
-	// 工具名匹配
-	if rule.Tool != "*" && rule.Tool != toolName {
+	return matchRuleWithWorkdir(rule, toolName, params, "")
+}
+
+func (c *Checker) matchRule(rule Rule, toolName string, params map[string]interface{}) bool {
+	return matchRuleWithWorkdir(rule, toolName, params, c.workdir)
+}
+
+func matchRuleWithWorkdir(rule Rule, toolName string, params map[string]interface{}, workdir string) bool {
+	if !matchToolName(rule.Tool, toolName) {
 		return false
 	}
 
-	// Pattern 为 "*" 或空 → 匹配所有参数
 	pattern := rule.Pattern
 	if pattern == "" || pattern == "*" {
 		return true
 	}
 
-	// 根据工具类型选择匹配方式
 	if paramKey, isPathTool := IsPathTool(toolName); isPathTool {
-		// 路径类工具：glob 匹配
 		pathValue := extractStringParam(params, paramKey)
 		if pathValue == "" {
 			return false
 		}
-		matched, _ := filepath.Match(pattern, pathValue)
-		return matched
+		if matched, _ := filepath.Match(pattern, pathValue); matched {
+			return true
+		}
+		if workdir != "" {
+			absValue := normalizeForRule(pathValue, workdir)
+			matched, _ := filepath.Match(pattern, absValue)
+			return matched
+		}
+		return false
 	}
 
 	if toolName == "Bash" {
-		// Bash 工具：命令前缀匹配
 		command := extractStringParam(params, "command")
 		if command == "" {
 			return false
@@ -342,8 +318,19 @@ func matchRule(rule Rule, toolName string, params map[string]interface{}) bool {
 		return matchBashPrefix(pattern, command)
 	}
 
-	// 其他未知工具：仅匹配工具名，pattern 忽略
+	// 其他未知工具：工具名已匹配，pattern 忽略。
 	return true
+}
+
+func matchToolName(pattern, toolName string) bool {
+	if pattern == "" || pattern == "*" {
+		return true
+	}
+	if pattern == toolName {
+		return true
+	}
+	matched, err := filepath.Match(pattern, toolName)
+	return err == nil && matched
 }
 
 // matchBashPrefix 对 Bash 命令做前缀匹配。
@@ -352,7 +339,6 @@ func matchRule(rule Rule, toolName string, params map[string]interface{}) bool {
 // 匹配逻辑为 strings.HasPrefix(command, pattern 去掉尾部的 " *" 后 + " ")，
 // 或者 command 整体等于 pattern 去掉 " *" 后的命令名。
 func matchBashPrefix(pattern, command string) bool {
-	// 去掉 pattern 尾部的通配符前缀，提取命令名
 	prefix := strings.TrimSuffix(pattern, " *")
 	prefix = strings.TrimSpace(prefix)
 
@@ -360,7 +346,6 @@ func matchBashPrefix(pattern, command string) bool {
 		return true
 	}
 
-	// 精确前缀匹配：command 以 "prefix " 开头，或 command 就是 prefix 本身
 	return strings.HasPrefix(command, prefix+" ") || command == prefix
 }
 

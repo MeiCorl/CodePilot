@@ -30,11 +30,27 @@ var PathTools = map[string]string{
 	"Grep":      "path",
 }
 
+// PathToolPermissions 描述路径类工具的读写权限，用于沙箱外路径在
+// SandboxMiddleware 兜底阶段复用权限模式矩阵。
+var PathToolPermissions = map[string]tool.ToolPermission{
+	"ReadFile":  tool.PermRead,
+	"Glob":      tool.PermRead,
+	"Grep":      tool.PermRead,
+	"WriteFile": tool.PermWrite,
+	"EditFile":  tool.PermWrite,
+}
+
 // IsPathTool 判断 toolName 是否为路径类工具；ok=true 时 paramKey 为
 // 该工具路径参数在 params map 中的键名（如 "file_path" / "path"）。
 func IsPathTool(toolName string) (paramKey string, ok bool) {
 	paramKey, ok = PathTools[toolName]
 	return
+}
+
+// PathToolPermission 返回路径类工具的权限分级。
+func PathToolPermission(toolName string) (tool.ToolPermission, bool) {
+	perm, ok := PathToolPermissions[toolName]
+	return perm, ok
 }
 
 // ---------------------------------------------------------------------------
@@ -181,7 +197,7 @@ func SandboxMiddleware(workdir string, ruleProvider PathRuleProvider, opts ...Mi
 		// 解析 input params（解析失败按空 params 处理，与 interceptor 一致）
 		params, err := parseInputParams(input)
 		if err != nil {
-			logger.WarnCtx(ctx,"SandboxMiddleware 解析工具输入失败，按空参数处理",
+			logger.WarnCtx(ctx, "SandboxMiddleware 解析工具输入失败，按空参数处理",
 				zap.String("tool", toolName),
 				zap.Error(err),
 			)
@@ -215,7 +231,7 @@ func SandboxMiddleware(workdir string, ruleProvider PathRuleProvider, opts ...Mi
 			if ruleProvider != nil {
 				absForRule := normalizeForRule(pathStr, workdir)
 				if matched, reason := ruleProvider.MatchPathRule(toolName, absForRule); matched {
-					logger.InfoCtx(ctx,"SandboxMiddleware 越界路径被路径级规则放行",
+					logger.InfoCtx(ctx, "SandboxMiddleware 越界路径被路径级规则放行",
 						zap.String("tool", toolName),
 						zap.String("param_key", paramKey),
 						zap.String("raw_path", pathStr),
@@ -227,7 +243,7 @@ func SandboxMiddleware(workdir string, ruleProvider PathRuleProvider, opts ...Mi
 					return WithPathResolver(ctx, resolver), nil
 				}
 			}
-			logger.InfoCtx(ctx,"SandboxMiddleware 拦截越界路径",
+			logger.InfoCtx(ctx, "SandboxMiddleware 拦截越界路径",
 				zap.String("tool", toolName),
 				zap.String("param_key", paramKey),
 				zap.String("raw_path", pathStr),
