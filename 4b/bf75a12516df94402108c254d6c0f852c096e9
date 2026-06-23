@@ -1,0 +1,30 @@
+docs/step9.1-Slash注册后端化/tasks.md
+  s_144cd8114c84b9::t_52ecffee4e785a 200
+src/internal/command/slash/e2e_test.go
+  s_144cd8114c84b9::t_0692afb24c8f90 1-33,35-110,112-335
+  s_144cd8114c84b9::t_cb27d065b9a761 111
+  s_144cd8114c84b9::t_ce4e7bbea5251e 34
+src/internal/command/slash/command_test.go
+  s_144cd8114c84b9::t_eec341e433eb84 1-20,22-268,270-408
+  s_144cd8114c84b9::t_c1cd6e337ee38a 21
+  s_144cd8114c84b9::t_cfa82993f4040b 269
+docs/step9.1-Slash注册后端化/checklist.md
+  s_144cd8114c84b9::t_ea2b788f413565 158,160-161,163,165-166,168,170-171,173,175-176,178,180-181,183,185-186,188,190-191,193,195-196
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.11",
+  "base_commit_sha": "4bbf75a12516df94402108c254d6c0f852c096e9",
+  "prompts": {},
+  "logical_commit_id": "4bbf75a12516df94402108c254d6c0f852c096e9",
+  "sessions": {
+    "s_144cd8114c84b9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d4aff6f5-d9d2-44d6-a642-c971f8abdd15",
+        "model": "MiniMax-M3"
+      },
+      "human_author": "meichao <meichao@bigo.sg>"
+    }
+  }
+}
