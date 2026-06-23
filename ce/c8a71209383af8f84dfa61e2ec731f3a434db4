@@ -1,0 +1,31 @@
+.gitignore
+  s_21af743df33d03::t_6d885a107ff597 5
+build/assets/generate_icon.py
+  s_21af743df33d03::t_78dce0963cf80b 1-65,70,80,84-91,93-105
+  s_21af743df33d03::t_556f4fc2219e0b 66-69,71-79,81-83,92
+build/build.ps1
+  s_21af743df33d03::t_288833ce72cd68 1-20,29,33,35-52
+  s_21af743df33d03::t_9bc5a7451562ca 31
+  s_21af743df33d03::t_f71c0016c3e931 21-28,30,32,34
+build/assets/icon.rc
+  s_21af743df33d03::t_7e333826fd43dd 1-3
+Makefile
+  s_21af743df33d03::t_2a962c456dd755 1-61
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.11",
+  "base_commit_sha": "cec8a71209383af8f84dfa61e2ec731f3a434db4",
+  "prompts": {},
+  "logical_commit_id": "cec8a71209383af8f84dfa61e2ec731f3a434db4",
+  "sessions": {
+    "s_21af743df33d03": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "33ea1b9b-68df-4a81-9877-0e80da7b7d6a",
+        "model": "MiniMax-M3"
+      },
+      "human_author": "meichao <1504-meichao@users.noreply.git.sysop.bigo.sg>"
+    }
+  }
+}
