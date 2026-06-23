@@ -31,6 +31,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/MeiCorl/CodePilot/src/internal/command/slash"
 	"github.com/MeiCorl/CodePilot/src/internal/config"
 	"github.com/MeiCorl/CodePilot/src/internal/engine/conversation"
 	"github.com/MeiCorl/CodePilot/src/internal/engine/prompt"
@@ -68,6 +69,68 @@ func main() {
 		fmt.Fprintln(os.Stderr, "[error]", err)
 		os.Exit(1)
 	}
+}
+
+// ---- Slash 命令注册表适配器（Step 9.1 Task 6） ----
+//
+// [Why 需要 adapter] web.Handler 通过 SlashCommandProvider 接口（List + OnChange）消费
+// slash 命令清单；*slash.Registry 本身提供的方法签名（List 返回 []SlashCommand 接口切片、
+// OnChange 入参 func()）与 web.SlashCommandProvider 接口（List 返回 []SlashCommandEntry
+// 具体切片、OnChange 入参 func()）**形状不同**——web.SlashCommandEntry 是 handler 包内
+// 私有 struct，slash.Registry 自然不能直接返回该类型。因此在 main.go 顶层做一次薄包装：
+//   - adapter 持有 *slash.Registry 引用
+//   - List() 把 []SlashCommand 转 []SlashCommandEntry（5 字段投影）
+//   - OnChange() 透传 registry.OnChange
+//
+// 这样 web 包只知道"拿到的是 web.SlashCommandEntry 列表"，不感知 slash 包的存在，
+// 维持 spec.md 中"web → slash 单向依赖"的方向约束（slash.builtin 持 *web.Handler
+// 引用但 web 包不 import slash 包）。
+
+// slashAdapter 把 *slash.Registry 适配为 web.SlashCommandProvider 接口。
+// 单一职责：字段投影 + 回调透传，零业务逻辑。
+type slashAdapter struct {
+	registry *slash.Registry
+}
+
+// newSlashAdapter 构造一个把 *slash.Registry 适配为 web.SlashCommandProvider 的实例。
+// 参数：
+//   - registry：slash 命令注册中心指针；为 nil 时 List 返回空切片、OnChange 为 no-op
+//
+// 返回值：*slashAdapter 指针，满足 web.SlashCommandProvider 接口约束。
+func newSlashAdapter(registry *slash.Registry) *slashAdapter {
+	return &slashAdapter{registry: registry}
+}
+
+// List 返回当前所有已注册命令的 web.SlashCommandEntry 投影（按 Registry 注册顺序）。
+// 实现 web.SlashCommandProvider.List 签名要求。
+func (a *slashAdapter) List() []web.SlashCommandEntry {
+	if a.registry == nil {
+		return nil
+	}
+	cmds := a.registry.List()
+	if len(cmds) == 0 {
+		return []web.SlashCommandEntry{}
+	}
+	entries := make([]web.SlashCommandEntry, 0, len(cmds))
+	for _, c := range cmds {
+		entries = append(entries, web.SlashCommandEntry{
+			Name:        c.Name(),
+			Description: c.Description(),
+			NeedsArg:    c.NeedsArg(),
+			ArgHint:     c.ArgHint(),
+			Category:    c.Category(),
+		})
+	}
+	return entries
+}
+
+// OnChange 透传 slash.Registry.OnChange；handler 注入后注册一个"命令清单变化"回调，
+// 用于在 Step 10 Skill 动态注册场景下推 slash_commands_updated。
+func (a *slashAdapter) OnChange(fn func()) {
+	if a.registry == nil {
+		return
+	}
+	a.registry.OnChange(fn)
 }
 
 // buildMemoryRoots 计算记忆系统的用户级与项目级根目录（绝对路径）。
@@ -296,6 +359,25 @@ func run() error {
 	// Step 8：注入自动记忆回顾器，让每轮 AgentLoop 结束后异步回顾本轮对话、沉淀记忆。
 	handler.SetReviewer(memoryReviewer)
 
+	// Step 9.1：装配 slash 命令注册表（Task 6 接入）。
+	// 三步走：
+	//   1) NewRegistry() 构造空注册中心；
+	//   2) RegisterBuiltin 一站式注册 6 条内置命令（/new、/sessions、/resume、/clear、
+	//      /compact、/dump）；任意一条注册失败直接 fatal 退出（启动时注册失败不可恢复）。
+	//   3) 通过 newSlashAdapter 把 *slash.Registry 适配成 web.SlashCommandProvider
+	//      注入 handler——web 包不直接 import slash 包，避免 web → slash → web 循环依赖。
+	//
+	// [Why 不在 main.go 顶层 import slash adapter] spec 要求"包边界清晰，slash 不
+	// 依赖 web"；adapter 写在 main.go 顶层是更轻的位置，零新增包。
+	slashRegistry := slash.NewRegistry()
+	if err := slash.RegisterBuiltin(slashRegistry, handler); err != nil {
+		return fmt.Errorf("注册 slash 内置命令失败: %w", err)
+	}
+	handler.SetSlashRegistry(newSlashAdapter(slashRegistry))
+	logger.Info("slash 命令注册表就绪",
+		zap.Int("count", slashRegistry.Count()),
+	)
+
 	// Step 7：装配上下文压缩子系统。
 	// ToolResultStore 无条件构造并注入 Handler——/clear 需据此清理落盘的工具结果归档，
 	// 与压缩总开关解耦：即便 compaction 关闭，残留的 tool_results 也能被 /clear 清掉
@@ -328,6 +410,18 @@ func run() error {
 	// 注入 ConnectionManager：让 MCP 后台初始化就绪后能向所有活跃连接广播 mcp_status。
 	// NewServer 构造时 wsMgr 已就绪，此处可立即取用。
 	handler.SetConnMgr(server.ConnectionManager())
+
+	// Step 9.1 Task 6：注册 ws onOpen 主动推送 slash_commands 回调。
+	// 在 SetConnMgr 之后立即注册——connMgr.onOpenHook 在新连接 Add 完成后同步触发，
+	// 调用 PushSlashCommandsOnOpen 推 slash_commands 消息，前端无需主动拉取即可拿到清单。
+	// [Why 此处注册] ConnectionManager 已经构造完毕（NewServer 内部已完成），
+	// SetOnOpenHook 任何时机调用都生效；但放在 SetConnMgr 紧邻位置保持装配顺序统一。
+	//
+	// [Why 用 PushSlashCommandsOnOpen 而非直接引用 onWSOpenSlash] onWSOpenSlash 是
+	// handler 包内未导出方法（Step 9.1 Task 4 设计），不同包无法直接引用；
+	// PushSlashCommandsOnOpen 是其导出别名，方法值可直接作为 SetOnOpenHook 入参，
+	// 避免 lambda 闭包 + 错误日志样板代码。
+	server.ConnectionManager().SetOnOpenHook(handler.PushSlashCommandsOnOpen)
 
 	// 9. 异步启动 Web 服务
 	runCtx, cancel := context.WithCancel(context.Background())

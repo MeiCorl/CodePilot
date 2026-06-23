@@ -41,6 +41,12 @@ type ConnectionManager struct {
 	conns       map[*websocket.Conn]struct{}
 	router      *Router
 	allClosedCh chan struct{} // 每次活跃连接数 1→0 时发送一次信号
+	// onOpenHook 在每次新连接 Add 之后同步触发，供业务层做"连上即推"逻辑
+	// （如 Step 9.1 Task 4：连接建立后立即推送 slash_commands）。
+	// 回调在持锁状态下同步执行；调用方应仅做"必要的入 conn 操作"，避免在回调
+	// 内做耗时长操作或再次获取 connMgr 锁，否则与 Add 形成锁竞争。
+	// 多回调按注册顺序依次触发；单个回调 panic 会中断后续回调（与 HandleLoop 一致）。
+	onOpenHook []func(conn *websocket.Conn)
 }
 
 // NewConnectionManager 构造连接管理器。
@@ -64,12 +70,36 @@ func (m *ConnectionManager) Router() *Router {
 // Add 注册一个新连接到管理器。
 func (m *ConnectionManager) Add(conn *websocket.Conn) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.conns[conn] = struct{}{}
+	hooks := append([]func(conn *websocket.Conn){}, m.onOpenHook...)
+	m.mu.Unlock()
+
 	logger.Info("WebSocket 连接已建立",
 		zap.String("remote", conn.RemoteAddr().String()),
 		zap.Int("total", len(m.conns)),
 	)
+
+	// 在锁外同步触发 onOpen 回调，避免回调内部持锁递归造成死锁。
+	// 回调内部仍须自行负责并发安全（如通过 sendMessage 的 writeMu）。
+	for _, hook := range hooks {
+		hook(conn)
+	}
+}
+
+// SetOnOpenHook 注册一个"新连接建立后立即触发"的回调。
+// 典型场景：连接建立时主动向 conn 推送一次 slash_commands / mcp_status 等
+// 与连接绑定的初始消息（Step 9.1 Task 4）。
+//
+// [并发安全] 多次注册会按顺序依次触发；同一 fn 多次注册将触发多次。
+// fn 为 nil 时静默忽略；hook 内部应避免长时间持锁（回调在 Add 内持锁状态下
+// 拷贝 hooks 列表后释放锁再执行），需访问 connMgr 内部状态时不要尝试获取锁。
+func (m *ConnectionManager) SetOnOpenHook(fn func(conn *websocket.Conn)) {
+	if fn == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.onOpenHook = append(m.onOpenHook, fn)
 }
 
 // Remove 注销一个连接（若存在），并关闭底层连接。

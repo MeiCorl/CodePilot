@@ -14,17 +14,17 @@
 | 指标     | 数值                                                    |
 | ------ | ----------------------------------------------------- |
 | 计划总步骤数 | 12（含子步骤后实际更多）                                         |
-| 已完成步骤数 | 13（Step 1 / Step 1.1 / Step 1.2 / Step 1.3 / Step 1.4 / Step 2 / Step 3 / Step 4 / Step 5 / Step 6 / Step 7 / Step 8 / Step 9） |
-| 当前最新版本 | V1.5.0（Step 9 为文档补记，不新增版本）                              |
+| 已完成步骤数 | 14（Step 1 / Step 1.1 / Step 1.2 / Step 1.3 / Step 1.4 / Step 2 / Step 3 / Step 4 / Step 5 / Step 6 / Step 7 / Step 8 / Step 9 / Step 9.1） |
+| 当前最新版本 | V1.5.0（Step 9 与 Step 9.1 共同构成命令系统的「后端注册 + 启动下发」架构，沿用 V1.5.0） |
 | 进行中步骤  | —                                                    |
 | 下一步骤   | Step 10 — Skill 系统（需先 `/specs` 触发需求澄清）                     |
-| 最近更新   | 2026-06-22                                            |
+| 最近更新   | 2026-06-23                                            |
 
 
 进度条：
 
 ```
-[█████████████████████████████████░░░] 9/12 主线步骤完成（Step 1-9 已完成，Step 10 待开始）
+[█████████████████████████████████░░░] 9/12 主线步骤完成（Step 1-9 已完成 + Step 9.1 子步骤完成，Step 10 待开始）
 ```
 
 ---
@@ -253,6 +253,26 @@
 
 ---
 
+### Step 9.1 — Slash 命令注册后端化（V1.5.0）
+
+- **完成时间**：2026-06-23
+- **代表 commit**：`7ec09ed` `Step 9.1 Task 2: 把 6 条命令迁移到 builtin`；`ef38db0` `Step 9.1 Task 3: protocol.go 增加 3 个 MsgType`；`e4f27e6` `Step 9.1 Task 4: Handler 注入 Registry + WS Open 推送`；`118bdc0` `Step 9.1 Task 5: 前端 app.js 移除 SLASH_COMMANDS 硬编码 + 接收下发`；`b58e6c5` `Step 9.1 Task 6: main.go 顶层装配 slash.Registry + 启动冒烟`；`4bbf75a` `Step 9.1 Task 7: 端到端验证`
+- **设计文档**：[docs/step9.1-Slash注册后端化/](../docs/step9.1-Slash注册后端化/)
+- **Task 完成数**：7 / 7
+- **核心交付能力**：
+  1. **slash 命令抽象层（`src/internal/command/slash/`）**：独立于 web 包的新包，定义 `SlashCommand` 接口（6 方法：Name / Description / NeedsArg / ArgHint / Category / Execute）与 `Registry` 注册表（按 name 去重 + 变化回调 + 按注册顺序稳定 List），与 `tool.Tool` 风格同构
+  2. **6 条内置命令迁移**：`/new` / `/sessions` / `/resume` / `/clear` / `/compact` / `/dump` 全部以 struct 形式实现 SlashCommand 接口，Execute 通过 HandleXxxForSlash 包装函数委托到既有 `handleXxx` 业务逻辑，**函数体零改动**
+  3. **WebSocket 协议扩展（3 个 MsgType）**：`list_slash_commands`（前端兜底拉取）+ `slash_commands`（后端响应/推送）+ `slash_commands_updated`（变化通知通道预留，本步骤未触发）；`SlashCommandInfo` 5 字段投影结构体
+  4. **WS Open 主动推送 + 推送通道预留**：`ConnectionManager.onOpenHook` 在每次新连接 Add 时同步触发；`slash_commands_updated` 通道通过 `Registry.OnChange` 回调注册（Step 10 Skill 动态注册时可被实际触发）
+  5. **web → slash 解耦**：`web.SlashCommandProvider` 接口 + `SlashCommandEntry` 结构体（最小投影）放在 web 包内，main.go 顶层通过 `slashAdapter` 把 `*slash.Registry` 适配成 Provider；避免 `web → slash` import cycle
+  6. **前端 app.js 改造**：删除 `SLASH_COMMANDS` 硬编码数组（93-109 行），`state.commands` + `state.commandTypeByName` 接收后端下发；`/sessions` 由 `category="client"` 走本地 `openSessionsTable`；`/resume` 由 `needsArg=true` 走补全型交互；`/new` / `/clear` / `/compact` / `/dump` 走 MsgType 发送
+  7. **既有协议零破坏**：前端执行命令仍按现有 `new_session` / `clear_session` / `compact` / `dump` / `resume_session` 发送，本步骤仅在协议末尾追加 3 个增量 MsgType
+  8. **Step 10 Skill 扩展点就绪**：Skill 系统只需 `import "command/slash"` + 实现 SlashCommand 接口 + 调 `Registry.Register(cmd)` 即可零成本注册为 slash 命令，无需 import web 包
+  9. **端到端验证**：`command_test.go` 16 个单测（Registry 边界 / OnChange 同步触发 / 6 条 builtin 元数据 / 持锁外不死锁）+ `e2e_test.go` 4 个跨包 e2e（ws onOpen 推送 / list_slash_commands 兜底 / /new 链路 session_loaded / Registry List/Get）全绿；Task 6 阶段 Playwright 真实启动冒烟（.slash-cmd DOM 恰好 6 条）；`go test ./...` 22 包零回归
+  10. **架构边界守住**：`command/slash` 主包 import 列表为 `context` / `fmt` / `sync` + `gorilla/websocket`，**不 import web**；`builtin.go` 作为命令实现层 import web 是预期内的「实现侧依赖」（与 spec.md 中「主包不 import web 但 builtin 需要调用 web.Handler」的边界约束一致）
+
+---
+
 ## 🕓 待完成步骤
 
 > 下列步骤按 [PROJECT.md](./PROJECT.md) 计划顺序排列，开始下一步前请先用 `/specs` 触发需求澄清并生成 spec / tasks / checklist 三文档。
@@ -276,7 +296,7 @@
 | --------- | ----------------------------------------------------- | ------------------------------------------- |
 | 第 1 层：交互层 | WebUI（HTTP + WebSocket + 富文本渲染 + 流式 Markdown 实时渲染 + SP 可观测性 + 开发者模式 Export + 工具块「查看改动」双栏 diff 弹窗 + 权限确认对话框 + 状态栏权限模式展示 + MCP server 来源徽标 + MCP 健康状态区） | —            |
 | 第 2 层：引擎层 | 对话管理 + Agent Loop（ReAct 循环迭代 + 多工具并行 + 迭代上限 + 溢出保护）、完整 System Prompt（Builder + 4 Source + 模板变量 + Anthropic 缓存切片） | —                                            |
-| 第 3 层：工具层 | 工具抽象 + Registry + 6 内置工具（ReadFile/WriteFile/EditFile/Bash/Glob/Grep）+ 路径沙箱 + Bash 黑名单 + 批量执行 + 进程内 FileDiffStore + **MCP 客户端**（JSON-RPC 2.0 + stdio/HTTP 双传输 + Session 三阶段握手 + 连接池 + 适配器自动注册 + 指数退避重连 + 10 个 E2E 集成用例全绿 + 真实启动冒烟 healthy=2 tools=4）+ **快捷命令系统**（`/new` / `/sessions` / `/resume` / `/clear` / `/compact` / `/dump`，WebUI 候选下拉 + WebSocket 命令协议 + 后端独立处理器） | Skill 系统（Step 10）、Hook（Step 11）、SubAgent（Step 12） |
+| 第 3 层：工具层 | 工具抽象 + Registry + 6 内置工具（ReadFile/WriteFile/EditFile/Bash/Glob/Grep）+ 路径沙箱 + Bash 黑名单 + 批量执行 + 进程内 FileDiffStore + **MCP 客户端**（JSON-RPC 2.0 + stdio/HTTP 双传输 + Session 三阶段握手 + 连接池 + 适配器自动注册 + 指数退避重连 + 10 个 E2E 集成用例全绿 + 真实启动冒烟 healthy=2 tools=4）+ **快捷命令系统**（`/new` / `/sessions` / `/resume` / `/clear` / `/compact` / `/dump`，**Step 9.1 后端注册 + 启动下发**：`SlashCommand` 接口 + `Registry` 注册表 + 6 条 builtin 委托既有 handler + `SlashCommandProvider` 适配器解耦 web/slash import cycle + WS Open 主动推送 `slash_commands` + `slash_commands_updated` 变化通道预留，WebUI 前端零硬编码接收后端下发） | Skill 系统（Step 10）、Hook（Step 11）、SubAgent（Step 12） |
 | 第 4 层：记忆层 | 会话持久化、上下文滑动窗口 + **高级上下文管理（Step 7）**（两层压缩：轻量预防工具结果存盘预览 + 重量摘要兜底 + 撞墙紧急压缩 + 会话级熔断 + 历史原文归档 + compaction 可观测性 + 全阈值可配置）+ **自动学习记忆（Step 8）**（4 类记忆分级存储 + MEMORY.md 索引注入召回 + 后台异步回顾独立 LLM 通道 + LLM 比对去重更新 + ReadFile 沙箱白名单按需读取 + 配置驱动 + 全链路静默降级） | —                |
 | 第 5 层：安全层 | 完整权限系统（三层模式 + 可配置规则 + 多层配置合并 + HITL 确认 + 权限拦截器 + 危险命令黑名单增强 + 路径沙箱策略化 + 双层防护） | —                                            |
 

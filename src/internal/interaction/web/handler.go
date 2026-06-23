@@ -41,6 +41,33 @@ var _ = adapter.ToolNamePrefix // 保留 import(防止未来误删导致 server 
 // 此常量仅在传入值 <= 0 时作为安全回退。
 const defaultContextWindowSize = 200000
 
+// SlashCommandEntry 是 handler 层从 slash 注册表读取单条命令的最小投影。
+//
+// [设计动机] spec 要求 slash 包不依赖 web 包；反过来 web 包需要消费 slash 的
+// 数据。两个方向不能同时用具体类型直接 import（否则 import cycle）。
+//
+// 解决方案：web 包定义一个面向自身的最小投影接口 SlashCommandProvider +
+// SlashCommandEntry；slash.Registry 由 main.go 适配为该接口后注入 handler。
+// 这样 web 包只知道"拿一个命令列表"，不感知 slash 包的存在。
+type SlashCommandEntry struct {
+	Name        string
+	Description string
+	NeedsArg    bool
+	ArgHint     string
+	Category    string
+}
+
+// SlashCommandProvider 是 web 层消费 slash 命令注册表所需的最小接口。
+// 实现方（典型为 *slash.Registry，由 main.go 顶层适配注入）必须保证：
+//   - List 返回当前所有已注册命令（注册顺序）
+//   - OnChange 注册变化回调；注册后**立刻**同步触发一次（用于让 handler 在
+//     注入后就能感知到既有 6 条内置命令），后续命令增删时也会被触发；
+//     回调在 web 层 goroutine 中同步执行，handler 应避免在回调内做耗时操作。
+type SlashCommandProvider interface {
+	List() []SlashCommandEntry
+	OnChange(fn func())
+}
+
 // Handler 持有所有业务依赖并把 WebSocket 消息路由到具体业务能力。
 // 它维护"当前活跃会话"状态（current Session + ConversationManager），
 // 并通过 streamState 状态机保证同一时刻只有一个流式请求进行中。
@@ -71,6 +98,17 @@ type Handler struct {
 	// Step 1.4 接入；Task 3 (get_file_diff 协议) 真正消费此字段。
 	// 为 nil 时前端请求 diff 会得到 not_found 提示，等价于"未启用 diff 预览"。
 	fileDiffStore *FileDiffStore
+
+	// slashProvider 是 slash 命令注册表的最小投影（Step 9.1 Task 4 接入）。
+	// 通过 SlashCommandProvider 接口抽象而非直接 import command/slash，
+	// 避免 web → slash → web 的循环依赖（slash.builtin 内置命令实现当前
+	// 依赖 *web.Handler 进行 Execute 委托，web 包不能反向 import slash 包）。
+	// 为 nil 时前端 list_slash_commands 请求得到空命令清单（等价"未启用 slash"）。
+	slashProvider SlashCommandProvider
+	// slashCmdMap 是「命令名 → 既有 MsgType」的查找表，仅在 SetSlashRegistry
+	// 一次性构造时填充；handler 内部不直接使用（前端按 state.commandTypeByName
+	// 自行查找发送），保留是为日志/调试可见「已注册命令 → 目标协议」的映射关系。
+	slashCmdMap map[string]string
 
 	// compactor 为上下文压缩协调器（Step 7）。nil 表示压缩总开关关闭——此时
 	// /compact 返回 compaction_disabled，自动压缩在 manager 侧见 nil 直接跳过。
@@ -252,6 +290,9 @@ func (h *Handler) Register(router *Router) {
 	router.Register(MsgTypeSetPermissionMode, h.handleSetPermissionMode)
 	router.Register(MsgTypeCompact, h.handleCompact)
 	router.Register(MsgTypeDump, h.handleDump)
+	// Step 9.1 Task 4：响应前端主动拉取命令清单的请求。
+	// 等价于 onWSOpen 的推送逻辑，供重连后兜底拉取使用。
+	router.Register(MsgTypeListSlashCommands, h.handleListSlashCommands)
 }
 
 // ModelName 返回当前配置中的模型名，供状态栏展示。
@@ -273,6 +314,66 @@ func (h *Handler) CurrentSessionID() string {
 }
 
 // ---- 消息 handler ----
+
+// 以下是 Step 9.1 为 slash 命令提供的"零参数版本"包装函数。
+//
+// 业务逻辑完全复用现有 handleXxx 函数体（handleNewSession / handleClearSession /
+// handleResumeSession / handleCompact / handleDump），仅把"从 Message 解析 payload"
+// 这一步省掉——slash 命令的入参已知（/resume 的 ID 由命令 Execute 直接传入），无需
+// 经过 AsPayload 解析。
+//
+// 约束：
+//   - 原 handleXxx 函数体零改动，保持 Step 9 已落地的 ws 协议兼容
+//   - wrapper 命名带 "ForSlash" 后缀，便于在 grep 中与原 handleXxx 区分
+//   - 返回 error 仅为满足 slash.SlashCommand.Execute 签名；当前所有 wrapper 实际
+//     始终返回 nil（原 handleXxx 的错误已通过 sendStreamError 回推前端）
+
+// HandleNewSessionForSlash 是 handleNewSession 的 slash 命令版本。
+// 业务逻辑保持一致：保存当前会话 → 创建新会话 → 重置 ConvMgr → 重置 SP。
+func (h *Handler) HandleNewSessionForSlash(conn *websocket.Conn) error {
+	return h.handleNewSession(conn, Message{})
+}
+
+// HandleClearSessionForSlash 是 handleClearSession 的 slash 命令版本。
+// 业务逻辑保持一致：保留 session_id、清空消息、重置 ConvMgr、清空磁盘消息、
+// 清理第一层压缩工具结果归档。
+func (h *Handler) HandleClearSessionForSlash(conn *websocket.Conn) error {
+	return h.handleClearSession(conn, Message{})
+}
+
+// HandleResumeSessionForSlash 是 handleResumeSession 的 slash 命令版本。
+// id 直接从前端补全提交时传入的 arg 取（NeedsArg=true 的 slash 命令由 Execute
+// 把 arg 透传给本函数）；不经过 Message.Payload 解析。
+func (h *Handler) HandleResumeSessionForSlash(conn *websocket.Conn, id string) error {
+	return h.handleResumeSession(conn, Message{
+		Payload: mustMarshalPayload(ResumeSessionPayload{ID: id}),
+	})
+}
+
+// HandleCompactForSlash 是 handleCompact 的 slash 命令版本。
+// 业务逻辑保持一致：compactor 为 nil 时返回 compaction_disabled；busy 时返回 stream_error。
+func (h *Handler) HandleCompactForSlash(conn *websocket.Conn) error {
+	return h.handleCompact(conn, Message{})
+}
+
+// HandleDumpForSlash 是 handleDump 的 slash 命令版本。
+// 业务逻辑保持一致：抢占流式状态 → 复制 SP/会话快照 → 落盘 dump.json/dump.md。
+func (h *Handler) HandleDumpForSlash(conn *websocket.Conn) error {
+	return h.handleDump(conn, Message{})
+}
+
+// mustMarshalPayload 把任意 payload 序列化为 json.RawMessage；序列化失败时 panic。
+//
+// 仅供 Step 9.1 slash wrapper 使用——payload 类型固定为本包定义的 ResumeSessionPayload
+// 等结构体，正常序列化必然成功（不会触发网络/IO 错误），用 panic 替代 error 返回值
+// 以简化 wrapper 签名。panic 视为编程错误，应在开发阶段捕获。
+func mustMarshalPayload(v any) json.RawMessage {
+	data, err := json.Marshal(v)
+	if err != nil {
+		panic(fmt.Sprintf("slash wrapper: marshal payload failed: %v", err))
+	}
+	return json.RawMessage(data)
+}
 
 // handleUserInput 处理用户输入：把消息加入 ConvMgr，调用 Provider 流式响应，
 // 通过 stream_chunk / stream_done / context_usage 等消息回传给客户端。
@@ -876,6 +977,93 @@ func (h *Handler) handleGetFileDiff(conn *websocket.Conn, msg Message) error {
 	})
 }
 
+// ---- Slash 命令下发相关 handler（Step 9.1 Task 4） ----
+
+// sendSlashCommands 把当前 slash 命令清单推送给单个连接。
+//
+// typ 必须为 MsgTypeSlashCommands 或 MsgTypeSlashCommandsUpdated：
+//   - MsgTypeSlashCommands 用于 ws onWSOpen 主动推送 / 响应 list_slash_commands 请求
+//   - MsgTypeSlashCommandsUpdated 用于命令清单变化时（Step 10 Skill 动态注册）广播推送
+//
+// payload 形态两种用途相同（SlashCommandsPayload）；通过 typ 区分消息类型
+// 便于前端做差异化的 UI 反馈（如 updated 触发一次轻量 toast）。
+//
+// slashProvider 为 nil 时回推空命令清单（等价"未启用 slash"）。
+// 写入经 sendMessage 串行化（writeMu 保护），不会与 runStream 流式写竞争。
+func (h *Handler) sendSlashCommands(conn *websocket.Conn, typ string) error {
+	entries := h.collectSlashCommandEntries()
+	cmds := make([]SlashCommandInfo, 0, len(entries))
+	for _, e := range entries {
+		cmds = append(cmds, SlashCommandInfo{
+			Name:        e.Name,
+			Description: e.Description,
+			NeedsArg:    e.NeedsArg,
+			ArgHint:     e.ArgHint,
+			Category:    e.Category,
+		})
+	}
+	return h.sendMessage(conn, typ, SlashCommandsPayload{Commands: cmds})
+}
+
+// collectSlashCommandEntries 从 SlashCommandProvider 读取当前命令列表。
+// provider 为 nil 时返回空切片（等价"未启用 slash"）。
+func (h *Handler) collectSlashCommandEntries() []SlashCommandEntry {
+	if h.slashProvider == nil {
+		return nil
+	}
+	return h.slashProvider.List()
+}
+
+// handleListSlashCommands 处理前端主动拉取命令清单的请求（list_slash_commands）。
+// 等价于 onWSOpenSlash 的推送逻辑：把当前注册表完整返回。
+//
+// 用途：ws 断线重连后，前端可用本请求做兜底拉取（即使错过 onWSOpen 推送也能恢复）。
+func (h *Handler) handleListSlashCommands(conn *websocket.Conn, msg Message) error {
+	return h.sendSlashCommands(conn, MsgTypeSlashCommands)
+}
+
+// onWSOpenSlash 是 ws 连接建立后由 ConnectionManager.onOpenHook 触发的回调：
+// 主动向当前 conn 推送 slash_commands 消息，确保前端在 ws onWSOpen 后立刻能拿到命令清单。
+//
+// 注册入口在 main.go：handler.SetConnMgr 之后，再注册本回调：
+//
+//	server.ConnectionManager().SetOnOpenHook(handler.PushSlashCommandsOnOpen)
+//
+// 本函数等价于 sendSlashCommands(conn, MsgTypeSlashCommands) 的精简包装，
+// 单独保留函数名便于将来在 ws Open 处扩展其他主动推送逻辑。
+func (h *Handler) onWSOpenSlash(conn *websocket.Conn) error {
+	return h.sendSlashCommands(conn, MsgTypeSlashCommands)
+}
+
+// PushSlashCommandsOnOpen 是 onWSOpenSlash 的导出别名，供 main.go 在跨包装配时
+// 传入 ConnectionManager.SetOnOpenHook（onWSOpenSlash 本身是包内未导出方法）。
+// 典型用法（Step 9.1 Task 6）：
+//
+//	server.ConnectionManager().SetOnOpenHook(handler.PushSlashCommandsOnOpen)
+//
+// 行为与 onWSOpenSlash 完全一致，仅访问权限不同；不影响 handler 内部其他逻辑路径。
+func (h *Handler) PushSlashCommandsOnOpen(conn *websocket.Conn) {
+	_ = h.sendSlashCommands(conn, MsgTypeSlashCommands)
+}
+
+// broadcastSlashCommandsUpdated 向所有活跃 conn 推送 slash_commands_updated。
+//
+// 由 SlashCommandProvider.OnChange 回调触发：注册命令清单变化时（Step 10 Skill
+// 动态注册场景）通知所有前端刷新候选下拉。本步骤（Task 4）暂不主动调用，
+// 仅注册回调机制就位。
+//
+// 并发安全：遍历 connMgr.Snapshot() 后逐个调 sendMessage，每个 sendMessage
+// 内部持有 writeMu——与 runStream 流式写共享同一把锁；connMgr 为 nil 时退化为
+// no-op（兼容未注入场景与测试）。
+func (h *Handler) broadcastSlashCommandsUpdated() {
+	if h.connMgr == nil {
+		return
+	}
+	for _, conn := range h.connMgr.Snapshot() {
+		_ = h.sendSlashCommands(conn, MsgTypeSlashCommandsUpdated)
+	}
+}
+
 // SetMCPPool 注入 MCP 连接池。
 // 应在 main.go 启动流程中、构造 Handler 之后调用一次。
 // pool 为 nil 时 MCP 相关能力（远端工具 server 解析 + 状态栏 mcp_status 推送）禁用。
@@ -888,6 +1076,47 @@ func (h *Handler) SetMCPPool(pool *mcpsession.Pool) {
 // mgr 为 nil 时 BroadcastMCPStatus 退化为 no-op。
 func (h *Handler) SetConnMgr(mgr *ConnectionManager) {
 	h.connMgr = mgr
+}
+
+// SetSlashRegistry 注入 slash 命令注册表（Step 9.1 Task 4）。
+//
+// 参数通过 SlashCommandProvider 接口抽象（web 包不直接 import command/slash，
+// 避免 web → slash → web 的循环依赖）。典型用法（main.go 顶层装配）：
+//
+//	provider := newRegistryAdapter(slashRegistry) // 见 web/slash_adapter.go
+//	h.SetSlashRegistry(provider)
+//
+// 行为：
+//  1. 保存 provider 引用，供 sendSlashCommands / handleListSlashCommands 读取；
+//  2. 一次性构造 slashCmdMap：「命令名 → 既有 MsgType」的静态映射，仅供调试可见。
+//     前端按 name 查 state.commandTypeByName 自行决定发送什么，handler 不直接消费；
+//  3. 注册 OnChange 回调：命令清单变化时（Step 10 Skill 动态注册）遍历所有活跃
+//     conn 推送 slash_commands_updated；connMgr 为 nil 时退化为 no-op。
+//
+// provider 为 nil 时等价于"未启用 slash"：onWSOpen / list_slash_commands 均回
+// 推空命令清单，前端候选下拉为空。
+func (h *Handler) SetSlashRegistry(provider SlashCommandProvider) {
+	h.slashProvider = provider
+	h.slashCmdMap = map[string]string{
+		"/new":     MsgTypeNewSession,
+		"/clear":   MsgTypeClearSession,
+		"/compact": MsgTypeCompact,
+		"/dump":    MsgTypeDump,
+		// /resume 因 NeedsArg=true，由前端补全到输入框后用户填 ID 提交，
+		// 不通过此 map 查找；前端识别 Category=="session" 且 needsArg==true 时
+		// 走 MsgTypeResumeSession 路径（payload.id 来自用户补全内容）。
+	}
+	if provider == nil {
+		return
+	}
+	// 注册 OnChange 回调：命令清单变化时遍历当前所有活跃连接推送 slash_commands_updated。
+	// 回调在 Register 同步路径上触发一次（slash.Registry 的 OnChange 机制），用于让
+	// handler 在注入后就能感知到既有 6 条内置命令（不依赖 OnChange 在后续动态注册时
+	// 才被触发）。本步骤（Task 4）仅注册回调，**不主动触发** Notify；
+	// 实际推送由 SetSlashRegistry 注入后由 OnChange 的初次同步触发一次性完成推送。
+	provider.OnChange(func() {
+		h.broadcastSlashCommandsUpdated()
+	})
 }
 
 // resolveMCPServerByToolName 从远端工具名（`mcp__<server>__<tool>`）中提取 server 部分。

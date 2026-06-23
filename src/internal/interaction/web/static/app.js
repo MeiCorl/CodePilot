@@ -88,25 +88,23 @@
         _permCountdownTimer: null,     // 倒计时定时器
         // Step 7：累计第一层轻量替换的工具结果数（状态栏小标记，切换会话重置）
         compactLightCount: 0,
+        // Step 9.1：后端下发的 slash 命令清单。
+        // 元素形态 { name, description, needs_arg, arg_hint, category }。
+        commands: [],
+        // Step 9.1：name -> MsgType 映射，自动从后端下发的命令清单构造。
+        // - /new -> new_session；/clear -> clear_session；/compact -> compact；/dump -> dump
+        // - /resume 因 needs_arg=true 由前端特殊处理（不进入 map，补全到输入框）
+        // - /sessions 因 category="client" 由前端走本地 openSessionsTable（不进入 map）
+        // - 后续 Skill 系统注册的命令若不在内置映射表中，前端按"未知命令"兜底
+        commandTypeByName: {},
     };
 
-    // ---- / 快捷命令清单（Step 9 落地后将替换为命令注册表查询） ----
-    // 带 exec 的项：选中后直接执行命令（不补全到输入框）。
-    // 不带 exec 的项：选中后补全到输入框，由用户继续编辑后按 Enter 提交。
-    // 补全型命令（如 /resume <id>）在 onSendClicked 中识别前缀后转成对应消息。
-    const SLASH_COMMANDS = [
-        { cmd: '/new',           desc: '新建一个会话',
-          exec: () => sendWS(MsgType.NewSession, {}) },
-        { cmd: '/sessions',      desc: '查看历史会话列表',
-          exec: () => openSessionsTable() },
-        { cmd: '/resume',        desc: '恢复指定 ID 的会话（需后接 ID 前缀）' },
-        { cmd: '/clear',         desc: '清空当前会话上下文',
-          exec: () => sendWS(MsgType.ClearSession, {}) },
-        { cmd: '/compact',       desc: '手动压缩上下文（历史摘要化）',
-          exec: () => sendWS(MsgType.Compact, {}) },
-        { cmd: '/dump',          desc: '导出当前会话上下文与 System Prompt 到本地文件（dump.json/dump.md）',
-          exec: () => sendWS(MsgType.Dump, {}) },
-    ];
+    // ---- / 快捷命令清单 ----
+    // Step 9.1：硬编码数组已删除，命令清单由后端 slash Registry 启动时通过
+    // `slash_commands` WebSocket 消息下发，前端存到 state.commands 中并构造
+    // state.commandTypeByName(name -> MsgType) 映射用于执行。
+    // Category="client" 的命令（/sessions）由前端识别后走本地逻辑（openSessionsTable）。
+    // NeedsArg=true 的命令（/resume）选中后补全到输入框，用户填参数后按 Enter 提交。
 
     // ---- 工具函数 ----
     const escapeHTML = (s) => String(s ?? '')
@@ -242,6 +240,12 @@
         // /dump：导出当前会话上下文 + System Prompt 到本地文件（dump.json/dump.md）
         Dump:             'dump',
         DumpResult:       'dump_result',
+        // Step 9.1：slash 命令清单相关消息
+        // ListSlashCommands 由前端发出（重连兜底），SlashCommands / SlashCommandsUpdated
+        // 由后端在 ws 建立时主动推送 / 命令清单变化时推送。
+        ListSlashCommands:      'list_slash_commands',
+        SlashCommands:          'slash_commands',
+        SlashCommandsUpdated:   'slash_commands_updated',
     };
 
     // abortMarker 与后端 agent_loop.go 中的 abortMarker 常量保持一致，
@@ -302,6 +306,8 @@
             case MsgType.CompactionEvent:   return onCompactionEvent(msg.payload);
             case MsgType.MemoryReviewEvent: return onMemoryReviewEvent(msg.payload);
             case MsgType.DumpResult:        return onDumpResult(msg.payload);
+            case MsgType.SlashCommands:        return onSlashCommands(msg.payload);
+            case MsgType.SlashCommandsUpdated: return onSlashCommandsUpdated(msg.payload);
             default: console.warn('未知消息类型:', msg.type, msg.payload);
         }
     }
@@ -2288,10 +2294,11 @@
     // getMatchingCommands 根据当前输入框内容做前缀过滤。
     // 用户输入 "/" 时返回全部；输入 "/se" 时只返回以 "/se" 起始的命令。
     // 该函数是下拉显示候选的唯一来源，避免 open / refresh 两条路径走出不同列表。
+    // Step 9.1：数据源改为 state.commands（后端下发的命令清单）。
     function getMatchingCommands() {
         const cur = (dom.input.value || '').trim();
-        if (!cur.startsWith('/')) return SLASH_COMMANDS.slice();
-        return SLASH_COMMANDS.filter(c => c.cmd.startsWith(cur));
+        if (!cur.startsWith('/')) return state.commands.slice();
+        return state.commands.filter(c => (c.name || '').startsWith(cur));
     }
 
     function openSlashDropdown() {
@@ -2307,10 +2314,11 @@
         state.slashItems = matches.map((c, i) => {
             const item = document.createElement('div');
             item.className = 'slash-item' + (i === 0 ? ' is-selected' : '');
-            item.dataset.cmd = c.cmd;
+            // Step 9.1：dataset.cmd 兼容 applySlashCompletion 的 entry.cmd 查找
+            item.dataset.cmd = c.name;
             item.dataset.index = String(i);
             item.setAttribute('role', 'option');
-            item.innerHTML = `<span class="slash-cmd">${escapeHTML(c.cmd)}</span><span class="slash-desc">${escapeHTML(c.desc)}</span>`;
+            item.innerHTML = `<span class="slash-cmd">${escapeHTML(c.name)}</span><span class="slash-desc">${escapeHTML(c.description || '')}</span>`;
             item.addEventListener('mousedown', (e) => {
                 e.preventDefault();
                 applySlashCompletion(c);
@@ -2339,23 +2347,59 @@
         }
     }
 
+    // applySlashCompletion 选中候选后的统一入口。
+    //
+    // Step 9.1 路由规则（按 state.commands 一条命令元数据判定）：
+    //   1. category === 'client'：本地逻辑（/sessions → openSessionsTable），不发送 WS
+    //   2. needsArg === true：补全命令名 + 尾随空格到输入框（/resume 走该分支）
+    //      用户继续填参数后按 Enter 提交，由 onSendClicked 识别 "/resume " 前缀发 resume_session
+    //   3. 其他（普通可执行命令）：按 state.commandTypeByName[cmd] 取 MsgType 直接发 WS
+    //
+    // 兼容性兜底：未在 commandTypeByName 中找到映射时，视为未知命令，仅关闭下拉。
     function applySlashCompletion(entry) {
-        // 带 exec 的项：直接执行命令（如 /clear），不补全到输入框
-        if (entry && typeof entry.exec === 'function') {
-            try { entry.exec(entry.cmd); } catch (err) { console.error('slash exec 失败', err); }
-            dom.input.value = '';
+        if (!entry || !entry.name) {
             closeSlashDropdown();
-            updateCharCount();
             return;
         }
-        const cmd = (entry && entry.cmd) || String(entry);
-        // 替换当前输入中的 /xxx... 为 cmd（若 cmd 是 /resume，则补一个空格）
-        const tail = cmd + (cmd === '/resume' ? ' ' : '');
-        dom.input.value = tail;
-        dom.input.setSelectionRange(tail.length, tail.length);
+        const name = entry.name;
+
+        // 1. client 类命令：本地逻辑（如 /sessions → openSessionsTable）
+        if (entry.category === 'client') {
+            closeSlashDropdown();
+            dom.input.value = '';
+            updateCharCount();
+            if (name === '/sessions') {
+                try { openSessionsTable(); }
+                catch (err) { console.error('openSessionsTable 失败', err); }
+            }
+            // 兜底：未识别的 client 命令不做任何操作
+            return;
+        }
+
+        // 2. needsArg 命令：补全到输入框（用户继续填参数后按 Enter 提交）
+        if (entry.needsArg) {
+            // 与原实现保持一致：/resume 选中后写入 "/resume "（带尾随空格）
+            const tail = name + (name === '/resume' ? ' ' : ' ');
+            dom.input.value = tail;
+            dom.input.setSelectionRange(tail.length, tail.length);
+            closeSlashDropdown();
+            updateCharCount();
+            dom.input.focus();
+            return;
+        }
+
+        // 3. 普通可执行命令：按 commandTypeByName 发送对应 MsgType
+        const msgType = state.commandTypeByName[name];
+        if (msgType) {
+            try { sendWS(msgType, {}); }
+            catch (err) { console.error('slash 发送失败', err, name, msgType); }
+        } else {
+            // 兜底：未识别命令（Step 10 Skill 接入新命令但前端未自动映射时）
+            console.warn('未知 slash 命令，未找到 MsgType 映射:', name);
+        }
+        dom.input.value = '';
         closeSlashDropdown();
         updateCharCount();
-        dom.input.focus();
     }
 
     // refreshSlashDropdown 在输入变化时重建下拉，沿用 getMatchingCommands 的过滤结果。
@@ -2393,7 +2437,8 @@
                     e.preventDefault();
                     const sel = state.slashItems[state.slashIndex];
                     if (sel) {
-                        const entry = SLASH_COMMANDS.find(c => c.cmd === sel.dataset.cmd);
+                        // Step 9.1：从 state.commands 中按 name 查找（替代 SLASH_COMMANDS）
+                        const entry = state.commands.find(c => c.name === sel.dataset.cmd);
                         applySlashCompletion(entry);
                     }
                     return;
@@ -3068,6 +3113,90 @@
             const reason = (p && p.err) ? p.err : '未知原因';
             showCompactionToast('导出失败：' + reason, 'error');
         }
+    }
+
+    // =========================================================================
+    // Step 9.1：slash 命令清单接收 + 自动映射 MsgType
+    // =========================================================================
+    //
+    // 设计要点：
+    //   1. 后端 onWSOpen 主动推送 slash_commands；前端 onWSOpen 不再主动拉取
+    //      （保留 list_slash_commands 兜底，前端可手动拉）。
+    //   2. 收到 slash_commands / slash_commands_updated 时：
+    //      - 覆盖 state.commands（按后端注册顺序）
+    //      - 重建 state.commandTypeByName：内置 4 条已知映射 + 其他命令按 name 字符串查找
+    //   3. /resume（needs_arg=true）不进入 map，由 applySlashCompletion 走补全分支
+    //   4. /sessions（category=client）不进入 map，由 applySlashCompletion 走本地分支
+    //   5. state.commands 变化时若下拉打开则重渲染
+
+    // 内置命令 name -> MsgType 映射表（与后端 handler.go slashCmdMap 对齐）。
+    // 仅含 needs_arg=false 的可执行命令；/resume / /sessions 在分支中特殊处理。
+    const BUILTIN_COMMAND_MSG_TYPE = {
+        '/new':     'new_session',
+        '/clear':   'clear_session',
+        '/compact': 'compact',
+        '/dump':    'dump',
+    };
+
+    // 应用一条命令元数据到 state：填充 commands 数组并按映射规则更新 commandTypeByName。
+    //
+    // 入参 cmd 形态：{ name, description, needs_arg, arg_hint, category }
+    //   - needs_arg=true → 不进 commandTypeByName（applySlashCompletion 走补全分支）
+    //   - category='client' → 不进 commandTypeByName（applySlashCompletion 走本地分支）
+    //   - 其他情况：按 name 查 BUILTIN_COMMAND_MSG_TYPE，命中则填，未命中跳过
+    function applySlashCommandEntry(cmd) {
+        if (!cmd || !cmd.name) return;
+        // 内置映射：仅 needs_arg=false 且 category!='client' 的命令进 map
+        if (!cmd.needs_arg && cmd.category !== 'client') {
+            const mt = BUILTIN_COMMAND_MSG_TYPE[cmd.name];
+            if (mt) {
+                state.commandTypeByName[cmd.name] = mt;
+            }
+        }
+    }
+
+    // onSlashCommands 处理后端首次推送（ws open 时）或 list_slash_commands 响应。
+    // 整体覆盖本地命令清单。
+    function onSlashCommands(p) {
+        if (!p) return;
+        const list = Array.isArray(p.commands) ? p.commands : [];
+        state.commands = list.map(normalizeSlashCommandInfo);
+        state.commandTypeByName = {};
+        for (const cmd of state.commands) {
+            applySlashCommandEntry(cmd);
+        }
+        // 下拉打开中则重渲染
+        if (state.slashOpen) {
+            refreshSlashDropdown();
+        }
+    }
+
+    // onSlashCommandsUpdated 处理命令清单变化推送（Step 10 动态注册用）。
+    // 行为与 onSlashCommands 一致：整体覆盖。
+    function onSlashCommandsUpdated(p) {
+        if (!p) return;
+        const list = Array.isArray(p.commands) ? p.commands : [];
+        state.commands = list.map(normalizeSlashCommandInfo);
+        state.commandTypeByName = {};
+        for (const cmd of state.commands) {
+            applySlashCommandEntry(cmd);
+        }
+        if (state.slashOpen) {
+            refreshSlashDropdown();
+        }
+    }
+
+    // normalizeSlashCommandInfo 把后端 SlashCommandInfo 规整为前端内部形态。
+    // 后端字段：name / description / needs_arg / arg_hint / category
+    // 前端字段：cmd / desc / needsArg / argHint / category
+    function normalizeSlashCommandInfo(raw) {
+        return {
+            name:        raw.name || '',
+            description: raw.description || '',
+            needsArg:    raw.needs_arg === true,
+            argHint:     raw.arg_hint || '',
+            category:    raw.category || '',
+        };
     }
 
     // showCompactionToast 显示一个顶部 toast，type 决定配色与停留时长。

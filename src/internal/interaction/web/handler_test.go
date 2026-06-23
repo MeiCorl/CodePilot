@@ -106,6 +106,7 @@ type testRig struct {
 	projectDir       string
 	sm               *session.SessionManager
 	srv              *httptest.Server
+	connMgr          *ConnectionManager
 	client           *websocket.Conn
 	cancelHookCalled int32
 }
@@ -128,6 +129,7 @@ func newTestRig(t *testing.T, chunks []llm.StreamChunk) *testRig {
 
 	s := NewServer("127.0.0.1:0")
 	h.Register(s.Router())
+	h.SetConnMgr(s.ConnectionManager())
 	ts := httptest.NewServer(http.HandlerFunc(s.ConnectionManager().HandleWS))
 	t.Cleanup(ts.Close)
 	// 关闭本测试打开的会话级 logger，释放其 codepilot.log 文件句柄，
@@ -148,6 +150,7 @@ func newTestRig(t *testing.T, chunks []llm.StreamChunk) *testRig {
 		projectDir: filepath.Join(dir, filepath.Base(handlerTestWorkdir)),
 		sm:         sm,
 		srv:        ts,
+		connMgr:    s.ConnectionManager(),
 		client:     client,
 	}
 }
@@ -1315,5 +1318,256 @@ func TestClearSessionRemovesArtifacts(t *testing.T) {
 	}
 	if len(sess.Messages) != 0 {
 		t.Fatalf("/clear 后会话消息应归零，实际 %d 条", len(sess.Messages))
+	}
+}
+
+// ---- Step 9.1 Task 4: Slash 命令后端化 Handler 集成测试 ----
+
+// mockSlashProvider 是测试用 SlashCommandProvider 实现。
+// 提供一组静态命令 + 计数 OnChange 注册次数与触发次数，便于断言。
+type mockSlashProvider struct {
+	mu        sync.Mutex
+	commands  []SlashCommandEntry
+	changeCnt int32
+}
+
+func (p *mockSlashProvider) List() []SlashCommandEntry {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := make([]SlashCommandEntry, len(p.commands))
+	copy(out, p.commands)
+	return out
+}
+
+func (p *mockSlashProvider) OnChange(fn func()) {
+	if fn == nil {
+		return
+	}
+	atomic.AddInt32(&p.changeCnt, 1)
+	// 同步触发一次（模拟 slash.Registry 的行为）。
+	fn()
+}
+
+// builtinSixCommands 模拟 slash.builtin.RegisterBuiltin 注册的 6 条命令。
+// 命令顺序、字段与 builtin.go 完全一致；测试中不直接 import slash 包以避免 web → slash → web 循环依赖。
+func builtinSixCommands() []SlashCommandEntry {
+	return []SlashCommandEntry{
+		{Name: "/new", Description: "新建一个会话", NeedsArg: false, Category: "session"},
+		{Name: "/sessions", Description: "查看历史会话列表", NeedsArg: false, Category: "client"},
+		{Name: "/resume", Description: "恢复指定 ID 的会话（需后接 ID 前缀）", NeedsArg: true, ArgHint: "<id>", Category: "session"},
+		{Name: "/clear", Description: "清空当前会话上下文", NeedsArg: false, Category: "session"},
+		{Name: "/compact", Description: "手动压缩上下文（历史摘要化）", NeedsArg: false, Category: "context"},
+		{Name: "/dump", Description: "导出当前会话上下文与 System Prompt 到本地文件（dump.json/dump.md）", NeedsArg: false, Category: "debug"},
+	}
+}
+
+// newSlashTestRig 在 newTestRig 基础上注入 slash provider 并注册 onWSOpen 回调。
+// 与 newTestRig 不同：先注册 slash provider 与 onOpen 回调，**再**拨号 ws，
+// 以确保 ws onOpen 时 hook 已就绪、slash_commands 能被正确推送。
+func newSlashTestRig(t *testing.T, provider SlashCommandProvider) *testRig {
+	t.Helper()
+	// newTestRig 内部会拨号 ws，所以走"先拨号"的路径时 onOpen hook 已注册会立即触发。
+	// 但 hook 是在 newTestRig 返回后才注册——会错过首个连接。
+	// 因此这里手动重做一次装配流程，确保 hook 先注册、ws 后连。
+	dir := t.TempDir()
+	sm, err := session.NewSessionManagerWithDir(dir, handlerTestWorkdir)
+	if err != nil {
+		t.Fatalf("SessionManager 初始化失败: %v", err)
+	}
+	cfg := &config.Config{
+		Provider:  "anthropic",
+		Model:     "claude-sonnet-test",
+		APIKey:    "test-key",
+		MaxTokens: 1024,
+	}
+	mp := &mockProvider{chunks: []llm.StreamChunk{{Content: "_init_"}, {Done: true}}}
+	h := NewHandler(mp, sm, cfg, 10, nil, 100000, handlerTestWorkdir, nil, nil, nil)
+
+	s := NewServer("127.0.0.1:0")
+	h.Register(s.Router())
+	h.SetConnMgr(s.ConnectionManager())
+	h.SetSlashRegistry(provider)
+	// **关键**：在 ws 拨号前注册 onOpen 回调，确保 ws upgrade 时 hook 已就绪。
+	s.ConnectionManager().SetOnOpenHook(func(c *websocket.Conn) {
+		_ = h.onWSOpenSlash(c)
+	})
+
+	ts := httptest.NewServer(http.HandlerFunc(s.ConnectionManager().HandleWS))
+	t.Cleanup(ts.Close)
+	t.Cleanup(logger.CloseAllSessions)
+
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/"
+	client, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("ws 拨号失败: %v", err)
+	}
+	t.Cleanup(func() { client.Close() })
+
+	return &testRig{
+		h:          h,
+		mp:         mp,
+		sessDir:    dir,
+		projectDir: filepath.Join(dir, filepath.Base(handlerTestWorkdir)),
+		sm:         sm,
+		srv:        ts,
+		connMgr:    s.ConnectionManager(),
+		client:     client,
+	}
+}
+
+// TestSlashCommands_PushedOnWSOpen 验证 ws 建立连接后立即收到 slash_commands 推送，含 6 条命令。
+func TestSlashCommands_PushedOnWSOpen(t *testing.T) {
+	provider := &mockSlashProvider{commands: builtinSixCommands()}
+	r := newSlashTestRig(t, provider)
+	// dialRig 之后 ws 已建立，onWSOpenSlash 已被触发推送 slash_commands。
+	// 立即读取第一条收到的消息（忽略可能的 _init_ 流式响应）。
+	msg, _ := r.recvWithFilter(t, MsgTypeSlashCommands, 2*time.Second)
+	p, _ := AsPayload[SlashCommandsPayload](msg)
+	if len(p.Commands) != 6 {
+		t.Fatalf("期望收到 6 条命令，实际 %d 条: %+v", len(p.Commands), p.Commands)
+	}
+	// 校验顺序与名称
+	wantNames := []string{"/new", "/sessions", "/resume", "/clear", "/compact", "/dump"}
+	for i, want := range wantNames {
+		if p.Commands[i].Name != want {
+			t.Errorf("第 %d 条命令名 = %q，期望 %q", i, p.Commands[i].Name, want)
+		}
+	}
+	// 校验 /resume 的 NeedsArg + ArgHint
+	resume := p.Commands[2]
+	if !resume.NeedsArg {
+		t.Errorf("/resume.NeedsArg = false，期望 true")
+	}
+	if resume.ArgHint != "<id>" {
+		t.Errorf("/resume.ArgHint = %q，期望 %q", resume.ArgHint, "<id>")
+	}
+	// 校验 /sessions 的 Category
+	if p.Commands[1].Category != "client" {
+		t.Errorf("/sessions.Category = %q，期望 %q", p.Commands[1].Category, "client")
+	}
+}
+
+// TestSlashCommands_ListRequestReturnsFullList 验证 list_slash_commands 请求能拿到完整命令清单。
+func TestSlashCommands_ListRequestReturnsFullList(t *testing.T) {
+	provider := &mockSlashProvider{commands: builtinSixCommands()}
+	r := newSlashTestRig(t, provider)
+	// 先消费 onWSOpen 的推送（避免后续 recvWithFilter 误取）
+	_, _ = r.recvWithFilter(t, MsgTypeSlashCommands, 2*time.Second)
+
+	// 重新发 list_slash_commands 请求
+	r.send(t, MsgTypeListSlashCommands, nil)
+	msg, _ := r.recvWithFilter(t, MsgTypeSlashCommands, 2*time.Second)
+	p, _ := AsPayload[SlashCommandsPayload](msg)
+	if len(p.Commands) != 6 {
+		t.Fatalf("重新拉取应拿到 6 条命令，实际 %d 条", len(p.Commands))
+	}
+	// 命令集合应等价（顺序一致）
+	for i, want := range []string{"/new", "/sessions", "/resume", "/clear", "/compact", "/dump"} {
+		if p.Commands[i].Name != want {
+			t.Errorf("第 %d 条 = %q，期望 %q", i, p.Commands[i].Name, want)
+		}
+	}
+}
+
+// TestSlashCommands_NilProviderEmptyList 验证 slashProvider 为 nil 时回推空命令清单。
+func TestSlashCommands_NilProviderEmptyList(t *testing.T) {
+	// 不注入 slash provider——handler.slashProvider 保持零值 nil。
+	// 走与 newSlashTestRig 相同的"先注册 hook 后拨号"路径，确保 ws Open
+	// 触发的 slash_commands 推送能拿到（即使内容为空）。
+	dir := t.TempDir()
+	sm, err := session.NewSessionManagerWithDir(dir, handlerTestWorkdir)
+	if err != nil {
+		t.Fatalf("SessionManager 初始化失败: %v", err)
+	}
+	cfg := &config.Config{Provider: "anthropic", Model: "claude-sonnet-test", APIKey: "test-key", MaxTokens: 1024}
+	mp := &mockProvider{chunks: nil}
+	h := NewHandler(mp, sm, cfg, 10, nil, 100000, handlerTestWorkdir, nil, nil, nil)
+
+	s := NewServer("127.0.0.1:0")
+	h.Register(s.Router())
+	h.SetConnMgr(s.ConnectionManager())
+	// **注意**：不调用 SetSlashRegistry，handler.slashProvider 保持零值 nil
+	s.ConnectionManager().SetOnOpenHook(func(c *websocket.Conn) {
+		_ = h.onWSOpenSlash(c)
+	})
+
+	ts := httptest.NewServer(http.HandlerFunc(s.ConnectionManager().HandleWS))
+	t.Cleanup(ts.Close)
+	t.Cleanup(logger.CloseAllSessions)
+
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/"
+	client, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("ws 拨号失败: %v", err)
+	}
+	t.Cleanup(func() { client.Close() })
+
+	// 主动拉取：拿到的应为空命令清单
+	data, _ := EncodePayload(MsgTypeListSlashCommands, nil)
+	if err := client.WriteMessage(websocket.TextMessage, data); err != nil {
+		t.Fatalf("发送失败: %v", err)
+	}
+	_ = client.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_, raw, err := client.ReadMessage()
+	if err != nil {
+		t.Fatalf("读取失败: %v", err)
+	}
+	msg, _ := Decode(raw)
+	p, _ := AsPayload[SlashCommandsPayload](msg)
+	if len(p.Commands) != 0 {
+		t.Fatalf("nil provider 应回空命令清单，实际 %d 条", len(p.Commands))
+	}
+}
+
+// TestBusinessHandlersUnchanged 验证业务 handler 函数体零改动：handleNewSession /
+// handleClearSession / handleCompact / handleDump / handleResumeSession / handleListSessions
+// 仍按既有协议 MsgType 接收消息（不依赖 slash 路径），本步骤未改动其实现。
+//
+// 策略：对每条业务消息直接发既有 MsgType（new_session / clear_session / compact /
+// dump / resume_session / list_sessions），观察后端响应——只要不报错（不返回
+// stream_error），即视为协议层兼容。handleNewSession / handleClearSession
+// 会推回 session_loaded；handleListSessions 推回 session_list；handleDump 推回
+// dump_result；handleCompact 因 compactor 为 nil 应回 stream_error(compaction_disabled)；
+// handleResumeSession 因 ID 不存在应回 stream_error(session_not_found)。
+func TestBusinessHandlersUnchanged(t *testing.T) {
+	provider := &mockSlashProvider{commands: builtinSixCommands()}
+	r := newSlashTestRig(t, provider)
+	// 消费 onWSOpen 推送
+	_, _ = r.recvWithFilter(t, MsgTypeSlashCommands, 2*time.Second)
+
+	// list_sessions 应推回 session_list
+	r.send(t, MsgTypeListSessions, nil)
+	if msg, _ := r.recvWithFilter(t, MsgTypeSessionList, 2*time.Second); msg.Type != MsgTypeSessionList {
+		t.Errorf("list_sessions 应回 session_list，实际 %q", msg.Type)
+	}
+
+	// new_session 应推回 session_loaded
+	r.send(t, MsgTypeNewSession, nil)
+	if msg, _ := r.recvWithFilter(t, MsgTypeSessionLoaded, 2*time.Second); msg.Type != MsgTypeSessionLoaded {
+		t.Errorf("new_session 应回 session_loaded，实际 %q", msg.Type)
+	}
+
+	// clear_session 应推回 session_loaded
+	r.send(t, MsgTypeClearSession, nil)
+	if msg, _ := r.recvWithFilter(t, MsgTypeSessionLoaded, 2*time.Second); msg.Type != MsgTypeSessionLoaded {
+		t.Errorf("clear_session 应回 session_loaded，实际 %q", msg.Type)
+	}
+
+	// dump 应推回 dump_result（compactor / dump 都基于纯内存，无需 compactor）
+	r.send(t, MsgTypeDump, nil)
+	if msg, _ := r.recvWithFilter(t, MsgTypeDumpResult, 2*time.Second); msg.Type != MsgTypeDumpResult {
+		t.Errorf("dump 应回 dump_result，实际 %q", msg.Type)
+	}
+
+	// compact 在 compactor 未注入时应回 stream_error(compaction_disabled)
+	r.send(t, MsgTypeCompact, nil)
+	if msg, _ := r.recvWithFilter(t, MsgTypeStreamError, 2*time.Second); msg.Type != MsgTypeStreamError {
+		t.Errorf("compact 应回 stream_error，实际 %q", msg.Type)
+	}
+
+	// resume_session ID 不存在时应回 stream_error(session_not_found)
+	r.send(t, MsgTypeResumeSession, ResumeSessionPayload{ID: "nonexistent"})
+	if msg, _ := r.recvWithFilter(t, MsgTypeStreamError, 2*time.Second); msg.Type != MsgTypeStreamError {
+		t.Errorf("resume_session 应回 stream_error，实际 %q", msg.Type)
 	}
 }

@@ -37,6 +37,10 @@ const (
 	// 完整历史上下文 + System Prompt 快照导出为会话目录下的 dump.json / dump.md。
 	// 服务端通过 MsgTypeDumpResult 回推导出结果（含两个文件绝对路径）。
 	MsgTypeDump = "dump"
+	// MsgTypeListSlashCommands 由前端发起，请求后端返回当前所有可用的
+	// slash 命令清单。等价于 ws 建立时的主动推送，供重连后兜底拉取。
+	// 服务端通过 MsgTypeSlashCommands 回推命令清单。
+	MsgTypeListSlashCommands = "list_slash_commands"
 )
 
 // 服务端 → 客户端 消息类型常量。
@@ -74,6 +78,16 @@ const (
 	// OK=true 时 JSONPath / MDPath 携带两个导出文件的绝对路径；
 	// OK=false 时 Err 携带失败原因（busy / no_active_session / dump_failed）。
 	MsgTypeDumpResult = "dump_result"
+	// MsgTypeSlashCommands 是 list_slash_commands 请求的响应消息 / ws
+	// 建立连接时的主动推送消息。Payload 为 SlashCommandsPayload，包含
+	// 当前所有可用 slash 命令的元数据（name / description / needs_arg /
+	// arg_hint / category）。前端据此渲染「/」候选下拉。
+	MsgTypeSlashCommands = "slash_commands"
+	// MsgTypeSlashCommandsUpdated 由后端在命令清单发生变化时主动推送，
+	// 用于支持运行时动态注册（Step 10 Skill 系统接入后场景）。Payload 形态
+	// 与 MsgTypeSlashCommands 一致；前端收到后整体覆盖本地命令清单。
+	// 本步骤（Step 9.1）暂不主动触发该消息，通道仅作预留。
+	MsgTypeSlashCommandsUpdated = "slash_commands_updated"
 )
 
 // 流式结束原因与 Agent 状态的取值常量。
@@ -302,6 +316,40 @@ type DumpResultPayload struct {
 	MDPath    string `json:"md_path,omitempty"`
 	SessionID string `json:"session_id,omitempty"`
 	Err       string `json:"err,omitempty"`
+}
+
+// SlashCommandInfo 单条 slash 命令的元数据，由后端下发给前端用于渲染候选下拉。
+//
+// 字段语义：
+//   - Name        命令名（含前导 `/`，如 `/new`），候选下拉匹配与发送时的主键。
+//   - Description 命令的简短描述，候选下拉中展示在 name 右侧。
+//   - NeedsArg    是否需要参数；true 时前端选中后补全到输入框（用户填完按 Enter 提交），
+//                 false 时前端选中后直接按 commandTypeByName[name] 发送对应 MsgType。
+//   - ArgHint     参数提示占位符（如 `<id>`），NeedsArg=false 时为前端忽略的占位空串。
+//   - Category    分类标识（session/context/skill/client/debug 等）；
+//                 约定 `client` 类命令由前端识别后走本地逻辑，不发送 WS 消息。
+//
+// [Why] 与 tool.Tool 接口的轻量元数据风格保持一致，便于 Step 10 Skill 包
+// 通过实现同一接口零成本注册为 slash 命令。结构体放 web 包而非 slash 包
+// 是因为它本质上是 web 协议层 payload 类型（前后端共享 JSON Schema）。
+type SlashCommandInfo struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	NeedsArg    bool   `json:"needs_arg"`
+	ArgHint     string `json:"arg_hint,omitempty"`
+	Category    string `json:"category"`
+}
+
+// SlashCommandsPayload slash 命令清单响应（MsgTypeSlashCommands /
+// MsgTypeSlashCommandsUpdated 的 payload）。Commands 按 Registry 注册顺序排列，
+// 前端据此直接遍历渲染候选下拉，无须额外排序。
+//
+// 注：本步骤（Step 9.1）不引入新的「客户端 → 服务端」命令发送消息类型；
+// 前端执行命令仍沿用现有 MsgTypeNewSession / MsgTypeClearSession /
+// MsgTypeCompact / MsgTypeDump / MsgTypeResumeSession 等。本结构体仅用于
+// 服务端主动推送命令清单 / 响应 list_slash_commands 请求这一种方向。
+type SlashCommandsPayload struct {
+	Commands []SlashCommandInfo `json:"commands"`
 }
 
 // GetFileDiffPayload 文件 diff 查询请求（客户端 → 服务端）。
