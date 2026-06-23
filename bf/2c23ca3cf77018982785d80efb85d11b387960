@@ -1,0 +1,82 @@
+.harness/PROGRESS.md
+  s_144cd8114c84b9::t_30abd6f5d89a62 17-18,21
+src/internal/interaction/web/handler_test.go
+  s_144cd8114c84b9::t_7e32a2e74e1d08 1365-1366,1369-1392,1394-1415
+  s_144cd8114c84b9::t_9e85b5b5568866 132,153
+  s_144cd8114c84b9::t_328c2010d56c34 109
+  s_144cd8114c84b9::t_a852b8ec1dacb2 1474-1491,1493-1503,1506-1515
+  s_144cd8114c84b9::t_847c551ee39139 1321-1364,1367-1368,1393,1416-1473,1492,1504-1505,1516-1571
+src/internal/interaction/web/static/app.js
+  s_144cd8114c84b9::t_8ed6e38b895ede 91-99,102-107
+docs/step9.1-Slash注册后端化/spec.md
+  s_aa8390b35bb2d9::t_08037789db8b4a 1-87
+src/internal/command/slash/doc.go
+  s_144cd8114c84b9::t_29c84b87ad86be 1-29
+docs/step9.1-Slash注册后端化/tasks.md
+  s_144cd8114c84b9::t_dd22f061a6490e 73
+  s_144cd8114c84b9::t_d5267763e8d9ec 42
+  s_144cd8114c84b9::t_df218391525e3c 170
+  s_144cd8114c84b9::t_838b10141e604d 7
+  s_144cd8114c84b9::t_d73ab338bb46d3 104
+  s_144cd8114c84b9::t_4115c46066c449 136
+  s_144cd8114c84b9::t_52ecffee4e785a 200
+  s_aa8390b35bb2d9::t_1071ad94153459 1-6,8-41,43-72,74-103,105-135,137-169,171-199,201-238
+src/internal/interaction/web/handler.go
+  s_144cd8114c84b9::t_a7a7b37c31deac 318-364
+  s_144cd8114c84b9::t_20d26eeb991319 365-377
+  s_144cd8114c84b9::t_16607bae9d4531 978-1029,1031-1035,1049-1066,1079
+  s_144cd8114c84b9::t_eb4e24c961e1ce 293-295
+  s_144cd8114c84b9::t_b90417f2f0a5de 1030,1036-1046
+  s_144cd8114c84b9::t_e51a53c54428f1 44-70
+  s_144cd8114c84b9::t_f2a23062a61744 102-112
+  s_144cd8114c84b9::t_148eb2f4521668 1081-1119,1121
+src/main.go
+  s_144cd8114c84b9::t_17bb8581160116 74,76-82
+  s_144cd8114c84b9::t_99448d52bf513f 34
+  s_144cd8114c84b9::t_62bf11a02b43d3 84-85,87-88,95-98
+  s_144cd8114c84b9::t_5cc4b432c37bf5 86,90-94,102-134
+  s_144cd8114c84b9::t_54d2e7805dc71e 75
+  s_144cd8114c84b9::t_5b4b48d6824f81 89
+src/internal/command/slash/command.go
+  s_144cd8114c84b9::t_cf82d92938a71b 1-158
+src/internal/interaction/web/protocol.go
+  s_144cd8114c84b9::t_de0e3266310547 81-90
+  s_144cd8114c84b9::t_07975c7eed1c71 40-43
+  s_144cd8114c84b9::t_9d349d0aa06a8e 319-352,354
+src/internal/command/slash/builtin.go
+  s_144cd8114c84b9::t_8119f758513496 1-311
+docs/step9.1-Slash注册后端化/checklist.md
+  s_144cd8114c84b9::t_39ace9a50ac520 33,35-36,38,40-41,43,45-46,48,50-51,53,55-56
+  s_144cd8114c84b9::t_ea2b788f413565 158,160-161,163,165-166,168,170-171,173,175-176,178,180-181,183,185-186,188,190-191,193,195-196
+  s_144cd8114c84b9::t_caac82d5e9c2da 110,112-113,115,117-118,120,122-123,125,127-128,130,132-133,135,137-138
+  s_aa8390b35bb2d9::t_e40d1220859b62 1-8,10,13,15,18,20,23,25,28-32,34,37,39,42,44,47,49,52,54,57-61,63,66,68,71,73,76-80,82,85,87,90,92,95,97,100,102,105-109,111,114,116,119,121,124,126,129,131,134,136,139-143,145,148,150,153-157,159,162,164,167,169,172,174,177,179,182,184,187,189,192,194
+  s_144cd8114c84b9::t_ba8bc3fa055748 9,11-12,14,16-17,19,21-22,24,26-27
+  s_144cd8114c84b9::t_d3df1617115477 62,64-65,67,69-70,72,74-75
+  s_144cd8114c84b9::t_036d77592d9beb 144,146-147,149,151-152
+  s_144cd8114c84b9::t_a33c9a9ba6cc78 81,83-84,86,88-89,91,93-94,96,98-99,101,103-104
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.11",
+  "base_commit_sha": "bf2c23ca3cf77018982785d80efb85d11b387960",
+  "prompts": {},
+  "logical_commit_id": "bf2c23ca3cf77018982785d80efb85d11b387960",
+  "sessions": {
+    "s_144cd8114c84b9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d4aff6f5-d9d2-44d6-a642-c971f8abdd15",
+        "model": "MiniMax-M3"
+      },
+      "human_author": "meichao <meichao@bigo.sg>"
+    },
+    "s_aa8390b35bb2d9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "4939c990-5358-42cd-9be6-488472663292",
+        "model": "MiniMax-M3"
+      },
+      "human_author": "meichao <meichao@bigo.sg>"
+    }
+  }
+}
