@@ -1,0 +1,31 @@
+docs/step9.1-Slash注册后端化/tasks.md
+  s_144cd8114c84b9::t_df218391525e3c 170
+src/main.go
+  s_144cd8114c84b9::t_54d2e7805dc71e 75
+  s_144cd8114c84b9::t_17bb8581160116 74,76-82
+  s_144cd8114c84b9::t_99448d52bf513f 34
+  s_144cd8114c84b9::t_62bf11a02b43d3 84-85,87-88,95,98
+  s_144cd8114c84b9::t_5cc4b432c37bf5 86,90-94,102,125,134
+  s_144cd8114c84b9::t_5b4b48d6824f81 89
+src/internal/interaction/web/handler.go
+  s_144cd8114c84b9::t_b90417f2f0a5de 1030,1036-1046
+docs/step9.1-Slash注册后端化/checklist.md
+  s_144cd8114c84b9::t_036d77592d9beb 144,146-147,149,151-152
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.11",
+  "base_commit_sha": "b58e6c577d1c8655a625bbc9f4bf6c860391dfa5",
+  "prompts": {},
+  "logical_commit_id": "b58e6c577d1c8655a625bbc9f4bf6c860391dfa5",
+  "sessions": {
+    "s_144cd8114c84b9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d4aff6f5-d9d2-44d6-a642-c971f8abdd15",
+        "model": "MiniMax-M3"
+      },
+      "human_author": "meichao <meichao@bigo.sg>"
+    }
+  }
+}
