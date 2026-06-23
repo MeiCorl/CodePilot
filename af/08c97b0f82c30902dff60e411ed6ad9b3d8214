@@ -1,0 +1,26 @@
+src/internal/interaction/web/static/app.js
+  s_8d575d4557c585::t_608db3ab4c0417 55-56
+src/internal/interaction/web/static/style.css
+  s_8d575d4557c585::t_74dd4a05d75fce 38-40
+  s_8d575d4557c585::t_ea0ee73785de73 109
+  s_8d575d4557c585::t_05acdf06e0bf5d 81-108,305,307,316,333,343,346,353
+src/internal/interaction/web/static/index.html
+  s_8d575d4557c585::t_8cdde3dc4b44a0 18-31
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.11",
+  "base_commit_sha": "af08c97b0f82c30902dff60e411ed6ad9b3d8214",
+  "prompts": {},
+  "logical_commit_id": "af08c97b0f82c30902dff60e411ed6ad9b3d8214",
+  "sessions": {
+    "s_8d575d4557c585": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "134543e5-a498-4fe4-961d-199e96de4b3f",
+        "model": "MiniMax-M3"
+      },
+      "human_author": "meichao <1504-meichao@users.noreply.git.sysop.bigo.sg>"
+    }
+  }
+}
