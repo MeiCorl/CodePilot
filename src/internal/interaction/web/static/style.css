@@ -35,6 +35,9 @@
     --warning:         #E5C07B;        /* 警告琥珀（用于 aborted/timeout 态） */
     --warning-dim:     rgba(229, 192, 123, 0.10);
 
+    /* —— 代码块 header 背景遮罩（暗色用低透明黑，亮色用低透明黑同样可读，由 light 主题覆盖） —— */
+    --code-header-bg:  rgba(0, 0, 0, 0.30);
+
     /* —— 字体（避免 Inter / Roboto / Arial 等通用 AI 字体） —— */
     --font-display:    'JetBrains Mono', 'Berkeley Mono', 'SF Mono', 'Cascadia Code', Consolas, monospace;
     --font-body:       'Geist', 'Switzer', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
@@ -75,6 +78,52 @@
     --dur-fast:   120ms;
     --dur-med:    200ms;
     --dur-slow:   360ms;
+}
+
+/* ============================================================================
+ * Light Theme（亮色主题）覆盖
+ * 触发条件：<html data-theme="light">，由 index.html 头部内联脚本 + app.js
+ * 的 #theme-toggle 按钮写入。颜色与暗色保持「同一调性、相反明度」：
+ *   - 背景：暖白底（#FAFAF9），略偏米色以延续编辑式美学
+ *   - 文字：暖深色（#1A1B1F），保证 AA 对比度
+ *   - 强调色：琥珀金降饱和 + 提暗，确保在亮底上仍有足够对比
+ *   - 状态色：success/thinking/warning 全部提暗一档，避免在亮底上泛白
+ * [Why] 仅覆盖颜色 token，不动结构：动效、间距、圆角等尺寸 token 跨主题复用，
+ * 保证两套主题视觉节奏一致、切换无布局跳变。
+ * ========================================================================== */
+[data-theme="light"] {
+    --bg:              #FAFAF9;        /* 页面主背景（暖白） */
+    --bg-elevated:     #FFFFFF;        /* 卡片 / 气泡底（纯白） */
+    --bg-input:        #FFFFFF;        /* 输入框底 */
+    --bg-hover:        #F1F0EE;        /* 悬停态 */
+    --bg-active:       #E9E7E3;        /* 激活态 */
+
+    --fg:              #1A1B1F;        /* 主前景（暖深色） */
+    --fg-muted:        #595B62;        /* 次级文字 */
+    --fg-dim:          #8A8D93;        /* 辅助说明 */
+    --fg-faint:        #B8B9BD;        /* 几乎不可见 */
+
+    --border:          #E5E4E1;        /* 主分割线 */
+    --border-strong:   #D0CECB;        /* 强调分割线 */
+    --border-focus:    #A8884E;        /* 聚焦态边框 */
+
+    --accent:          #A8884E;        /* 琥珀金（亮色版，降饱和+提暗） */
+    --accent-bright:   #8E6F36;        /* 亮态 */
+    --accent-dim:      rgba(168, 136, 78, 0.12);
+    --accent-glow:     rgba(168, 136, 78, 0.18);
+
+    --error:           #C13B47;        /* 错误红（亮色版） */
+    --error-dim:       rgba(193, 59, 71, 0.10);
+    --success:         #5B8C3E;        /* 成功绿（亮色版） */
+    --success-dim:     rgba(91, 140, 62, 0.10);
+    --thinking:        #2E6FB8;        /* 思考蓝（亮色版） */
+    --thinking-dim:    rgba(46, 111, 184, 0.10);
+    --warning:         #B8902C;        /* 警告琥珀（亮色版） */
+    --warning-dim:     rgba(184, 144, 44, 0.10);
+
+    /* 代码块 header 背景遮罩：亮色用低透明黑，让深色代码块顶端有
+       一条「压暗」区与下面代码区形成视觉分层，又不会过黑破坏亮色整体感 */
+    --code-header-bg:  rgba(0, 0, 0, 0.05);
 }
 
 /* ============================================================================
@@ -254,6 +303,63 @@ body {
     70%  { box-shadow: 0 0 0 6px transparent; opacity: 1; }
     100% { box-shadow: 0 0 0 0 transparent; opacity: 0.9; }
 }
+
+/* ============================================================================
+ * Theme Toggle — 顶栏主题切换按钮
+ * 位置：紧贴 .topbar-status（就绪状态）右侧。视觉权重低于就绪状态、但高于
+ * 普通文本：方型 hairline 边框 + 单色线条图标，hover/focus 时背景与边框同色系提亮。
+ * 图标展示「目标态」：
+ *   - 当前暗色（含未设置 data-theme 的默认）→ 显示 ☀️（点击切到亮色）
+ *   - 当前亮色                          → 显示 🌙（点击切到暗色）
+ * [Why] 不展示当前态图标的原因：暗色下显示月亮会让按钮在视觉上「融入」夜色、
+ * 用户难以快速定位；展示目标态更符合直觉（"我点了会变成什么样子"）。
+ * ========================================================================== */
+.theme-toggle {
+    width: 28px;
+    height: 28px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: var(--r-sm);
+    color: var(--fg-muted);
+    cursor: pointer;
+    padding: 0;
+    flex-shrink: 0;
+    transition: color var(--dur-fast) var(--ease-out),
+                background var(--dur-fast) var(--ease-out),
+                border-color var(--dur-fast) var(--ease-out);
+}
+.theme-toggle:hover {
+    color: var(--fg);
+    background: var(--bg-hover);
+    border-color: var(--border-strong);
+}
+.theme-toggle:focus-visible {
+    outline: 1px solid var(--accent);
+    outline-offset: 1px;
+    border-color: var(--accent);
+}
+.theme-toggle:active {
+    background: var(--bg-active);
+}
+
+/* SVG 图标尺寸统一：父容器 28px、图标 14px、留出足够点击热区 */
+.theme-icon {
+    width: 14px;
+    height: 14px;
+    display: block;
+}
+/* 默认隐藏所有图标，由下方的「主题 → 目标图标」规则显式启用，避免两图标同显 */
+.theme-icon { display: none; }
+
+/* 暗色（含默认未设置 data-theme 的回退态）：点击会切到亮色，所以展示 ☀️ */
+:root:not([data-theme="light"]) .theme-toggle .icon-sun,
+[data-theme="dark"]        .theme-toggle .icon-sun { display: block; }
+
+/* 亮色：点击会切到暗色，所以展示 🌙 */
+[data-theme="light"]       .theme-toggle .icon-moon { display: block; }
 
 /* ============================================================================
  * Sidebar — 左侧会话历史
@@ -683,7 +789,7 @@ body {
     display: flex;
     align-items: center;
     padding: 0 var(--sp-3);
-    background: rgba(0, 0, 0, 0.30);
+    background: var(--code-header-bg);
     border-bottom: 1px solid var(--border);
     border-radius: var(--r-md) var(--r-md) 0 0;
     font-family: var(--font-mono);

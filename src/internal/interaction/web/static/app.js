@@ -52,6 +52,8 @@
         spModalSystem:  $('sp-modal-system'),
         spModalLead:    $('sp-modal-lead'),
         spModalStats:   $('sp-modal-stats'),
+        // 亮色 / 暗色 主题切换按钮：紧贴就绪状态右侧，点击翻转 data-theme
+        themeToggle:    $('theme-toggle'),
     };
 
     // ---- 全局状态 ----
@@ -3196,6 +3198,71 @@
         }
     }
 
+    // =========================================================================
+    // 主题切换（亮色 / 暗色）
+    // -------------------------------------------------------------------------
+    // 触发链路：
+    //   1. index.html <head> 内联脚本同步读 localStorage 并写 <html data-theme>，
+    //      在 CSS 应用前完成，避免首屏闪烁（FOUC）。
+    //   2. 本模块的 bindThemeToggle() 接管交互：点击 #theme-toggle 翻转主题，
+    //      并把新值持久化到 localStorage。
+    // 主题值集合严格白名单（'light' | 'dark'），未识别值统一回退到 dark。
+    // =========================================================================
+
+    // 主题键名与可选取值集中常量，避免散落字符串字面量
+    const THEME_STORAGE_KEY = 'codepilot-theme';
+    const THEME_LIGHT = 'light';
+    const THEME_DARK  = 'dark';
+
+    // 从 <html data-theme> 读取当前主题。
+    // 未设置时（首访 / localStorage 不可用）回退到暗色——与全站默认基调一致。
+    // [Why] 不再回读 localStorage：FOUC 内联脚本已把持久值同步到 <html> 属性，
+    // 直接读属性比读 storage 少一次 IO，也避免了 storage 与属性短暂不一致的边缘态。
+    function getCurrentTheme() {
+        const t = document.documentElement.getAttribute('data-theme');
+        return t === THEME_LIGHT ? THEME_LIGHT : THEME_DARK;
+    }
+
+    // 应用主题：只写 <html data-theme>，不写 localStorage。
+    // [Why] <html> 是 :root 所在节点，CSS 变量在这里定义，写这里使所有后代元素
+    // （含 app.js 尚未初始化的 DOM）能立即感知主题变更。
+    function applyTheme(theme) {
+        document.documentElement.setAttribute('data-theme', theme);
+    }
+
+    // 持久化：仅在用户主动点击切换时调用，首访不写。
+    // 避免「首次打开页面就修改 storage」的隐私打扰。
+    function persistTheme(theme) {
+        try { localStorage.setItem(THEME_STORAGE_KEY, theme); } catch (_) { /* 隐私模式等静默 */ }
+    }
+
+    // 同步按钮的 title / aria-label：反映当前主题 + 提示点击后去向。
+    // 工具提示动态更新比静态文案更友好，能让用户随时知道「再点一次会变什么」。
+    function updateThemeToggleTitle() {
+        if (!dom.themeToggle) return;
+        const current = getCurrentTheme();
+        const isLight = current === THEME_LIGHT;
+        const cur = isLight ? '亮色' : '暗色';
+        const toOther = isLight ? '暗色' : '亮色';
+        const label = `切换主题（当前：${cur}，点击切到${toOther}）`;
+        dom.themeToggle.title = label;
+        dom.themeToggle.setAttribute('aria-label', label);
+    }
+
+    // 绑定主题切换按钮：仅注册一次，在 IIFE 启动时执行。
+    function bindThemeToggle() {
+        if (!dom.themeToggle) return;
+        // 启动时同步按钮提示，标题反映当前真实主题
+        updateThemeToggleTitle();
+        dom.themeToggle.addEventListener('click', () => {
+            const next = getCurrentTheme() === THEME_LIGHT ? THEME_DARK : THEME_LIGHT;
+            applyTheme(next);
+            persistTheme(next);
+            updateThemeToggleTitle();
+        });
+    }
+
     // 在 IIFE 末尾的主入口调用
     initPermDropdown();
+    bindThemeToggle();
 })();
