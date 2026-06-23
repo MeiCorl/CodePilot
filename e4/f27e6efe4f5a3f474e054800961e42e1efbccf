@@ -1,0 +1,34 @@
+src/internal/interaction/web/handler.go
+  s_144cd8114c84b9::t_e51a53c54428f1 44-70
+  s_144cd8114c84b9::t_16607bae9d4531 978,980-1022,1024-1057,1070
+  s_144cd8114c84b9::t_f2a23062a61744 102-112
+  s_144cd8114c84b9::t_eb4e24c961e1ce 293-295
+  s_144cd8114c84b9::t_148eb2f4521668 1072-1110,1112
+src/internal/interaction/web/handler_test.go
+  s_144cd8114c84b9::t_328c2010d56c34 109
+  s_144cd8114c84b9::t_847c551ee39139 1321-1364,1367-1368,1393,1416-1473,1492,1504-1505,1516-1571
+  s_144cd8114c84b9::t_9e85b5b5568866 132,153
+  s_144cd8114c84b9::t_7e32a2e74e1d08 1365-1366,1369-1392,1394-1415
+  s_144cd8114c84b9::t_a852b8ec1dacb2 1474-1491,1493-1503,1506-1515
+docs/step9.1-Slash注册后端化/checklist.md
+  s_144cd8114c84b9::t_a33c9a9ba6cc78 81,83-84,86,88-89,91,93-94,96,98-99,101,103-104
+docs/step9.1-Slash注册后端化/tasks.md
+  s_144cd8114c84b9::t_d73ab338bb46d3 104
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.11",
+  "base_commit_sha": "e4f27e6efe4f5a3f474e054800961e42e1efbccf",
+  "prompts": {},
+  "logical_commit_id": "e4f27e6efe4f5a3f474e054800961e42e1efbccf",
+  "sessions": {
+    "s_144cd8114c84b9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d4aff6f5-d9d2-44d6-a642-c971f8abdd15",
+        "model": "MiniMax-M3"
+      },
+      "human_author": "meichao <meichao@bigo.sg>"
+    }
+  }
+}
