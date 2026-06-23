@@ -3,3 +3,7 @@
 *_test.go
 paper.md
 .codegraph/*
+
+# 构建产物：.syso 由 build/assets/generate_icon.py 重新生成
+src/resource_windows_*.syso
+./build/dist/
