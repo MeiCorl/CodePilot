@@ -1,0 +1,26 @@
+docs/step9.1-Slash注册后端化/tasks.md
+  s_144cd8114c84b9::t_dd22f061a6490e 73
+docs/step9.1-Slash注册后端化/checklist.md
+  s_144cd8114c84b9::t_d3df1617115477 62,64-65,67,69-70,72,74-75
+src/internal/interaction/web/protocol.go
+  s_144cd8114c84b9::t_de0e3266310547 81-90
+  s_144cd8114c84b9::t_9d349d0aa06a8e 319,321-352,354
+  s_144cd8114c84b9::t_07975c7eed1c71 40-43
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.11",
+  "base_commit_sha": "ef38db066b145d599fde02712398f58a6d28b25b",
+  "prompts": {},
+  "logical_commit_id": "ef38db066b145d599fde02712398f58a6d28b25b",
+  "sessions": {
+    "s_144cd8114c84b9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d4aff6f5-d9d2-44d6-a642-c971f8abdd15",
+        "model": "MiniMax-M3"
+      },
+      "human_author": "meichao <meichao@bigo.sg>"
+    }
+  }
+}
