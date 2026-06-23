@@ -1,0 +1,24 @@
+src/internal/interaction/web/static/app.js
+  s_144cd8114c84b9::t_8ed6e38b895ede 91-99,102-107
+docs/step9.1-Slash注册后端化/tasks.md
+  s_144cd8114c84b9::t_4115c46066c449 136
+docs/step9.1-Slash注册后端化/checklist.md
+  s_144cd8114c84b9::t_caac82d5e9c2da 110,112-113,115,117-118,120,122-123,125,127-128,130,132-133,135,137-138
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.11",
+  "base_commit_sha": "118bdc015a931d5123d1430b8fb8864b29baea98",
+  "prompts": {},
+  "logical_commit_id": "118bdc015a931d5123d1430b8fb8864b29baea98",
+  "sessions": {
+    "s_144cd8114c84b9": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d4aff6f5-d9d2-44d6-a642-c971f8abdd15",
+        "model": "MiniMax-M3"
+      },
+      "human_author": "meichao <meichao@bigo.sg>"
+    }
+  }
+}
