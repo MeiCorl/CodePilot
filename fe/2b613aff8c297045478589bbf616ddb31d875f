@@ -1,0 +1,33 @@
+src/internal/skill/builtin/builtin.go
+  s_47c7d9558466ce::t_43f9699666cd1c 1-9,18-19,21-22
+  s_47c7d9558466ce::t_9188f329fa1fce 10-17,20,23-27
+src/internal/skill/scanner.go
+  s_47c7d9558466ce::t_9d4d5c91827cc2 84,95,118
+  s_47c7d9558466ce::t_d8c56f613689e3 1-7,9-17,23,27-33,35-72,77-83,91-94,97-117,119-130,134-193,195-208,210-243,317
+  s_47c7d9558466ce::t_b10524347e1c6a 8,18-22,24-26,34,73-76,85-90,96,131-133,194,209,244-316
+src/internal/skill/builtin/README.md
+  s_47c7d9558466ce::t_6cfcc6c3bca991 1-35
+docs/step10-Skill系统/checklist.md
+  s_47c7d9558466ce::t_e516f248ca2fe2 68,70-71,73,75-76,78,80-81,83,85-86,88,90-91,93,95-96,98,100-101,103,105-106,108,110-111,113,115-116
+docs/step10-Skill系统/tasks.md
+  s_47c7d9558466ce::t_b8a79b9a6babec 40
+src/internal/skill/registry.go
+  s_47c7d9558466ce::t_928fdbfbb1c002 1-223
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.11",
+  "base_commit_sha": "fe2b613aff8c297045478589bbf616ddb31d875f",
+  "prompts": {},
+  "logical_commit_id": "fe2b613aff8c297045478589bbf616ddb31d875f",
+  "sessions": {
+    "s_47c7d9558466ce": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c07fda35-0503-4635-a3d6-1476df658fcf",
+        "model": "MiniMax-M3"
+      },
+      "human_author": "meichao <meichao@bigo.sg>"
+    }
+  }
+}
