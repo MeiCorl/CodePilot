@@ -120,7 +120,7 @@
                     <span class="messages-empty-hint">
                         直接输入消息后按 <kbd>Enter</kbd> 发送<br>
                         <kbd>Shift</kbd> + <kbd>Enter</kbd> 换行<br>
-                        输入 <kbd>/</kbd> 唤出快捷命令（/new · /sessions · /resume · /clear）
+                        输入 <kbd>/</kbd> 唤出快捷命令（/new · /sessions · /resume · /clear · /skills）
                     </span>
                 </div>
             </div>
@@ -250,6 +250,28 @@
                         <summary>Source 统计</summary>
                         <pre class="sp-modal-text" id="sp-modal-stats">--</pre>
                     </details>
+                </div>
+            </div>
+        </div>
+
+        <!-- Step 10 Task 6：/skills 模态框（三档 Skill 列表）
+             默认 display:none，由 JS 动态打开（app.js openSkillsTable()）。 -->
+        <div id="skills-modal" class="skills-modal" hidden>
+            <div class="skills-modal-backdrop" data-skills-modal-close></div>
+            <div class="skills-modal-inner">
+                <div class="skills-modal-header">
+                    <span class="skills-modal-title">可用 Skill 列表</span>
+                    <button class="skills-modal-close" data-skills-modal-close type="button" title="关闭 (Esc)">×</button>
+                </div>
+                <div class="skills-modal-body">
+                    <div class="skills-tabs" role="tablist" aria-label="Skill 来源级别">
+                        <button class="skills-tab is-active" data-source="project" type="button" role="tab" aria-selected="true">项目级</button>
+                        <button class="skills-tab" data-source="user" type="button" role="tab" aria-selected="false">用户级</button>
+                        <button class="skills-tab" data-source="builtin" type="button" role="tab" aria-selected="false">内置级</button>
+                    </div>
+                    <div class="skills-list" id="skills-list-content" role="tabpanel" aria-live="polite">
+                        <!-- 由 app.js renderSkillsList() 动态填充 -->
+                    </div>
                 </div>
             </div>
         </div>

@@ -68,6 +68,27 @@ type SlashCommandProvider interface {
 	OnChange(fn func())
 }
 
+// SkillProvider 是 web 层消费 Skill 注册表所需的最小接口（Step 10 Task 6）。
+//
+// [Why 独立接口] 与 SlashCommandProvider 同构的"最小投影"模式：
+//   - web 包不直接 import skill 包（避免 import cycle 与分层倒挂）；
+//   - 实现方（典型为 main.go 顶层 skillProviderAdapter 包装 *skill.Registry）
+//     必须把内部 *skill.Skill 投影为 web.SkillEntry，handler 只与 SkillEntry 交互；
+//   - List 返回全量扁平列表（按 Registry 注册顺序），ListBySource 按 source
+//     字符串（"project" / "user" / "builtin"）分组返回 SkillEntry，供 handleSkills
+//     直接构造 SkillsListPayload 三档数组。
+//
+// 接口的 2 个方法保持最小化：handler 端只需要「按 source 分组」与「全部」两种读取，
+// 既支持 /skills 模态框三档 tab 渲染，也支持未来按需推送 Skill 数量等聚合。
+type SkillProvider interface {
+	// List 返回所有已加载 Skill 的扁平列表（按 source 分组后展平）。
+	// 通常用于聚合统计（如状态栏 skills_count）；为 nil 时返回 nil 切片。
+	List() []SkillEntry
+	// ListBySource 按 source 字符串（"project" / "user" / "builtin"）返回该档
+	// 下的 Skill 列表，按 Registry 注册顺序。未识别的 source 返回 nil 切片。
+	ListBySource(source string) []SkillEntry
+}
+
 // Handler 持有所有业务依赖并把 WebSocket 消息路由到具体业务能力。
 // 它维护"当前活跃会话"状态（current Session + ConversationManager），
 // 并通过 streamState 状态机保证同一时刻只有一个流式请求进行中。
@@ -174,6 +195,13 @@ type Handler struct {
 	// 构造期一次性注入（main.go 在 server 构造后调 SetConnMgr），其后只读，无需加锁。
 	// 为 nil 时 BroadcastMCPStatus 退化为 no-op（兼容未注入场景与测试）。
 	connMgr *ConnectionManager
+
+	// skillProvider 是 Skill 注册表的最小投影（Step 10 Task 6）。
+	// 通过 SkillProvider 接口抽象而非直接 import skill 包，与 SlashCommandProvider
+	// 同构：web 包不感知 skill 包内部实现，由 main.go 顶层适配器注入。
+	// 为 nil 时 list_skills 请求回推空 payload（项目级/用户级/内置级三组均为空数组），
+	// 前端 /skills 模态框展示「暂无 Skill」空状态。
+	skillProvider SkillProvider
 }
 
 // NewHandler 构造 Handler。
@@ -293,6 +321,8 @@ func (h *Handler) Register(router *Router) {
 	// Step 9.1 Task 4：响应前端主动拉取命令清单的请求。
 	// 等价于 onWSOpen 的推送逻辑，供重连后兜底拉取使用。
 	router.Register(MsgTypeListSlashCommands, h.handleListSlashCommands)
+	// Step 10 Task 6：响应前端 /skills 命令触发的 list_skills 请求，回推 skills_list payload。
+	router.Register(MsgTypeListSkills, h.handleSkills)
 }
 
 // ModelName 返回当前配置中的模型名，供状态栏展示。
@@ -1022,6 +1052,32 @@ func (h *Handler) handleListSlashCommands(conn *websocket.Conn, msg Message) err
 	return h.sendSlashCommands(conn, MsgTypeSlashCommands)
 }
 
+// handleSkills 处理前端 /skills 命令触发的 list_skills 请求（Step 10 Task 6）。
+//
+// 流程：
+//  1. 遍历 skillProvider.ListBySource("project" / "user" / "builtin") 得到三档数组
+//  2. 构造 SkillsListPayload 并通过 MsgTypeSkillsList 推回
+//
+// skillProvider 为 nil 时回推三组均为空数组的 payload（前端展示「暂无 Skill」空状态）。
+// provider 已注入但三档均为空时同样回推空 payload（零 Skill 启动兼容）。
+//
+// 入参 msg 暂未使用（list_skills 无入参），保留是为了与 router.Register 的
+// 统一签名对齐；与 handleListSlashCommands / handleListSessions 风格一致。
+func (h *Handler) handleSkills(conn *websocket.Conn, msg Message) error {
+	_ = msg
+	payload := SkillsListPayload{
+		Project: []SkillEntry{},
+		User:    []SkillEntry{},
+		Builtin: []SkillEntry{},
+	}
+	if h.skillProvider != nil {
+		payload.Project = h.skillProvider.ListBySource("project")
+		payload.User = h.skillProvider.ListBySource("user")
+		payload.Builtin = h.skillProvider.ListBySource("builtin")
+	}
+	return h.sendMessage(conn, MsgTypeSkillsList, payload)
+}
+
 // onWSOpenSlash 是 ws 连接建立后由 ConnectionManager.onOpenHook 触发的回调：
 // 主动向当前 conn 推送 slash_commands 消息，确保前端在 ws onWSOpen 后立刻能拿到命令清单。
 //
@@ -1117,6 +1173,42 @@ func (h *Handler) SetSlashRegistry(provider SlashCommandProvider) {
 	provider.OnChange(func() {
 		h.broadcastSlashCommandsUpdated()
 	})
+}
+
+// InjectLeadUserMessage 注入会话级「首条 user 消息」内容（Step 10 Task 7）。
+//
+// 用途：Skill slash 适配器（skilladapter.LeadMessageInjector 接口）需要在 /<skill>
+// 触发时把 Skill 完整内容 + <user_args> 段写入 LeadUserMessage。web 包是唯一
+// 直接持有 *ConversationManager 的层（assembleSP 在内部直接访问 h.conv），
+// 故本方法提供「经由 Handler 写入 LeadUserMessage」的对外接口，main.go 顶层
+// 把 *Handler 包装为 LeadMessageInjector 注入 Skill slash 适配器，避免 slash
+// 适配器直接 import engine/conversation。
+//
+// 行为：直接调 h.conv.SetLeadUserMessage(text)——与 assembleSP 内 Assemble
+// 完成后的写入路径完全一致，Skill 内容会作为下一轮 LLM user 消息头部传入。
+func (h *Handler) InjectLeadUserMessage(text string) error {
+	if h == nil || h.conv == nil {
+		return nil
+	}
+	h.conv.SetLeadUserMessage(text)
+	return nil
+}
+
+// SetSkillProvider 注入 Skill 注册表（Step 10 Task 6）。
+//
+// 参数通过 SkillProvider 接口抽象（web 包不直接 import skill 包）：
+//   - 实现方（典型为 main.go 顶层 skillProviderAdapter 包装 *skill.Registry）
+//     把 *skill.Skill 投影为 web.SkillEntry 后注入；
+//   - handler 只与 SkillEntry 交互，不感知 skill 包的 Source 枚举等内部细节；
+//   - provider 为 nil 时 list_skills 回推三组空数组，前端展示「暂无 Skill」。
+//
+// 调用时机：main.go 顶层装配后、handler.Register 之前；与 SetSlashRegistry 风格一致。
+//
+// 行为：仅保存 provider 引用；不立即推送 Skill 列表（与 SetMCPPool / SetConnMgr
+// 风格保持一致），前端按需通过 list_skills 触发拉取。后续 Task 7 接入主流程时
+// 可在 ws onOpen 主动推送 skills_list（与 slash_commands 对称），但本任务不要求。
+func (h *Handler) SetSkillProvider(p SkillProvider) {
+	h.skillProvider = p
 }
 
 // resolveMCPServerByToolName 从远端工具名（`mcp__<server>__<tool>`）中提取 server 部分。

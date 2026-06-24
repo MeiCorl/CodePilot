@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime/debug"
 	"syscall"
 	"time"
@@ -46,6 +47,9 @@ import (
 	memsession "github.com/MeiCorl/CodePilot/src/internal/memory/session"
 	"github.com/MeiCorl/CodePilot/src/internal/runtime/console"
 	"github.com/MeiCorl/CodePilot/src/internal/security"
+	"github.com/MeiCorl/CodePilot/src/internal/skill"
+	skilladapter "github.com/MeiCorl/CodePilot/src/internal/skill/adapter"
+	skillsources "github.com/MeiCorl/CodePilot/src/internal/skill/sources"
 	"github.com/MeiCorl/CodePilot/src/internal/tool"
 	"github.com/MeiCorl/CodePilot/src/llm"
 	// import 触发 builtin 包的 init()，将 5 个内置工具以 cwd + 30s 兜底
@@ -131,6 +135,161 @@ func (a *slashAdapter) OnChange(fn func()) {
 		return
 	}
 	a.registry.OnChange(fn)
+}
+
+// ---- Skill 注册表适配器（Step 10 Task 6） ----
+//
+// [Why 需要 adapter] web.Handler 通过 SkillProvider 接口（List + ListBySource）
+// 消费 Skill 清单；*skill.Registry 暴露的 List/ListBySource 返回 *skill.Skill，
+// 包含 Source 枚举（int）等内部细节，web 包不能直接依赖（避免 import cycle
+// 与分层倒挂）。因此在 main.go 顶层做一次薄包装：
+//   - adapter 持有 *skill.Registry 引用
+//   - List() 把 []*skill.Skill 投影为 []web.SkillEntry（4 字段投影）
+//   - ListBySource(source) 按 source 字符串过滤后投影
+//
+// web 包只知道"拿到的是 web.SkillEntry 列表"，不感知 skill 包的存在。
+// 与 slashAdapter 的设计模式完全一致：web → 单向消费上层数据，避免 web → skill
+// 反向 import 链路。
+
+// skillProviderAdapter 把 *skill.Registry 适配为 web.SkillProvider 接口。
+// 单一职责：字段投影（*skill.Skill → web.SkillEntry），零业务逻辑。
+type skillProviderAdapter struct {
+	registry *skill.Registry
+}
+
+// newSkillProviderAdapter 构造一个把 *skill.Registry 适配为 web.SkillProvider 的实例。
+// 参数：
+//   - registry：Skill 注册中心指针；为 nil 时 List / ListBySource 返回空切片
+//
+// 返回值：*skillProviderAdapter 指针，满足 web.SkillProvider 接口约束。
+func newSkillProviderAdapter(registry *skill.Registry) *skillProviderAdapter {
+	return &skillProviderAdapter{registry: registry}
+}
+
+// skillToEntry 把 *skill.Skill 投影为 web.SkillEntry（4 字段）。
+// Source 字段走 skill.Source.String() 字符串投影（与前端 SkillsListPayload
+// 的三档数组对应：project / user / builtin）。
+// registry 为 nil 时返回 nil 切片；ListBySource source 不识别时同样返回 nil。
+func (a *skillProviderAdapter) skillToEntry(s *skill.Skill) web.SkillEntry {
+	if s == nil {
+		return web.SkillEntry{}
+	}
+	return web.SkillEntry{
+		Name:        s.Name,
+		Description: s.Description,
+		Source:      s.Source.String(),
+		Path:        s.RootPath,
+	}
+}
+
+// List 返回所有已加载 Skill 的扁平投影列表（按 Registry 注册顺序）。
+// 实际按 Source 顺序（项目级 → 用户级 → 内置级）排列，由 Registry.List 内部保证。
+// 实现 web.SkillProvider.List 签名要求。registry 为 nil 时返回 nil 切片。
+func (a *skillProviderAdapter) List() []web.SkillEntry {
+	if a.registry == nil {
+		return nil
+	}
+	skills := a.registry.List()
+	if len(skills) == 0 {
+		return []web.SkillEntry{}
+	}
+	out := make([]web.SkillEntry, 0, len(skills))
+	for _, s := range skills {
+		out = append(out, a.skillToEntry(s))
+	}
+	return out
+}
+
+// ListBySource 按 source 字符串（"project" / "user" / "builtin"）返回该档下的
+// Skill 投影列表，按 Registry 注册顺序。未识别的 source 返回 nil 切片。
+// 实现 web.SkillProvider.ListBySource 签名要求。
+func (a *skillProviderAdapter) ListBySource(source string) []web.SkillEntry {
+	if a.registry == nil {
+		return nil
+	}
+	var src skill.Source
+	switch source {
+	case "project":
+		src = skill.SourceProject
+	case "user":
+		src = skill.SourceUser
+	case "builtin":
+		src = skill.SourceBuiltin
+	default:
+		// 防御性：handler 端约定只传 "project" / "user" / "builtin"；
+		// 收到其他值时返回 nil（不暴露给前端错误状态，list_skills payload
+		// 退化为单档空数组，前端 tab 列表为空）。
+		return nil
+	}
+	skills := a.registry.ListBySource(src)
+	if len(skills) == 0 {
+		return []web.SkillEntry{}
+	}
+	out := make([]web.SkillEntry, 0, len(skills))
+	for _, s := range skills {
+		out = append(out, a.skillToEntry(s))
+	}
+	return out
+}
+
+// ---- Skill 注入适配器（Step 10 Task 7） ----
+//
+// [Why 需要 adapter] Skill 适配器包定义的 LeadMessageInjector 接口（InjectLeadUserMessage
+// 方法）要求把 Skill 完整内容 + 可选 <user_args> 段写入 *ConversationManager.leadUserMessage，
+// 但 adapter 包不能直接 import engine/conversation（避免反向依赖）。*web.Handler
+// 是唯一直接持有 *ConversationManager 的层（assembleSP 在内部直接访问 h.conv），
+// Step 10 Task 7 在 web 包内增加 Handler.InjectLeadUserMessage 导出方法包装
+// h.conv.SetLeadUserMessage；main.go 顶层把 *web.Handler 适配为 LeadMessageInjector：
+//   - leadInjectorAdapter 持有 *web.Handler 引用；
+//   - InjectLeadUserMessage 转发到 handler.InjectLeadUserMessage。
+//
+// 这样 Skill 适配器（slash 子包）只依赖接口、不感知 conversation 包或 web 包
+// 的具体实现（adapter 看到的接口只声明 InjectLeadUserMessage 方法，main.go
+// 顶层实现负责 wire）。维持 spec.md「slash 不依赖 web/conversation」的边界约束。
+type leadInjectorAdapter struct {
+	h *web.Handler
+}
+
+// newLeadInjectorAdapter 构造一个把 *web.Handler 适配为
+// skilladapter.LeadMessageInjector 的实例。
+// 参数：
+//   - h：web.Handler 指针；为 nil 时 InjectLeadUserMessage 直接返回 nil（降级）
+func newLeadInjectorAdapter(h *web.Handler) *leadInjectorAdapter {
+	return &leadInjectorAdapter{h: h}
+}
+
+// InjectLeadUserMessage 把 content（含 Skill 完整正文与 <user_args> 段）写入
+// 对话管理器的 leadUserMessage 字段，由 GetContext 在窗口派生结果前拼到 messages 最前。
+//
+// [Why 写入 leadUserMessage] 与 spec §B.3 对齐：用户触发 /<skill> 时 Skill 完整内容
+// 应作为 LeadUserMessage 注入到下一轮 user 消息头部，LLM 端据此理解 Skill 工作流。
+// leadUserMessage 字段是会话级一次性注入（Step 4 Task 5 已实现），由 prompt.Builder
+// 在每次会话启动时重置。
+func (a *leadInjectorAdapter) InjectLeadUserMessage(content, _ string) error {
+	if a == nil || a.h == nil {
+		return nil
+	}
+	return a.h.InjectLeadUserMessage(content)
+}
+
+// buildSkillRoots 计算 Skill 系统的三类路径：项目根（cwd）、用户根（homeDir）、
+// 可执行文件根（execDir）。与 buildMemoryRoots 风格同构——主流程与配置无关的
+// 路径计算统一集中在 main.go 顶层，便于测试和复用。
+//
+// [Why 单独函数] 后续 Step 11 / Step 12 接入时也可以复用同一组路径，避免
+// 各子系统对 homeDir / execDir 解析逻辑各自实现导致漂移。
+func buildSkillRoots(toolWorkdir string) (workdir, homeDir, execDir string) {
+	workdir = toolWorkdir
+	if home, err := os.UserHomeDir(); err == nil {
+		homeDir = home
+	}
+	if exe, err := os.Executable(); err == nil {
+		execDir = filepath.Dir(exe)
+	} else {
+		// fallback:取当前工作目录
+		execDir = workdir
+	}
+	return workdir, homeDir, execDir
 }
 
 // buildMemoryRoots 计算记忆系统的用户级与项目级根目录（绝对路径）。
@@ -242,6 +401,63 @@ func run() error {
 		zap.Duration("execution_timeout", bashTimeout),
 	)
 
+	// 6.4 Step 10 Task 7：Skill 系统装配（按 spec §A §B §C §D 全链路接入）。
+	//
+	// 装配顺序:
+	//   1) 解析 workdir / homeDir / execDir 三类根路径
+	//   2) cfg.Skill.Enabled=true → 调 skill.LoadAll 扫描三档目录并构造 *skill.Registry
+	//      - ErrSkillConflict: 启动期致命错误,记录日志并退出进程(spec §A.4)
+	//      - LoadIssue: 单 Skill 解析失败,记录 warn 后继续(spec §A.5)
+	//   3) use_skill 工具注册到 tool.Registry(LLM 主动调用入口)
+	//   4) Skill → SlashCommand 适配器批量注册到 slash.Registry(/<skill> 触发)
+	//   5) SkillsIndexSource 注入 prompt.Builder 末尾(渐进式披露索引)
+	//
+	// cfg.Skill.Enabled=false 时**完全跳过** Skill 加载:
+	//   - 不调 LoadAll
+	//   - 不注册 use_skill 工具
+	//   - 不注入 SkillsIndexSource
+	//   - 不注册 Skill 类 slash 命令
+	// 但 /skills client 命令仍注册(前端拉到空列表,空状态展示)。
+	skillWorkdir, skillHomeDir, skillExecDir := buildSkillRoots(toolWorkdir)
+	var skillReg *skill.Registry
+	if cfg.Skill.IsEnabled() {
+		var issues []skill.LoadIssue
+		var loadErr error
+		skillReg, issues, loadErr = skill.LoadAll(skillWorkdir, skillHomeDir, skillExecDir, cfg.Skill.MaxSkillSizeBytes)
+		if loadErr != nil {
+			// 同级同名冲突等致命错误 → 启动期退出(spec §A.4)
+			// 错误信息应含冲突 Skill 名称与源,fmt.Fprintln 给用户清晰提示
+			fmt.Fprintln(os.Stderr, "[error] Skill 加载失败:", loadErr)
+			return fmt.Errorf("skill 加载失败: %w", loadErr)
+		}
+		// 单 Skill 解析失败等 warn 级问题 → 记录日志后继续(spec §A.5)
+		for _, iss := range issues {
+			logger.Warn("skill 加载问题",
+				zap.String("path", iss.Path),
+				zap.String("source", iss.Source.String()),
+				zap.Error(iss.Err))
+		}
+		logger.Info("Skill 系统就绪",
+			zap.Int("count", skillReg.Count()),
+			zap.String("workdir", skillWorkdir),
+			zap.String("home_dir", skillHomeDir),
+			zap.String("exec_dir", skillExecDir),
+			zap.Int("max_skill_size_bytes", cfg.Skill.MaxSkillSizeBytes),
+		)
+	} else {
+		logger.Info("Skill 系统已关闭（skill.enabled=false），跳过加载/工具/命令/SP 注入")
+	}
+
+	// use_skill 工具注册(skillReg != nil 时)。
+	// 走 toolRegistry.Register(同名走 "use_skill" 字符串)而不是 MustRegister,
+	// 因为同名校验失败时只记录 warn 不阻断启动(理论不会发生冲突,5 个内置工具
+	// 不含 use_skill)。工具由 Skill 系统独占时使用,无副作用(只读)。
+	if skillReg != nil {
+		if err := toolRegistry.Register(skilladapter.NewUseSkillTool(skillReg)); err != nil {
+			logger.Warn("use_skill 工具注册失败", zap.Error(err))
+		}
+	}
+
 	// 6.5 Step 5：权限系统构造。
 	// 加载全局 + 项目级配置 → 合并策略 → 创建 Checker → 创建 Interceptor。
 	// HITL Callback 由 Handler 层注入（Handler 持有 WebSocket 连接），
@@ -332,12 +548,15 @@ func run() error {
 		zap.String("project_root", memProjectRoot),
 	)
 
-	// System Prompt Builder：4 个 Source 按注册顺序产出内容：
+	// System Prompt Builder：5 个 Source 按注册顺序产出内容：
 	//   - static:       5 个硬编码子模块（角色/行为/代码质量/工具/安全）
 	//   - environment:  OS + CWD + Git 状态
 	//   - agents_md:    全局 + 项目级 AGENTS.md 合并
 	//   - memory:       自动记忆索引注入（Step 8，读两级 MEMORY.md → LeadUserMessage）
-	promptBuilder := prompt.NewBuilder(
+	//   - skills_index: Skill 渐进式披露索引注入（Step 10，name+description+source 三档分组）
+	//     cfg.Skill.Enabled=false 或 skillReg==nil 时**不**注册该 Source
+	//     (Builder 末端按条件追加,符合 Task 7 装配规范)
+	promptSources := []sources.Source{
 		sources.NewStaticSource(),
 		sources.NewEnvironmentSource(),
 		sources.NewAgentsMDSource(),
@@ -346,7 +565,11 @@ func run() error {
 			MaxLines: cfg.Memory.IndexMaxLines,
 			MaxBytes: cfg.Memory.IndexMaxBytes,
 		}),
-	)
+	}
+	if skillReg != nil {
+		promptSources = append(promptSources, skillsources.NewSkillsIndexSource(skillReg))
+	}
+	promptBuilder := prompt.NewBuilder(promptSources...)
 
 	// 8. 构造 Handler / Server
 	// 使用 DefaultAddr（127.0.0.1:0）让 OS 自动分配端口，
@@ -373,10 +596,41 @@ func run() error {
 	if err := slash.RegisterBuiltin(slashRegistry, handler); err != nil {
 		return fmt.Errorf("注册 slash 内置命令失败: %w", err)
 	}
+	// Step 10 Task 6：注册 /skills client 类命令（纯前端消费，Execute 占位）。
+	// 失败不致命（极小概率），记录后继续——/skills 模态框不可用不影响主流程。
+	// 与 cfg.Skill.Enabled 解耦：无论 Skill 启用与否，/skills 命令都注册（前端拉空列表展示）。
+	if err := slashRegistry.Register(&skilladapter.SkillsListCmd{}); err != nil {
+		logger.Warn("注册 /skills 命令失败", zap.Error(err))
+	}
+	// Step 10 Task 7：Skill → SlashCommand 适配器批量注册。
+	// skillReg==nil 时(cfg.Skill.Enabled=false 或 0 Skill)跳过——等价"未启用 Skill"。
+	if skillReg != nil {
+		// leadInjectorAdapter 包装 *web.Handler 暴露给 slash 适配层
+		// 作为 LeadMessageInjector；与 slash 包不直接 import conversation 的设计保持一致。
+		leadInjector := newLeadInjectorAdapter(handler)
+		if errs := skilladapter.RegisterAll(slashRegistry, skillReg.List(), leadInjector); len(errs) > 0 {
+			for _, e := range errs {
+				logger.Warn("Skill slash 命令注册失败", zap.Error(e))
+			}
+		}
+	}
 	handler.SetSlashRegistry(newSlashAdapter(slashRegistry))
 	logger.Info("slash 命令注册表就绪",
 		zap.Int("count", slashRegistry.Count()),
 	)
+
+	// Step 10 Task 6/7：注入 SkillProvider（list_skills 协议的数据源）。
+	// Task 7 把 skill.LoadAll(...) 返回的 *skill.Registry 通过 newSkillProviderAdapter
+	// 包装后注入；skillReg==nil 时(handler 在 skillProvider 为 nil 时回推三档空数组,
+	// 前端 /skills 模态框展示「暂无 Skill」空状态),与零 Skill 启动场景一致。
+	handler.SetSkillProvider(newSkillProviderAdapter(skillReg))
+	if skillReg != nil {
+		logger.Info("Skill 列表提供器已就绪",
+			zap.Int("count", skillReg.Count()),
+		)
+	} else {
+		logger.Info("Skill 列表提供器已就绪（无 Skill 加载,/skills 显示空状态）")
+	}
 
 	// Step 7：装配上下文压缩子系统。
 	// ToolResultStore 无条件构造并注入 Handler——/clear 需据此清理落盘的工具结果归档，

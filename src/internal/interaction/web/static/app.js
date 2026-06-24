@@ -246,6 +246,10 @@
         ListSlashCommands:      'list_slash_commands',
         SlashCommands:          'slash_commands',
         SlashCommandsUpdated:   'slash_commands_updated',
+        // Step 10 Task 6：/skills 模态框
+        // ListSkills 由前端发出（/skills 命令触发），SkillsList 由后端回推三档分组数据。
+        ListSkills:             'list_skills',
+        SkillsList:             'skills_list',
     };
 
     // abortMarker 与后端 agent_loop.go 中的 abortMarker 常量保持一致，
@@ -308,6 +312,7 @@
             case MsgType.DumpResult:        return onDumpResult(msg.payload);
             case MsgType.SlashCommands:        return onSlashCommands(msg.payload);
             case MsgType.SlashCommandsUpdated: return onSlashCommandsUpdated(msg.payload);
+            case MsgType.SkillsList:           return onSkillsList(msg.payload);
             default: console.warn('未知消息类型:', msg.type, msg.payload);
         }
     }
@@ -1261,6 +1266,134 @@
         } catch { return '--'; }
     }
 
+    // =========================================================================
+    // /skills 模态框（Step 10 Task 6）
+    // 触发链路：/skills 命令 → 前端识别 category==="client" → openSkillsTable
+    //   → 发送 list_skills → 后端回推 skills_list → 渲染三档 tab。
+    // 与 /sessions 表格视图（openSessionsTable / renderSessionsTable）风格保持一致。
+    // =========================================================================
+
+    // 当前激活的 Skill 源（project / user / builtin），默认 project。
+    // tab 切换时由 setActiveSkillTab 维护；模态框首次打开时默认显示 project。
+    let activeSkillSource = 'project';
+
+    // 当前缓存的 Skill 列表（来自后端 skills_list payload）。
+    // 在 onSkillsList 中整体覆盖；renderSkillsList 渲染当前 activeSkillSource 对应数组。
+    let cachedSkillsBySource = { project: [], user: [], builtin: [] };
+
+    // openSkillsTable 打开 /skills 模态框：先显示当前 tab，再异步拉取最新数据。
+    // 拉取成功后 onSkillsList 触发 renderSkillsList 刷新内容；
+    // 拉取失败时由 sendWS 静默丢弃（保持与 list_sessions 的容错风格一致）。
+    function openSkillsTable() {
+        const modal = document.getElementById('skills-modal');
+        if (!modal) {
+            console.warn('openSkillsTable: skills-modal 元素不存在');
+            return;
+        }
+        // 重置为 project tab（与默认激活态保持一致）
+        activeSkillSource = 'project';
+        cachedSkillsBySource = { project: [], user: [], builtin: [] };
+        // 同步 tab UI（确保打开时是 project 高亮）
+        syncSkillsTabs();
+        // 先以空内容打开模态框（避免视觉空闪）
+        renderSkillsList();
+        modal.hidden = false;
+        // 绑定关闭路径（backdrop 点击 / × 按钮 / Esc 键）
+        bindSkillsModalClose(modal);
+        // 触发后端拉取
+        sendWS(MsgType.ListSkills, {});
+    }
+
+    // closeSkillsModal 关闭 /skills 模态框：清事件 + 隐藏 modal。
+    function closeSkillsModal() {
+        const modal = document.getElementById('skills-modal');
+        if (modal) modal.hidden = true;
+    }
+
+    // bindSkillsModalClose 注册一次性关闭事件：backdrop / × 按钮 / Esc 键。
+    // 用 dataset._bound 标志防重复绑定（多次 openSkillsTable 时只绑一次）。
+    function bindSkillsModalClose(modal) {
+        if (modal.dataset._bound === '1') return;
+        modal.dataset._bound = '1';
+        // backdrop / × 按钮（任何带 data-skills-modal-close 的元素）
+        modal.addEventListener('click', (ev) => {
+            const target = ev.target;
+            if (target && target.dataset && target.dataset.skillsModalClose !== undefined) {
+                closeSkillsModal();
+            }
+        });
+        // Esc 键
+        document.addEventListener('keydown', (ev) => {
+            if (ev.key === 'Escape' && modal && !modal.hidden) {
+                closeSkillsModal();
+            }
+        });
+    }
+
+    // syncSkillsTabs 同步 tab UI：data-source 与 activeSkillSource 一致的
+    // 元素加 is-active + aria-selected=true，其它清掉。
+    function syncSkillsTabs() {
+        const tabs = document.querySelectorAll('.skills-tab');
+        tabs.forEach(tab => {
+            const isActive = tab.dataset.source === activeSkillSource;
+            tab.classList.toggle('is-active', isActive);
+            tab.setAttribute('aria-selected', isActive ? 'true' : 'false');
+        });
+        // tab 点击：切 source + 重渲染
+        tabs.forEach(tab => {
+            if (tab.dataset._bound) return;
+            tab.dataset._bound = '1';
+            tab.addEventListener('click', () => {
+                const src = tab.dataset.source;
+                if (!src || src === activeSkillSource) return;
+                activeSkillSource = src;
+                syncSkillsTabs();
+                renderSkillsList();
+            });
+        });
+    }
+
+    // onSkillsList 处理后端回推的 skills_list 响应：缓存三档数据并渲染当前 tab。
+    function onSkillsList(p) {
+        if (!p) return;
+        cachedSkillsBySource = {
+            project: Array.isArray(p.project) ? p.project : [],
+            user:    Array.isArray(p.user) ? p.user : [],
+            builtin: Array.isArray(p.builtin) ? p.builtin : [],
+        };
+        renderSkillsList();
+    }
+
+    // renderSkillsList 渲染当前 activeSkillSource 对应的 Skill 列表到 #skills-list-content。
+    // 空数组时显示「暂无 Skill」空状态 + 用户引导提示。
+    function renderSkillsList() {
+        const el = document.getElementById('skills-list-content');
+        if (!el) return;
+        const list = cachedSkillsBySource[activeSkillSource] || [];
+        if (list.length === 0) {
+            el.innerHTML = `
+                <div class="skills-list-empty">
+                    暂无 Skill
+                    <div class="skills-list-empty-hint">到 <code>~/.codepilot/skills/</code> 或 <code>&lt;cwd&gt;/.codepilot/skills/</code> 创建</div>
+                </div>
+            `;
+            return;
+        }
+        const items = list.map(s => {
+            const name = escapeHTML(s.name || '');
+            const desc = escapeHTML(s.description || '');
+            const path = escapeHTML(s.path || '');
+            return `
+                <div class="skills-list-item">
+                    <div><span class="skills-list-item-name">/${name}</span></div>
+                    <div class="skills-list-item-desc">${desc}</div>
+                    ${path ? `<div class="skills-list-item-path">${path}</div>` : ''}
+                </div>
+            `;
+        }).join('');
+        el.innerHTML = items;
+    }
+
     function updateSessionHeader(summary) {
         if (!summary) {
             dom.sessionTitle.textContent = 'CURRENT SESSION';
@@ -1431,6 +1564,18 @@
         return text;
     }
 
+    // extractSkillName 从 use_skill 工具的 input 中提取 skill_name 字段。
+    // 用于在工具块头部显示紫色「skill: <name>」徽标。
+    // input 可能为 string（已压缩 JSON）或 object；返回空字符串表示无 skill_name。
+    function extractSkillName(input) {
+        if (input == null || input === '') return '';
+        const obj = parseInputObject(input);
+        if (obj && typeof obj === 'object' && typeof obj.skill_name === 'string') {
+            return obj.skill_name;
+        }
+        return '';
+    }
+
     // appendToolStartNode 插入"正在执行"占位块并返回 DOM 引用。
     // 参数 input 接受 string（已压缩 JSON）或 object；StartedAtIso 为 ISO 字符串
     // 或 null（null 时不显示开始时间，仅显示 running）。
@@ -1471,6 +1616,22 @@
             mcpBadge.title = 'MCP 远端工具,来源 server=' + server;
             mcpBadge.textContent = 'mcp: ' + server;
             header.appendChild(mcpBadge);
+        }
+
+        // Step 10 Task 6:use_skill 工具时,在 name 后追加紫色「skill」徽标
+        // 徽标内容含 skill_name（从 input.skill_name 提取），便于用户一眼看到
+        // LLM 调用了哪个 Skill。徽标样式与 MCP 徽标同族（紫色），视觉上与
+        // "远端 vs 复合能力"两类来源对应。
+        if (name === 'use_skill') {
+            const skillName = extractSkillName(input);
+            if (skillName) {
+                const skillBadge = document.createElement('span');
+                skillBadge.className = 'skill-tool-badge';
+                skillBadge.dataset.skillName = skillName;
+                skillBadge.title = 'Skill 工具调用,目标 Skill=' + skillName;
+                skillBadge.textContent = 'skill: ' + skillName;
+                header.appendChild(skillBadge);
+            }
         }
 
         // 操作摘要：在头部行显示工具正在执行的具体命令/路径等关键信息
@@ -2318,7 +2479,13 @@
             item.dataset.cmd = c.name;
             item.dataset.index = String(i);
             item.setAttribute('role', 'option');
-            item.innerHTML = `<span class="slash-cmd">${escapeHTML(c.name)}</span><span class="slash-desc">${escapeHTML(c.description || '')}</span>`;
+            // Step 10 Task 6：category === 'skill' 时在条目左侧加紫色「skill」小标签
+            // 与 session/context/debug 类别在视觉上区分（spec §E.2）。
+            const tagHTML = c.category === 'skill'
+                ? '<span class="cmd-tag-skill">skill</span>'
+                : '';
+            item.title = c.description || c.name;
+            item.innerHTML = `<span class="slash-cmd">${escapeHTML(c.name)}</span><span class="slash-kind">${tagHTML}</span><span class="slash-desc">${escapeHTML(c.description || '')}</span>`;
             item.addEventListener('mousedown', (e) => {
                 e.preventDefault();
                 applySlashCompletion(c);
@@ -2342,11 +2509,20 @@
     function updateSlashSelection(delta) {
         if (!state.slashOpen || !state.slashItems.length) return;
         state.slashIndex = (state.slashIndex + delta + state.slashItems.length) % state.slashItems.length;
+        let selected = null;
         for (const it of state.slashItems) {
-            it.classList.toggle('is-selected', Number(it.dataset.index) === state.slashIndex);
+            const isSelected = Number(it.dataset.index) === state.slashIndex;
+            it.classList.toggle('is-selected', isSelected);
+            if (isSelected) selected = it;
+        }
+        if (selected) {
+            try {
+                selected.scrollIntoView({ block: 'nearest' });
+            } catch (_) {
+                selected.scrollIntoView(false);
+            }
         }
     }
-
     // applySlashCompletion 选中候选后的统一入口。
     //
     // Step 9.1 路由规则（按 state.commands 一条命令元数据判定）：
@@ -2363,7 +2539,7 @@
         }
         const name = entry.name;
 
-        // 1. client 类命令：本地逻辑（如 /sessions → openSessionsTable）
+        // 1. client 类命令：本地逻辑（如 /sessions → openSessionsTable，/skills → openSkillsTable）
         if (entry.category === 'client') {
             closeSlashDropdown();
             dom.input.value = '';
@@ -2371,6 +2547,10 @@
             if (name === '/sessions') {
                 try { openSessionsTable(); }
                 catch (err) { console.error('openSessionsTable 失败', err); }
+            } else if (name === '/skills') {
+                // Step 10 Task 6：/skills 客户端命令触发三档 Skill 列表模态框
+                try { openSkillsTable(); }
+                catch (err) { console.error('openSkillsTable 失败', err); }
             }
             // 兜底：未识别的 client 命令不做任何操作
             return;

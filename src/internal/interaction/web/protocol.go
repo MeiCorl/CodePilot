@@ -41,6 +41,10 @@ const (
 	// slash 命令清单。等价于 ws 建立时的主动推送，供重连后兜底拉取。
 	// 服务端通过 MsgTypeSlashCommands 回推命令清单。
 	MsgTypeListSlashCommands = "list_slash_commands"
+	// MsgTypeListSkills 由前端 /skills 命令触发，请求后端返回当前已加载
+	// 的 Skill 列表（按项目级 / 用户级 / 内置级三档分组）。
+	// 服务端通过 MsgTypeSkillsList 回推 Skill 清单 payload。
+	MsgTypeListSkills = "list_skills"
 )
 
 // 服务端 → 客户端 消息类型常量。
@@ -88,6 +92,10 @@ const (
 	// 与 MsgTypeSlashCommands 一致；前端收到后整体覆盖本地命令清单。
 	// 本步骤（Step 9.1）暂不主动触发该消息，通道仅作预留。
 	MsgTypeSlashCommandsUpdated = "slash_commands_updated"
+	// MsgTypeSkillsList 是 list_skills 请求的响应消息。
+	// Payload 为 SkillsListPayload，按项目级 / 用户级 / 内置级三档
+	// 分别返回当前已加载的 Skill 元数据，供前端 /skills 模态框渲染。
+	MsgTypeSkillsList = "skills_list"
 )
 
 // 流式结束原因与 Agent 状态的取值常量。
@@ -552,6 +560,37 @@ type MemoryReviewEventPayload struct {
 	Total      int       `json:"total,omitempty"`
 	Applied    int       `json:"applied,omitempty"`
 	Err        string    `json:"err,omitempty"`
+}
+
+// ---------------------------------------------------------------------------
+// Skill 列表 Payload（Step 10 Task 6 接入 /skills 模态框）
+// ---------------------------------------------------------------------------
+
+// SkillEntry 单条 Skill 的对外投影元数据（web 包不暴露 *skill.Skill）。
+//
+// 字段语义：
+//   - Name        Skill 唯一标识（与 SKILL.md frontmatter 的 name 一致）
+//   - Description 一句话用途（来自 frontmatter）
+//   - Source      来源级别字符串：project / user / builtin（与 skill.Source.String() 对齐）
+//   - Path        Skill 目录绝对路径；前端用于提示用户「这个 Skill 来自哪里」
+//
+// 字段顺序与命名刻意保持与前端 app.js 渲染逻辑对应（escapeHTML 防 XSS）。
+// web 包定义此结构体而非 skill 包，是为了让 handler 不直接 import skill，
+// 通过 main.go 顶层适配器注入 SkillProvider 解耦 import 方向。
+type SkillEntry struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Source      string `json:"source"`
+	Path        string `json:"path"`
+}
+
+// SkillsListPayload list_skills 请求的响应 payload。
+// 按项目级 / 用户级 / 内置级三档分组，每组按 Skill 注册顺序排列。
+// 三档数组均可为空（零 Skill 启动时三档均返回空数组，前端展示「暂无 Skill」）。
+type SkillsListPayload struct {
+	Project []SkillEntry `json:"project"`
+	User    []SkillEntry `json:"user"`
+	Builtin []SkillEntry `json:"builtin"`
 }
 
 // Encode 编码消息为 JSON 字节。

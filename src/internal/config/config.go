@@ -55,6 +55,12 @@ type Config struct {
 	// 留空（零值）时由 setDefaults 填充默认值；总开关默认开启，enabled=false 可整体
 	// 降级为无记忆状态（Source 不注入、Reviewer 不触发），兼容 Step 1~7 行为。
 	Memory MemoryConfig `json:"memory,omitempty"`
+	// Skill 为 Skill 系统配置（Step 10），控制 Skill 三档加载的总开关与单文件
+	// 正文截断上限。留空（零值）时由 setDefaults 填充默认值；总开关默认开启，
+	// enabled=false 时 main.go 完全跳过 Skill 加载（不调 LoadAll、不注册
+	// use_skill 工具、不注入 SkillsIndexSource、不注册 Skill 类 slash 命令），
+	// 但 /skills client 命令仍注册（前端可拉到空 Skill 列表）。
+	Skill SkillConfig `json:"skill,omitempty"`
 }
 
 // MCPConfig 是 MCP 客户端的整体配置段,对应 setting.json 中 "mcp" 对象。
@@ -190,6 +196,35 @@ func (m MemoryConfig) IsEnabled() bool {
 	return *m.Enabled
 }
 
+// SkillConfig 是 Skill 系统（Step 10）的配置段，对应 setting.json 中 "skill" 对象。
+//
+// 字段语义与默认值：
+//   - Enabled：Skill 系统总开关。默认 true；显式设 false 时 main.go 完全跳过
+//     Skill 加载（不调 LoadAll、不注册 use_skill 工具、不注入 SkillsIndexSource、
+//     不注册 Skill 类 slash 命令）；但 /skills client 命令仍注册（前端拉到空
+//     列表不影响主流程）。使用 *bool 指针以区分「未配置（→默认 true）」与
+//     「显式关闭（false）」——Go 的 bool 零值是 false，若用值类型将无法表达
+//     「默认开启」，与 CompactionConfig / MemoryConfig 同理。
+//   - MaxSkillSizeBytes：单 Skill 的 SKILL.md 正文（不含 frontmatter）大小上限
+//     （字节）。0 等效于 65536（64KB），由 applySkillDefaults 填充；通过该字段
+//     截断超大 Skill 避免 use_skill 工具一次返回的 tool_result 撑爆上下文。
+type SkillConfig struct {
+	// Enabled 为 Skill 系统总开关；nil 视为 true（默认开启），通过 IsEnabled() 访问。
+	Enabled *bool `json:"enabled,omitempty"`
+	// MaxSkillSizeBytes 为单 SKILL.md 正文截断阈值（字节），0 等效 65536（64KB）。
+	MaxSkillSizeBytes int `json:"max_skill_size_bytes,omitempty"`
+}
+
+// IsEnabled 返回 Skill 总开关的最终生效值：未配置（nil）时默认 true，
+// 否则取显式设置。调用方（main.go 装配 LoadAll / use_skill 工具 / SkillsIndexSource）
+// 统一通过本方法读取，避免到处判 nil。
+func (s SkillConfig) IsEnabled() bool {
+	if s.Enabled == nil {
+		return true
+	}
+	return *s.Enabled
+}
+
 // ToolsConfig 是工具系统的配置项。
 //
 // Enabled 列表为空时视为"启用全部已注册工具"；否则按 Name 白名单过滤。
@@ -253,6 +288,12 @@ const (
 	defaultMemoryEnabled       = true
 	defaultMemoryIndexMaxLines = 200       // 索引注入行数上限
 	defaultMemoryIndexMaxBytes = 25 * 1024 // 索引注入字节上限（25KB）
+
+	// ---- Step 10 Skill 系统默认值 ----
+	// 与 Compaction / Memory 同模式：数值字段「==0 填默认」，Enabled 是 *bool
+	// 用下方布尔常量取址填充，以表达「未配置 → 默认开启」。
+	defaultSkillEnabled          = true
+	defaultSkillMaxSizeBytes     = 64 * 1024 // 单 SKILL.md 正文截断阈值（64KB）
 )
 
 // Load 从 ~/.codepilot/setting.json 加载配置文件。
@@ -319,6 +360,7 @@ func (c *Config) setDefaults() {
 	}
 	applyCompactionDefaults(&c.Compaction)
 	applyMemoryDefaults(&c.Memory)
+	applySkillDefaults(&c.Skill)
 }
 
 // applyCompactionDefaults 为 Compaction 配置段填充默认值。
@@ -377,6 +419,25 @@ func applyMemoryDefaults(m *MemoryConfig) {
 		m.IndexMaxBytes = defaultMemoryIndexMaxBytes
 	}
 	// ReviewModel 为预留字段，首版不填默认（空串即「复用主 provider/主模型」）。
+}
+
+// applySkillDefaults 为 Skill 配置段填充默认值。
+//
+// 单独抽成函数以便 config 包测试直接调用（无需构造完整 Config），与
+// applyCompactionDefaults / applyMemoryDefaults 风格保持一致。
+// 数值字段沿用「==0 填默认」的既有模式；Enabled 作为 *bool，nil 时填默认 true，
+// 从而区分「用户未配置（→开启）」与「用户显式 enabled=false（→关闭）」。
+func applySkillDefaults(s *SkillConfig) {
+	if s == nil {
+		return
+	}
+	if s.Enabled == nil {
+		on := defaultSkillEnabled
+		s.Enabled = &on
+	}
+	if s.MaxSkillSizeBytes == 0 {
+		s.MaxSkillSizeBytes = defaultSkillMaxSizeBytes
+	}
 }
 
 // MergeMemory 合并全局与项目级 memory 配置，返回填好默认值的最终生效配置。
