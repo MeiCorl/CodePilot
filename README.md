@@ -8,6 +8,14 @@
 
 ---
 
+## 概览
+
+![CodePilot overview](key_results/overview.png)
+
+目前 CodePilot 已经打通了从 WebUI 交互、Agent Loop、工具调用、权限控制、MCP 接入、上下文压缩、自动记忆、Slash 命令到 Skill 系统的核心主链路。下图展示了当前系统能力与架构落地情况。
+
+---
+
 ## 📖 项目背景
 
 CodePilot 是一个从零构建的终端 AI Coding Agent（类似 Claude Code / Cursor Agent），使用 Go 语言实现。它以 Web UI 作为主要交互入口，通过 Agent Loop 循环与 LLM 交互并调用内置工具，自主完成用户提出的编程任务。
