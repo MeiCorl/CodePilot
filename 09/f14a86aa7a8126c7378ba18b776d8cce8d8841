@@ -1,0 +1,24 @@
+docs/step10-Skill系统/tasks.md
+  s_47c7d9558466ce::t_898888c0ba8767 163
+src/internal/skill/sources/skills_index.go
+  s_47c7d9558466ce::t_1727cbbf0ea6d8 1-200
+docs/step10-Skill系统/checklist.md
+  s_47c7d9558466ce::t_d9342b92b40967 220,222-223,225,227-228,230,232-233,235,237-238,240,242-243,245,247-248,250,252-253
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.11",
+  "base_commit_sha": "09f14a86aa7a8126c7378ba18b776d8cce8d8841",
+  "prompts": {},
+  "logical_commit_id": "09f14a86aa7a8126c7378ba18b776d8cce8d8841",
+  "sessions": {
+    "s_47c7d9558466ce": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c07fda35-0503-4635-a3d6-1476df658fcf",
+        "model": "MiniMax-M3"
+      },
+      "human_author": "meichao <meichao@bigo.sg>"
+    }
+  }
+}
