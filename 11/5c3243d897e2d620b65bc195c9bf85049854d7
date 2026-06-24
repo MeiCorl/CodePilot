@@ -1,0 +1,26 @@
+README.md
+  s_02b90f61b3e184::t_1a187e91b6dd2d 12-14,16-18
+  s_02b90f61b3e184::t_c667dafe651604 11,15
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.13",
+  "base_commit_sha": "115c3243d897e2d620b65bc195c9bf85049854d7",
+  "prompts": {},
+  "logical_commit_id": "115c3243d897e2d620b65bc195c9bf85049854d7",
+  "humans": {
+    "h_04e25195537956": {
+      "author": "meichao <meichao@bigo.sg>"
+    }
+  },
+  "sessions": {
+    "s_02b90f61b3e184": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ef870-b0d9-77e3-b431-8d23044d0498",
+        "model": "gpt-5.5"
+      },
+      "human_author": "meichao <meichao@bigo.sg>"
+    }
+  }
+}
