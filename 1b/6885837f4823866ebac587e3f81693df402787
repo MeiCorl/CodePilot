@@ -1,0 +1,31 @@
+Makefile
+  s_89b5954d1644bb::t_0a7ed29fadc6a7 42-43,48
+docs/step10.1-配置自感知/tasks.md
+  s_89b5954d1644bb::t_355edf9e47c12e 130,135,143,149
+build/build.ps1
+  s_89b5954d1644bb::t_646afff22b0476 53-54,65
+docs/step10.1-配置自感知/checklist.md
+  s_89b5954d1644bb::t_be9ca1f4285340 133-134
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.13",
+  "base_commit_sha": "1b6885837f4823866ebac587e3f81693df402787",
+  "prompts": {},
+  "logical_commit_id": "1b6885837f4823866ebac587e3f81693df402787",
+  "humans": {
+    "h_04e25195537956": {
+      "author": "meichao <meichao@bigo.sg>"
+    }
+  },
+  "sessions": {
+    "s_89b5954d1644bb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "86fe5ca8-cf31-451e-8503-2a535c6c432c",
+        "model": "MiniMax-M3"
+      },
+      "human_author": "meichao <meichao@bigo.sg>"
+    }
+  }
+}
