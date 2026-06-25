@@ -1,0 +1,24 @@
+docs/step10.1-配置自感知/checklist.md
+  s_89b5954d1644bb::t_1f869b5acf0f3d 68,70-71,73,75-76,78,80-81,83,85-86,88,90-91,93,95-96,98,100-101,103,105-106,108,110-111,113,115-116
+docs/step10.1-配置自感知/tasks.md
+  s_89b5954d1644bb::t_06550f9eff69b0 70
+src/internal/skill/builtin/config-management/SKILL.md
+  s_89b5954d1644bb::t_2ce5024a568faa 1-680
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.13",
+  "base_commit_sha": "255a019b2a61c5aa0a11566663932c6b088e4f10",
+  "prompts": {},
+  "logical_commit_id": "255a019b2a61c5aa0a11566663932c6b088e4f10",
+  "sessions": {
+    "s_89b5954d1644bb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "86fe5ca8-cf31-451e-8503-2a535c6c432c",
+        "model": "MiniMax-M3"
+      },
+      "human_author": "meichao <meichao@bigo.sg>"
+    }
+  }
+}
