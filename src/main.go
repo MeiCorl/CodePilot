@@ -32,6 +32,8 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/gorilla/websocket"
+
 	"github.com/MeiCorl/CodePilot/src/internal/command/slash"
 	"github.com/MeiCorl/CodePilot/src/internal/config"
 	"github.com/MeiCorl/CodePilot/src/internal/engine/conversation"
@@ -135,6 +137,33 @@ func (a *slashAdapter) OnChange(fn func()) {
 		return
 	}
 	a.registry.OnChange(fn)
+}
+
+// Execute 按 name 查找 slash 命令并执行。
+//
+// Step 10 引入：覆盖 Skill 系统的 /<skill-name> 等无专属 MsgType 的命令。
+// 实现 web.SlashCommandProvider.Execute 签名要求。
+//
+// 行为：
+//   - registry 为 nil → 返回 error("slash registry not set")，由 handler 包成
+//     stream_error 回推前端；
+//   - registry 中找不到 name → 返回 error("slash command not found: <name>")，
+//     同上回推；
+//   - 命中 → 调 cmd.Execute(ctx, conn, arg)，Execute 自身负责业务（如 Skill
+//     注入 LeadUserMessage）；Execute 返回的 error 也透传，由 handler 包装。
+//
+// [Why 透传到 registry] slash.Registry 已经实现了 thread-safe 的 Get + cmd.Execute
+// 路径（Get 持读锁、Execute 自带 ctx 取消检查），adapter 无需再加锁或包装；
+// 单一职责：web → registry 转发。
+func (a *slashAdapter) Execute(ctx context.Context, conn *websocket.Conn, name, arg string) error {
+	if a.registry == nil {
+		return fmt.Errorf("slash registry not set")
+	}
+	cmd, ok := a.registry.Get(name)
+	if !ok {
+		return fmt.Errorf("slash command not found: %s", name)
+	}
+	return cmd.Execute(ctx, conn, arg)
 }
 
 // ---- Skill 注册表适配器（Step 10 Task 6） ----
@@ -548,14 +577,17 @@ func run() error {
 		zap.String("project_root", memProjectRoot),
 	)
 
-	// System Prompt Builder：5 个 Source 按注册顺序产出内容：
-	//   - static:       5 个硬编码子模块（角色/行为/代码质量/工具/安全）
-	//   - environment:  OS + CWD + Git 状态
-	//   - agents_md:    全局 + 项目级 AGENTS.md 合并
-	//   - memory:       自动记忆索引注入（Step 8，读两级 MEMORY.md → LeadUserMessage）
-	//   - skills_index: Skill 渐进式披露索引注入（Step 10，name+description+source 三档分组）
-	//     cfg.Skill.Enabled=false 或 skillReg==nil 时**不**注册该 Source
-	//     (Builder 末端按条件追加,符合 Task 7 装配规范)
+	// System Prompt Builder：6 个 Source 按注册顺序产出内容：
+	//   - static:           5 个硬编码子模块（角色/行为/代码质量/工具/安全）
+	//   - environment:      OS + CWD + Git 状态
+	//   - agents_md:        全局 + 项目级 AGENTS.md 合并
+	//   - memory:           自动记忆索引注入（Step 8，读两级 MEMORY.md → LeadUserMessage）
+	//   - skills_index:     Skill 渐进式披露索引注入（Step 10，name+description+source 三档分组）
+	//                       cfg.Skill.Enabled=false 或 skillReg==nil 时**不**注册该 Source
+	//                       (Builder 末端按条件追加,符合 Task 7 装配规范)
+	//   - config_awareness: 配置自感知（Step 10.1）~60-80 token 的固定段，告知 Agent
+	//                       配置文件两层路径 + 引导加载 config-management Skill；
+	//                       放在链尾因其最稳定、与其他 Source 无依赖
 	promptSources := []sources.Source{
 		sources.NewStaticSource(),
 		sources.NewEnvironmentSource(),
@@ -569,6 +601,8 @@ func run() error {
 	if skillReg != nil {
 		promptSources = append(promptSources, skillsources.NewSkillsIndexSource(skillReg))
 	}
+	// Step 10.1:无条件追加配置自感知 Source 到链尾（最稳定、零依赖）
+	promptSources = append(promptSources, sources.NewConfigAwarenessSource())
 	promptBuilder := prompt.NewBuilder(promptSources...)
 
 	// 8. 构造 Handler / Server

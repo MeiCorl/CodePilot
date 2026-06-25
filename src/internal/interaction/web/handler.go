@@ -62,10 +62,17 @@ type SlashCommandEntry struct {
 //   - List 返回当前所有已注册命令（注册顺序）
 //   - OnChange 注册变化回调；注册后**立刻**同步触发一次（用于让 handler 在
 //     注入后就能感知到既有 6 条内置命令），后续命令增删时也会被触发；
-//     回调在 web 层 goroutine 中同步执行，handler 应避免在回调内做耗时操作。
+//     回调在 web 层 goroutine 中同步执行，handler 应避免在回调内做耗时操作；
+//   - Execute 按 Name 查找命令并执行（Step 10 引入，覆盖 Skill 系统等无专属
+//     MsgType 的命令；web 包不直接 import command/slash，由 main.go 适配为
+//     registry.Get + cmd.Execute 的实现）。
 type SlashCommandProvider interface {
 	List() []SlashCommandEntry
 	OnChange(fn func())
+	// Execute 按 name 查找 slash 命令并 Execute(ctx, conn, arg)。
+	// name 含 "/" 前缀；arg 在 NeedsArg=false 的命令下为空字符串。
+	// 返回 error 时由 handler 包装为 stream_error。
+	Execute(ctx context.Context, conn *websocket.Conn, name, arg string) error
 }
 
 // SkillProvider 是 web 层消费 Skill 注册表所需的最小接口（Step 10 Task 6）。
@@ -323,6 +330,9 @@ func (h *Handler) Register(router *Router) {
 	router.Register(MsgTypeListSlashCommands, h.handleListSlashCommands)
 	// Step 10 Task 6：响应前端 /skills 命令触发的 list_skills 请求，回推 skills_list payload。
 	router.Register(MsgTypeListSkills, h.handleSkills)
+	// Step 10：通用 slash 命令执行入口，覆盖 Skill 系统的 /<skill-name> 等无专属
+	// MsgType 的命令。handleSlashCommand 按 Name 查找 slash.Registry 后调 Execute。
+	router.Register(MsgTypeSlashCommand, h.handleSlashCommand)
 }
 
 // ModelName 返回当前配置中的模型名，供状态栏展示。
@@ -1076,6 +1086,83 @@ func (h *Handler) handleSkills(conn *websocket.Conn, msg Message) error {
 		payload.Builtin = h.skillProvider.ListBySource("builtin")
 	}
 	return h.sendMessage(conn, MsgTypeSkillsList, payload)
+}
+
+// handleSlashCommand 处理通用 slash 命令执行请求（Step 10 引入，MsgTypeSlashCommand）。
+//
+// 流程：
+//  1. 解析 payload → {Name, Arg}；Name 必填，空时回推 stream_error(invalid_payload)
+//  2. slashProvider 为 nil（未注入 slash Registry）→ stream_error(slash_not_ready)
+//  3. 调 slashProvider.Execute(ctx, conn, Name, Arg) 委托底层 registry.Get + cmd.Execute
+//  4. Execute 返回 error → stream_error(slash_command_failed)
+//
+// 设计动机：Step 10 Skill 系统的 /<skill-name> 命令以及后续 Step 11/12 引入的
+// Hook/SubAgent 子命令都没有专属 MsgType，逐个新增 ws 协议会让 router 膨胀。
+// 因此引入通用执行入口，按 Name 在注册表里查找，命中即转发 Execute。
+//
+// 与 handleListSlashCommands 的边界：本 handler 不回推任何「结果」消息，
+// Execute 内部的副作用（如 LeadUserMessage 注入）由 conversation/handler
+// 后续流式消息回推；本 handler 只关心参数解析与错误回传。
+//
+// 与 /resume / /new 等命令的关系：这些命令在 Step 9 已有专属 MsgType（带历史
+// 业务逻辑如消息持久化），前端继续走专属协议；本通用协议仅服务「无专属 MsgType」
+// 的命令，避免与既有协议重复。
+func (h *Handler) handleSlashCommand(conn *websocket.Conn, msg Message) error {
+	p, err := AsPayload[SlashCommandRequest](msg)
+	if err != nil {
+		return h.sendStreamError(conn, "invalid_payload", err.Error())
+	}
+	name := strings.TrimSpace(p.Name)
+	if name == "" {
+		return h.sendStreamError(conn, "invalid_payload", "slash command name 不能为空")
+	}
+	if h.slashProvider == nil {
+		return h.sendStreamError(conn, "slash_not_ready", "slash 命令注册表未注入")
+	}
+	// Execute 内已做 ctx 取消、nil 防御等；这里只透传 arg 字符串。
+	if h.isSlashCommandCategory(name, "skill") {
+		acquired, busy := h.stream.tryAcquire()
+		if busy {
+			return h.sendStreamError(conn, "busy", "current stream is busy")
+		}
+		if err := h.slashProvider.Execute(acquired, conn, name, p.Arg); err != nil {
+			h.stream.release(acquired)
+			return h.sendStreamError(conn, "slash_command_failed", err.Error())
+		}
+		userInput := formatSlashUserInput(name, p.Arg)
+		h.mu.Lock()
+		h.conv.AddUserMessage(userInput)
+		h.mu.Unlock()
+		_ = h.sendStatusUpdate(conn, StatusThinking)
+		go h.runStream(acquired, conn, userInput)
+		return nil
+	}
+
+	// Non-skill slash commands keep their original execute-only behavior.
+	if err := h.slashProvider.Execute(context.Background(), conn, name, p.Arg); err != nil {
+		return h.sendStreamError(conn, "slash_command_failed", err.Error())
+	}
+	return nil
+}
+
+func (h *Handler) isSlashCommandCategory(name, category string) bool {
+	if name == "" || category == "" {
+		return false
+	}
+	for _, entry := range h.collectSlashCommandEntries() {
+		if entry.Name == name && entry.Category == category {
+			return true
+		}
+	}
+	return false
+}
+
+func formatSlashUserInput(name, arg string) string {
+	arg = strings.TrimSpace(arg)
+	if arg == "" {
+		return name
+	}
+	return name + " " + arg
 }
 
 // onWSOpenSlash 是 ws 连接建立后由 ConnectionManager.onOpenHook 触发的回调：

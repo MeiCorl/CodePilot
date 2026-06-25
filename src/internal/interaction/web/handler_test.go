@@ -1348,6 +1348,14 @@ func (p *mockSlashProvider) OnChange(fn func()) {
 	fn()
 }
 
+func (p *mockSlashProvider) Execute(ctx context.Context, conn *websocket.Conn, name, arg string) error {
+	_ = ctx
+	_ = conn
+	_ = name
+	_ = arg
+	return nil
+}
+
 // builtinSixCommands 模拟 slash.builtin.RegisterBuiltin 注册的 6 条命令。
 // 命令顺序、字段与 builtin.go 完全一致；测试中不直接 import slash 包以避免 web → slash → web 循环依赖。
 func builtinSixCommands() []SlashCommandEntry {

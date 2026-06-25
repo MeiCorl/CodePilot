@@ -45,6 +45,17 @@ const (
 	// 的 Skill 列表（按项目级 / 用户级 / 内置级三档分组）。
 	// 服务端通过 MsgTypeSkillsList 回推 Skill 清单 payload。
 	MsgTypeListSkills = "list_skills"
+	// MsgTypeSlashCommand 是 Step 10 引入的「通用 slash 命令执行」协议。
+	// Payload 携带 Name（含 "/" 前缀，与后端 slash.Registry 注册名一致）
+	// 与可选 Arg（NeedsArg=true 命令的用户输入文本）。
+	// 用途：Step 10 Skill 系统的 /<skill-name> 命令没有专属 MsgType，
+	// 前端在「下拉选中 / 直接键入」两条路径都通过本协议触发后端 Execute。
+	// 与 MsgTypeListSlashCommands 的区别：后者是「返回命令清单」，
+	// 本消息是「执行指定命令」；与 /resume 的区别：/resume 因历史原因保留
+	// 走 MsgTypeResumeSession 专属路径，其余命令统一走本通用协议。
+	// 服务端在 handleSlashCommand 中按 Name 查找 slash.Registry 并调 Execute，
+	// 失败时返回 stream_error。
+	MsgTypeSlashCommand = "slash_command"
 )
 
 // 服务端 → 客户端 消息类型常量。
@@ -169,6 +180,28 @@ type StreamDonePayload struct {
 type StreamErrorPayload struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
+}
+
+// SlashCommandRequest 通用 slash 命令执行请求的 payload（Step 10 引入）。
+//
+// 字段：
+//   - Name:命令名(含 "/" 前缀),与 slash.Registry 内的 Name() 一致;
+//   - Arg:命令参数;NeedsArg=false 的命令此字段为空字符串。
+//
+// 与各业务专属 MsgType 的关系:本协议是「兜底通用协议」,覆盖 Step 10 之后
+// 动态注册的命令(Skill 系统、MCP 工具、Step 11 Hook、Step 12 SubAgent 等),
+// 无需为每个新命令类型新增 ws 协议;与 /resume 的历史兼容:前端仍走
+// MsgTypeResumeSession(避免改动既有协议);/sessions / /skills 等 client 类
+// 命令仍走前端本地逻辑(无 ws 消息)。
+//
+// 行为约定:
+//   - Name 为空 → 后端 stream_error(code=invalid_payload);
+//   - slash.Registry 中找不到 Name → stream_error(code=slash_command_not_found);
+//   - 找到 → 调 cmd.Execute(ctx, conn, arg),执行成功由 Execute 自身负责业务;
+//   - Execute 返回 error → 后端 stream_error(code=slash_command_failed)。
+type SlashCommandRequest struct {
+	Name string `json:"name"`
+	Arg  string `json:"arg,omitempty"`
 }
 
 // SessionSummary 会话摘要，用于会话列表展示。

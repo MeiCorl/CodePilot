@@ -10,6 +10,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/MeiCorl/CodePilot/src/internal/logger"
+	skillbuiltin "github.com/MeiCorl/CodePilot/src/internal/skill/builtin"
 )
 
 // 三档目录相对根路径常量(spec §A.1):
@@ -30,9 +31,9 @@ const (
 //
 // 字段:
 //
-//	- Path:触发问题的 SKILL.md 路径或目录路径(若可定位);
-//	- Err:具体错误(frontmatter 解析失败 / 目录不可读等);
-//	- Source:问题 Skill 的来源级别,用于日志分组展示。
+//   - Path:触发问题的 SKILL.md 路径或目录路径(若可定位);
+//   - Err:具体错误(frontmatter 解析失败 / 目录不可读等);
+//   - Source:问题 Skill 的来源级别,用于日志分组展示。
 //
 // 用途:Scanner 收集这些 issue 后返回上层(main.go / handler),由调用方决定
 // 是否记录 warn 日志并继续启动。本类型不属于 fatal error,Registry 仍可继续构造。
@@ -57,17 +58,17 @@ func (i LoadIssue) Error() string {
 //
 // 参数:
 //
-//	- workdir:项目根目录(等于 os.Getwd() 或 .codepilot/setting.json 中的 working_directory);
-//	- homeDir:用户主目录(= os.UserHomeDir());
-//	- execDir:CodePilot 可执行文件所在目录;
-//	- maxBytes:Body() / FullContent() 的正文截断上限(<=0 表示不截断);
+//   - workdir:项目根目录(等于 os.Getwd() 或 .codepilot/setting.json 中的 working_directory);
+//   - homeDir:用户主目录(= os.UserHomeDir());
+//   - execDir:CodePilot 可执行文件所在目录;
+//   - maxBytes:Body() / FullContent() 的正文截断上限(<=0 表示不截断);
 //
 // 返回值:
 //
-//	- *Registry:合并后的注册表;始终返回非 nil(即便三档全空也返回空 Registry);
-//	- []LoadIssue:加载过程中遇到的非致命问题(单个 SKILL.md 解析失败、目录不可读);
-//	  调用方可遍历记录 warn 日志;即使非空也不视为错误;
-//	- error:仅在「同级别同名冲突」时返回非 nil,Registry 与 issues 仍携带部分状态供调试;
+//   - *Registry:合并后的注册表;始终返回非 nil(即便三档全空也返回空 Registry);
+//   - []LoadIssue:加载过程中遇到的非致命问题(单个 SKILL.md 解析失败、目录不可读);
+//     调用方可遍历记录 warn 日志;即使非空也不视为错误;
+//   - error:仅在「同级别同名冲突」时返回非 nil,Registry 与 issues 仍携带部分状态供调试;
 //
 // 加载顺序与冲突规则(spec §A.4):
 //  1. 内置级 → 扫描 execDir/internal/skill/builtin/ 子目录 → parseFrontmatterLocal → Register;
@@ -92,9 +93,27 @@ func LoadAll(workdir, homeDir, execDir string, maxBytes int) (*Registry, []LoadI
 	reg := NewRegistry()
 	var issues []LoadIssue
 
-	// 1. 内置级(本步骤始终空目录,保留扩展点)
-	if err := scanLevel(reg, filepath.Join(execDir, builtinRelPath), SourceBuiltin, maxBytes, &issues); err != nil {
+	// 1. 内置级:三段式 fallback,保证任意路径启动都能拿到内置 Skill。
+	//    1) embedded 路径:编译时 //go:embed 嵌入到 binary 内部的 SKILL.md,
+	//       启动期从 embeddedFS 读取——只要 binary 编译时源码目录有 SKILL.md,
+	//       任意启动路径都能拿到。
+	//    2) exeDir 路径(legacy):Makefile / build.ps1 把 SKILL.md 复制到 binary
+	//       旁边的 <execDir>/internal/skill/builtin/。仅在 dist 启动时有效。
+	//    3) workdir-relative src 路径(新增 fallback):从 workdir 向上找
+	//       src/internal/skill/builtin(项目标准 layout),支持在项目根 / 子目录
+	//       直接启动 binary,或 binary 被复制到非 dist 路径时仍能加载内置 Skill。
+	//    三段是「或」关系,任一段成功即可,后续段用 SkipDuplicateSameSource 跳过
+	//    重复条目。
+	if err := scanEmbeddedBuiltins(reg, maxBytes, &issues); err != nil {
 		return reg, issues, err
+	}
+	if err := scanLevelWithOptions(reg, filepath.Join(execDir, builtinRelPath), SourceBuiltin, maxBytes, &issues, scanOptions{SkipDuplicateSameSource: true}); err != nil {
+		return reg, issues, err
+	}
+	if srcBuiltin := findSrcBuiltinFallback(workdir); srcBuiltin != "" {
+		if err := scanLevelWithOptions(reg, srcBuiltin, SourceBuiltin, maxBytes, &issues, scanOptions{SkipDuplicateSameSource: true}); err != nil {
+			return reg, issues, err
+		}
 	}
 
 	// 2. 用户级
@@ -107,22 +126,111 @@ func LoadAll(workdir, homeDir, execDir string, maxBytes int) (*Registry, []LoadI
 		return reg, issues, err
 	}
 
+	// 4. 启动期可观测性:如果三段 fallback 都没加载到任何内置 Skill,显式 warn。
+	//    典型场景:binary 编译时 SKILL.md 不在源码目录(嵌入为空)+ binary 被复制
+	//    到非 dist 路径(exeDir 路径下没有副本)+ 不在项目根或项目无 src 目录(workdir
+	//    fallback 也找不到)。此时 /skills 模态框的内置级 tab 为空,用户能据此
+	//    日志定位是「重新 make build」还是「路径布局异常」。
+	//    [Why] 之前是静默 return,用户看到空 tab 完全无法定位原因。
+	if len(reg.ListBySource(SourceBuiltin)) == 0 {
+		logger.L().Warn("skill 内置级加载为空(embedded / exeDir / src fallback 全部未命中)",
+			zap.String("workdir", workdir),
+			zap.String("exec_dir", execDir),
+			zap.String("exeDir_scan_path", filepath.Join(execDir, builtinRelPath)),
+		)
+	}
+
 	return reg, issues, nil
+}
+
+// findSrcBuiltinFallback 从 workdir 向上查找 src/internal/skill/builtin 目录,
+//作为「内置 Skill」第三段 fallback 路径,用于支持以下场景:
+//
+//  1. binary 在 dist 路径编译并启动(典型 release 模式):exeDir 路径有 SKILL.md
+//     副本,本函数不参与(返回 "");
+//  2. binary 在 dist 路径编译,但被复制到非 dist 路径启动(用户实际报 bug 的
+//     场景):exeDir 路径找不到,本函数从 workdir 向上找到项目根的 src/ 兜底;
+//  3. 用户从项目根或子目录直接启动 binary(workdir 包含项目根):exeDir 路径失败,
+//     本函数兜底;
+//
+// 路径搜索策略:
+//
+//   - 起点:workdir(可能为绝对路径或相对路径,先 abs 化);
+//   - 逐级向上查 <dir>/src/internal/skill/builtin 目录,直到文件系统根;
+//   - 找到第一个**存在且至少含一个 SKILL.md 子目录**的目录即返回;
+//   - 全程找不到返回 ""(LoadAll 据此跳过第三段 fallback)。
+//
+// 防御性约束:
+//
+//   - workdir 为空时直接返回 "",不去猜测;
+//   - 找到目录后必须 ReadDir 验证至少有一个子目录含 SKILL.md,避免把空目录
+//     当 fallback 命中继续走 scanLevelWithOptions(后者会扫 0 个 skill,日志
+//     噪音大)。
+//
+// [Why 不在 builtin 包用 runtime.Caller 拿源码路径] runtime.Caller(0) 在编译为
+// binary 后返回的虚拟路径不会指向真实文件系统,无法用作 fallback 路径;只有
+// 「workdir 向上找 src/」这种基于约定的查找在 dev/release 两种模式下都能用。
+func findSrcBuiltinFallback(workdir string) string {
+	if workdir == "" {
+		return ""
+	}
+	absWD, err := filepath.Abs(workdir)
+	if err != nil {
+		return ""
+	}
+	cur := absWD
+	for i := 0; i < 16; i++ { // 最多向上 16 级,够覆盖所有项目布局
+		candidate := filepath.Join(cur, "src", "internal", "skill", "builtin")
+		if info, serr := os.Stat(candidate); serr == nil && info.IsDir() {
+			if hasBuiltinSkillMD(candidate) {
+				return candidate
+			}
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur { // 已到根(filepath.Dir 已返回自身说明已到驱动器根)
+			return ""
+		}
+		cur = parent
+	}
+	return ""
+}
+
+// hasBuiltinSkillMD 校验 candidate 目录下是否至少存在一个子目录含 SKILL.md。
+//
+// [Why 单独函数] findSrcBuiltinFallback 要避免「目录存在但没有 SKILL.md」时
+// 误命中——例如某些项目里 src/internal/skill/builtin 目录里只是 README.md
+// 占位,没有实际 Skill 资源;返回 true 后 LoadAll 会走 scanLevelWithOptions,
+// 扫 0 个 skill 还会让 warn 日志消失,反而误导排查。
+func hasBuiltinSkillMD(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		_, ferr := os.Stat(filepath.Join(dir, e.Name(), skillFileName))
+		if ferr == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // scanLevel 扫描指定根目录下所有子目录的 SKILL.md,逐个 Register。
 //
 // 入参:
 //
-//	- rootDir:扫描根目录(如 <workdir>/.codepilot/skills);
-//	- src:该级 Skill 的 Source 标识(SourceUser / SourceProject / SourceBuiltin);
-//	- maxBytes:Body 截断上限;
-//	- issues:非致命问题收集指针(解析失败的 Skill append 进去);
+//   - rootDir:扫描根目录(如 <workdir>/.codepilot/skills);
+//   - src:该级 Skill 的 Source 标识(SourceUser / SourceProject / SourceBuiltin);
+//   - maxBytes:Body 截断上限;
+//   - issues:非致命问题收集指针(解析失败的 Skill append 进去);
 //
 // 返回值:
 //
-//	- nil:目录缺失 或 全部 Skill 加载完成(可能伴随 issues);
-//	- *ErrSkillConflict:同级别同名冲突(记录 issue 后立即返回);
+//   - nil:目录缺失 或 全部 Skill 加载完成(可能伴随 issues);
+//   - *ErrSkillConflict:同级别同名冲突(记录 issue 后立即返回);
 //
 // 目录不存在:os.Stat 返回 os.ErrNotExist → 静默 return nil,不记 issue。
 //
@@ -134,7 +242,53 @@ func LoadAll(workdir, homeDir, execDir string, maxBytes int) (*Registry, []LoadI
 //
 // [Why] 顺序保持:os.ReadDir 返回的目录顺序按文件名排序(Go 1.16+ 保证),
 // 同级内 Skill 注册顺序确定,便于测试断言。
+type scanOptions struct {
+	SkipDuplicateSameSource bool
+}
+
+func scanEmbeddedBuiltins(reg *Registry, maxBytes int, issues *[]LoadIssue) error {
+	entries, err := skillbuiltin.Embedded()
+	if err != nil {
+		*issues = append(*issues, LoadIssue{
+			Path:   "embedded://internal/skill/builtin",
+			Err:    fmt.Errorf("read embedded built-in skills: %w", err),
+			Source: SourceBuiltin,
+		})
+		return nil
+	}
+	for _, entry := range entries {
+		displayPath := "embedded://internal/skill/builtin/" + entry.Path
+		s, perr := parseFrontmatterString(displayPath, entry.Content)
+		if perr != nil {
+			*issues = append(*issues, LoadIssue{Path: displayPath, Err: perr, Source: SourceBuiltin})
+			logger.L().Warn("skill built-in parse failed", zap.String("path", displayPath), zap.Error(perr))
+			continue
+		}
+		s.Source = SourceBuiltin
+		s.RootPath = strings.TrimSuffix(displayPath, "/"+skillFileName)
+		s.embedded = true
+		if maxBytes > 0 {
+			s.MaxBytes = maxBytes
+		}
+		if rerr := reg.Register(s); rerr != nil {
+			var conflict *ErrSkillConflict
+			if errors.As(rerr, &conflict) {
+				*issues = append(*issues, LoadIssue{Path: displayPath, Err: conflict, Source: SourceBuiltin})
+				logger.L().Error("skill built-in name conflict", zap.String("name", conflict.Name), zap.String("path", displayPath))
+				return conflict
+			}
+			*issues = append(*issues, LoadIssue{Path: displayPath, Err: rerr, Source: SourceBuiltin})
+			logger.L().Warn("skill built-in register failed", zap.String("path", displayPath), zap.Error(rerr))
+		}
+	}
+	return nil
+}
+
 func scanLevel(reg *Registry, rootDir string, src Source, maxBytes int, issues *[]LoadIssue) error {
+	return scanLevelWithOptions(reg, rootDir, src, maxBytes, issues, scanOptions{})
+}
+
+func scanLevelWithOptions(reg *Registry, rootDir string, src Source, maxBytes int, issues *[]LoadIssue, opts scanOptions) error {
 	// 目录不存在:静默跳过(spec §A.5 + §Out-of-Scope)
 	if _, err := os.Stat(rootDir); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -211,6 +365,11 @@ func scanLevel(reg *Registry, rootDir string, src Source, maxBytes int, issues *
 		if maxBytes > 0 {
 			s.MaxBytes = maxBytes
 		}
+		if opts.SkipDuplicateSameSource {
+			if existing, ok := reg.Get(s.Name); ok && existing != nil && existing.Source == src {
+				continue
+			}
+		}
 
 		if rerr := reg.Register(s); rerr != nil {
 			// 同级别同名冲突 → 记 issue + 立即返回(不可恢复,启动期应退出)
@@ -268,37 +427,35 @@ func parseFrontmatterLocal(path string) (*Skill, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
-	fm, body, err := splitFrontmatterForRead(string(data))
+	return parseFrontmatterString(path, string(data))
+}
+
+func parseFrontmatterString(path, raw string) (*Skill, error) {
+	fm, body, err := splitFrontmatterForRead(raw)
 	if err != nil {
-		// splitFrontmatterForRead 在缺 frontmatter / 未闭合时返回的是 fmt.Errorf
-		// 普通错误,不带结构化类型;此处统一包装为 *ErrMissingFrontmatter 以便上层
-		// errors.As 识别。
 		msg := err.Error()
 		if strings.Contains(msg, "missing frontmatter") || strings.Contains(msg, "unclosed frontmatter") {
 			return nil, &localErrMissingFrontmatter{Path: path}
 		}
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
-	// 校验必填字段
 	if strings.TrimSpace(fm.Name) == "" {
 		return nil, &localErrMissingField{Path: path, Field: "name"}
 	}
 	if strings.TrimSpace(fm.Description) == "" {
 		return nil, &localErrMissingField{Path: path, Field: "description"}
 	}
-	// 构造 Skill:Source 留零值,scanner 会覆盖为正确的 Source
 	return NewSkill(
 		fm.Name,
 		fm.Description,
 		fm.Args,
 		fm.AllowedTools,
-		Source(0), // 由 scanner 覆盖
+		Source(0),
 		filepath.Dir(path),
 		body,
 	), nil
 }
 
-// 本地错误类型定义(避免循环依赖 loader 包的同名 struct)。
 type localErrMissingFrontmatter struct {
 	Path string
 }

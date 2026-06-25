@@ -13,16 +13,16 @@
 | 指标     | 数值                                                    |
 | ------ | ----------------------------------------------------- |
 | 计划总步骤数 | 12（含子步骤后实际更多）                                         |
-| 已完成步骤数 | 15（Step 1 / Step 1.1 / Step 1.2 / Step 1.3 / Step 1.4 / Step 2 / Step 3 / Step 4 / Step 5 / Step 6 / Step 7 / Step 8 / Step 9 / Step 9.1 / Step 10） |
-| 当前最新版本 | V1.6.0                                                |
+| 已完成步骤数 | 16（Step 1 / Step 1.1 / Step 1.2 / Step 1.3 / Step 1.4 / Step 2 / Step 3 / Step 4 / Step 5 / Step 6 / Step 7 / Step 8 / Step 9 / Step 9.1 / Step 10 / Step 10.1） |
+| 当前最新版本 | V1.7.0                                                |
 | 进行中步骤  | —                                                    |
 | 下一步骤   | Step 11 — Hook 系统（需先 `/specs` 触发需求澄清）                      |
-| 最近更新   | 2026-06-24                                            |
+| 最近更新   | 2026-06-25（**bugfix**: 内置 Skill 加载新增「workdir-relative src」三段式 fallback + 启动期可观测性 warn,任意路径启动均能看到 config-management；详见 [扫尾说明](#step101-扫尾说明内置-skill-三段式-fallback)）|
 
 进度条：
 
 ```
-[██████████████████████████████████░░░] 10/12 主线步骤完成（Step 1-9 已完成 + Step 9.1 子步骤完成 + Step 10 Skill 系统已落地，Step 11-12 待开始）
+[████████████████████████████████████░░] 10/12 主线步骤完成（Step 1-9 已完成 + Step 9.1 子步骤完成 + Step 10 + Step 10.1 已落地，Step 11-12 待开始）
 ```
 
 ---
@@ -48,14 +48,15 @@
 | 9      | 快捷命令系统（V1.5.0，**回顾式补记**）                       | 2026-06-22 | 6 条内置命令（`/new` `/sessions` `/resume` `/clear` `/compact` `/dump`）+ 候选下拉 + 业务消息路由 + 调试导出           | [docs](../docs/step9-快捷命令系统/)                                           |
 | 9.1    | Slash 命令注册后端化（V1.5.0）                          | 2026-06-23 | `SlashCommand` 接口 + `Registry` 注册表 + 6 条 builtin 委托既有 handler + WS Open 推送 `slash_commands` + WebUI 零硬编码 | [docs](../docs/step9.1-Slash注册后端化/)                                      |
 | 10     | **Skill 系统（V1.6.0）**                             | 2026-06-24 | 三档优先级目录型 Skill + SKILL.md 解析 + `use_skill` 工具按需加载 + 自动注册为 slash 命令 + 渐进式披露 + `/skills` 列表面板 + 紫色徽标 + `enabled=false` 三层降级 | [docs](../docs/step10-Skill系统/)                                          |
+| 10.1   | **配置自感知（V1.7.0）**                               | 2026-06-25 | 新增 `ConfigAwarenessSource`(~78 token)把「改配置 → 加载 config-management Skill」写入常驻 SP；新建 config-management builtin Skill 覆盖 setting.json 6+ section + 顶层 LLM 参数 + 改写工作流 + 错误排查(< 64KB)；`build.ps1` / `Makefile` 把 SKILL.md 落到 exe-dir/skills/ | [docs](../docs/step10.1-配置自感知/)                                     |
 
 **架构层覆盖度速览**（5 层）：
 
 | 架构层       | 已落地组件                                                                       | 待落地                          |
 | --------- | --------------------------------------------------------------------------- | ---------------------------- |
 | 第 1 层：交互层 | WebUI（HTTP + WS + 富文本 + 流式渲染 + SP 可观测 + 双栏 diff + 权限对话框 + MCP/Skill 徽标）       | —                            |
-| 第 2 层：引擎层 | 对话管理 + Agent Loop（ReAct 迭代）+ System Prompt（Builder + 4 Source + Anthropic 缓存）   | —                            |
-| 第 3 层：工具层 | 6 内置工具 + 路径沙箱 + Bash 黑名单 + MCP 客户端 + 快捷命令系统 + **Skill 系统（Step 10）**              | Hook（Step 11）、SubAgent（Step 12） |
+| 第 2 层：引擎层 | 对话管理 + Agent Loop（ReAct 迭代）+ System Prompt（Builder + 5 Source + Anthropic 缓存）   | —                            |
+| 第 3 层：工具层 | 6 内置工具 + 路径沙箱 + Bash 黑名单 + MCP 客户端 + 快捷命令系统 + **Skill 系统（Step 10）+ config-management 自感知 Skill（Step 10.1）**              | Hook（Step 11）、SubAgent（Step 12） |
 | 第 4 层：记忆层 | 会话持久化 + 高级上下文管理（两层压缩 / 熔断 / 紧急压缩）+ 自动学习记忆（4 类分级 / 独立 LLM 回顾 / 敏感脱敏）                | —                            |
 | 第 5 层：安全层 | 权限系统（三层模式 + 可配置规则 + HITL + 黑名单 + 路径沙箱）                                          | —                            |
 
@@ -69,6 +70,40 @@
 | --- | --------- | ----- | ----- | -------------------------- |
 | 11  | Hook 系统   | 工具层   | ⏳ 待开始 | `docs/step11-Hook系统/`      |
 | 12  | SubAgent  | 工具层   | ⏳ 待开始 | `docs/step12-SubAgent/`    |
+
+---
+
+## 🛠 Step 10.1 扫尾说明：内置 Skill 三段式 fallback
+
+**触发场景**：用户在 `build/dist` 启动 CodePilot 时,`/skills` 模态框的「内置级」tab 能看到 `config-management`;但把同一个 binary 复制到其他路径(例如 `f:\CodePilot\`)启动,「内置级」tab 为空。复现后用户报 bug。
+
+**根因**:
+
+1. **embedded 路径在老 binary 中是空的**。`src/internal/skill/builtin/builtin.go` 中的 `//go:embed */SKILL.md` 是 V1.7.0(Step 10.1)新增的逻辑;Step 10 提交的 `build/dist/CodePilot.exe` 编译时,`builtin.go` 还是旧版(只定义了 `DirName` 常量,无 `//go:embed`、无 `Embedded()` 函数),`embeddedFS` 嵌入的 entries 为 0。
+2. **exeDir 路径只在 dist 启动时有效**。Step 10.1 加了 `Makefile`/`build.ps1` 把 `SKILL.md` 复制到 `<dist>/internal/skill/builtin/`。但当 binary 被复制到其他路径启动时,`<execDir>/internal/skill/builtin/` 目录不存在,该 fallback 静默 return nil。
+3. **结果**:老 binary 启动在 dist 时(两条路有一路通)能看到内置 skill;启动在其他路径时(两条路全失败)`/skills` 内置栏为空,且无任何 warn 日志,用户无法定位。
+
+**修复方案**(`src/internal/skill/scanner.go`):
+
+- `LoadAll` 的内置级加载从「单段 `scanLevel`」改为「**三段式 fallback**」:
+  1. **embedded 路径** — `scanEmbeddedBuiltins` 读 `embeddedFS`(新 binary 编译时 SKILL.md 在源码目录,自动嵌入);
+  2. **exeDir 路径** — `scanLevelWithOptions(<execDir>/internal/skill/builtin, SourceBuiltin, SkipDuplicateSameSource: true)`(保留 release 模式 dist 副本加载);
+  3. **workdir-relative src 路径(新增)** — `findSrcBuiltinFallback(workdir)` 从 workdir 向上 16 级找 `src/internal/skill/builtin/`(项目标准 layout),找到第一个含至少一个 SKILL.md 子目录的即返回;命中后再走 `scanLevelWithOptions(SkipDuplicateSameSource: true)`,与前两段重复的 entry 跳过。
+- 三段「或」关系,任意一段成功即加载;三段全失败时**显式 warn**(`skill 内置级加载为空 (embedded / exeDir / src fallback 全部未命中)`,带 workdir / exec_dir / 实际扫描路径),用户可据此定位是「重新 `make build`」还是「项目无 src 目录」。
+
+**为什么不在 builtin 包用 `runtime.Caller(0)`**:Go 编译为 binary 后 `runtime.Caller` 返回的是虚拟路径,不会指向真实文件系统,无法用作 fallback 路径;只有「workdir 向上找 `src/`」这种基于约定的查找在 dev/release 两种模式下都能用。
+
+**验证**(`f:\CodePilot\build\dist\CodePilot.exe` V1.7.0-patch,2026-06-25 18:39 重编):
+
+| 启动路径 | workdir | exec_dir | 命中段 | /skills 内置栏 | Skill count 日志 |
+| --- | --- | --- | --- | --- | --- |
+| `f:\CodePilot\` | `F:\CodePilot` | `F:\CodePilot` | 段 1 (embed) + 段 3 (workdir fallback) | ✅ 显示 config-management | `count: 4` |
+| `f:\CodePilot\build\dist\` | `F:\CodePilot\build\dist` | `F:\CodePilot\build\dist` | 段 1 (embed) + 段 2 (exeDir) + 段 3 (workdir fallback) | ✅ 显示 config-management | `count: 4` |
+
+**附带的清理**:
+
+- 清理 IDE/工具残留的 5 个「带数字 ID 后缀」的临时文件(`*.go.[19 位数字]`,如 `builtin.go.4588911273121966770`)。这些文件不影响 Go embed(`*` 只匹配子目录),但污染 git status。
+- 在 `.gitignore` 加入 `*.[0-9]{19}` 规则,防止后续继续污染。
 
 ---
 

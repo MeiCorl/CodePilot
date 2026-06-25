@@ -81,7 +81,8 @@ type Skill struct {
 	// body 是 SKILL.md 解析时缓存的「frontmatter 之后」markdown 正文。
 	// [Why] 私有:Body() / FullContent() 负责把 frontmatter 重组为 # Skill: <name>
 	// 标题段 + 描述 + 参数提示后拼接正文,调用方不应直接持有原始 markdown。
-	body string
+	body     string
+	embedded bool
 }
 
 // skillFileName SKILL.md 主入口文件名,固定不变。
@@ -155,6 +156,9 @@ func NewSkill(name, description, args string, allowedTools []string, source Sour
 //	Skill 结构体本身仍持有解析期的缓存,运行期不会因为 FullContent 调用而被
 //	并发改写(并发安全靠调用方负责)。
 func (s *Skill) FullContent() (string, error) {
+	if s.embedded {
+		return s.Body(), nil
+	}
 	if s.RootPath == "" {
 		return "", fmt.Errorf("skill %q has no root path", s.Name)
 	}

@@ -250,6 +250,9 @@
         // ListSkills 由前端发出（/skills 命令触发），SkillsList 由后端回推三档分组数据。
         ListSkills:             'list_skills',
         SkillsList:             'skills_list',
+        // Step 10：通用 slash 命令执行入口（覆盖 Skill 系统 /<skill-name> 等无专属 MsgType 的命令）
+        // 前端在「下拉选中」与「输入框直接键入」两条路径都通过本消息触发后端 Execute。
+        SlashCommand:           'slash_command',
     };
 
     // abortMarker 与后端 agent_loop.go 中的 abortMarker 常量保持一致，
@@ -2425,6 +2428,57 @@
             return;
         }
 
+        // Step 10：通用 slash 命令派发（覆盖「直接键入而非下拉选中」场景）
+        // 用户在输入框手敲 "/config-management" 后按 Enter 即可触发对应 Skill。
+        // 匹配规则：trimmed 以 "/" 开头 → 抽取 command token(首个空格之前)→
+        //   1) 在 state.commands 中能找到该 name → 派发:
+        //      - category==='client' → 前端本地逻辑(/sessions 表格 / /skills 模态框)
+        //      - needs_arg===true   → 保留输入(让用户继续补全),不发送任何消息
+        //      - 否则               → 发 slash_command { name, arg }
+        //   2) 找不到 → 不当作 slash 命令,继续走 user_input 流程(走 LLM)
+        // 这样既不破坏「未知 /xxx 走 LLM」的旧行为,又能让 Skill 系统的命令被正确触发。
+        if (trimmed.startsWith('/') && !trimmed.includes('\n')) {
+            const firstSpace = trimmed.indexOf(' ');
+            const name = (firstSpace < 0 ? trimmed : trimmed.slice(0, firstSpace)).trim();
+            const arg = firstSpace < 0 ? '' : trimmed.slice(firstSpace + 1).trim();
+            const entry = state.commands.find(c => c && c.name === name);
+            if (entry) {
+                // /sessions / /skills 等 client 类命令由前端本地逻辑处理
+                if (entry.category === 'client') {
+                    if (name === '/sessions') {
+                        try { openSessionsTable(); } catch (err) { console.error('openSessionsTable 失败', err); }
+                    } else if (name === '/skills') {
+                        try { openSkillsTable(); } catch (err) { console.error('openSkillsTable 失败', err); }
+                    }
+                    dom.input.value = '';
+                    updateCharCount();
+                    closeSlashDropdown();
+                    return;
+                }
+                // needs_arg=true 且用户尚未补全 arg:保留输入让用户继续补全
+                if (entry.needsArg && !arg) {
+                    closeSlashDropdown();
+                    return;
+                }
+                // 其他命令:走专属 MsgType(/new /clear /compact /dump)或通用 slash_command
+                const msgType = state.commandTypeByName[name];
+                try {
+                    if (msgType) {
+                        sendWS(msgType, {});
+                    } else {
+                        const sent = sendWS(MsgType.SlashCommand, { name: name, arg: arg });
+                        if (sent && entry.category === 'skill') {
+                            beginLocalUserTurn(formatSlashCommandDisplay(name, arg));
+                        }
+                    }
+                } catch (err) { console.error('slash send failed', err, name, msgType || MsgType.SlashCommand); }
+                dom.input.value = '';
+                updateCharCount();
+                closeSlashDropdown();
+                return;
+            }
+        }
+
         // 表格视图打开时，用户开始输入新对话即收起表格
         if (state.sessionsTableActive) {
             hideSessionsTable();
@@ -2450,6 +2504,24 @@
 
     function updateCharCount() {
         dom.charCount.textContent = String(dom.input.value.length);
+    }
+
+    function formatSlashCommandDisplay(name, arg) {
+        const tail = (arg || '').trim();
+        return tail ? `${name} ${tail}` : name;
+    }
+
+    function beginLocalUserTurn(text) {
+        if (state.sessionsTableActive) {
+            hideSessionsTable();
+        }
+        const empty = dom.messages.querySelector('.messages-empty');
+        if (empty) empty.remove();
+        state.messages.push({ role: 'user', content: text });
+        appendMessageNode('user', text, false);
+        scrollToBottomIfNeeded();
+        state.expectingAssistant = true;
+        showThinking();
     }
 
     // getMatchingCommands 根据当前输入框内容做前缀过滤。
@@ -2574,8 +2646,15 @@
             try { sendWS(msgType, {}); }
             catch (err) { console.error('slash 发送失败', err, name, msgType); }
         } else {
-            // 兜底：未识别命令（Step 10 Skill 接入新命令但前端未自动映射时）
-            console.warn('未知 slash 命令，未找到 MsgType 映射:', name);
+            // Step 10：通用 slash_command 协议兜底
+            // 适用于 category==='skill' 的 Skill 命令以及未来无专属 MsgType 的命令
+            // (Hook / SubAgent 等)。后端按 name 在 slash.Registry 中查找并 Execute。
+            try {
+                const sent = sendWS(MsgType.SlashCommand, { name: name, arg: '' });
+                if (sent && entry.category === 'skill') {
+                    beginLocalUserTurn(formatSlashCommandDisplay(name, ''));
+                }
+            } catch (err) { console.error('slash_command send failed', err, name); }
         }
         dom.input.value = '';
         closeSlashDropdown();

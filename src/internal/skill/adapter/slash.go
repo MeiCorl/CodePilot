@@ -97,14 +97,13 @@ func (c *skillCmd) Description() string {
 
 // NeedsArg 表示命令是否需要用户补充参数。
 //
-// 规则(spec §B.3 + tasks.md 4.4):
-//   - Skill 的 frontmatter 声明了 args(即 Skill.Args 非空)→ true,前端选中后
-//     把命令名 + args 占位补全到输入框,用户填完 arg 按 Enter 提交;
-//   - Skill.Args 为空 → false,前端选中后直接按对应 MsgType 发送。
+// 规则:
+//   - Skill 命令统一需要用户先补全参数/任务文本再提交;
+//   - 前端选中后只把命令名补全到输入框,不直接触发执行。
 //
 // 实现 slash.SlashCommand 接口。
 func (c *skillCmd) NeedsArg() bool {
-	return c.skill.Args != ""
+	return true
 }
 
 // ArgHint 返回参数占位提示文本,仅在 NeedsArg()=true 时展示给用户。
