@@ -1,0 +1,30 @@
+docs/step10.1-配置自感知/checklist.md
+  s_89b5954d1644bb::t_0c4c5e8397d3d1 122,124-125,127,129-130,132,134-135,137,139-140,144-146
+docs/step10.1-配置自感知/tasks.md
+  s_89b5954d1644bb::t_301e9e5eeb2e57 117
+build/build.ps1
+  s_89b5954d1644bb::t_7320931068cb66 1,3,5,21,30,32,74
+  s_89b5954d1644bb::t_e2198b51820f22 56-58
+  s_89b5954d1644bb::t_7e0fd3172d232f 70
+  s_89b5954d1644bb::t_4535ecdb2d2ecb 59-69,71-72
+  s_89b5954d1644bb::t_73a4cdd9c5bf77 51-55
+Makefile
+  s_89b5954d1644bb::t_f6277ad809cf79 40-52
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.13",
+  "base_commit_sha": "fa4de19bd19478619a04eed78bc6b8b2d5589a55",
+  "prompts": {},
+  "logical_commit_id": "fa4de19bd19478619a04eed78bc6b8b2d5589a55",
+  "sessions": {
+    "s_89b5954d1644bb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "86fe5ca8-cf31-451e-8503-2a535c6c432c",
+        "model": "MiniMax-M3"
+      },
+      "human_author": "meichao <meichao@bigo.sg>"
+    }
+  }
+}
