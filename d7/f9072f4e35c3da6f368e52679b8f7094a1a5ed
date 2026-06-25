@@ -1,0 +1,22 @@
+docs/step10.1-配置自感知/checklist.md
+  s_89b5954d1644bb::t_88b356c7c8a7ea 49,51-52,54,56-57,59,61-62
+docs/step10.1-配置自感知/tasks.md
+  s_89b5954d1644bb::t_72bf4b1bd00d84 47
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.13",
+  "base_commit_sha": "d7f9072f4e35c3da6f368e52679b8f7094a1a5ed",
+  "prompts": {},
+  "logical_commit_id": "d7f9072f4e35c3da6f368e52679b8f7094a1a5ed",
+  "sessions": {
+    "s_89b5954d1644bb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "86fe5ca8-cf31-451e-8503-2a535c6c432c",
+        "model": "MiniMax-M3"
+      },
+      "human_author": "meichao <meichao@bigo.sg>"
+    }
+  }
+}
