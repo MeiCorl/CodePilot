@@ -1,0 +1,34 @@
+build/dist/internal/skill/builtin/config-management/SKILL.md
+  s_89b5954d1644bb::t_90104cd7448f72 1-671
+docs/step10.1-配置自感知/spec.md
+  s_c03f3e4975d856::t_1c8ab20ea203fb 1-99
+docs/step10.1-配置自感知/checklist.md
+  s_89b5954d1644bb::t_414e3ddb5fa0aa 358,360-361
+build/dist/skills/config-management/SKILL.md
+  s_89b5954d1644bb::t_90104cd7448f72 1-671
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.13",
+  "base_commit_sha": "fc3c3698772936dd5aa38067f7fccfba13a9a3f7",
+  "prompts": {},
+  "logical_commit_id": "fc3c3698772936dd5aa38067f7fccfba13a9a3f7",
+  "sessions": {
+    "s_89b5954d1644bb": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "86fe5ca8-cf31-451e-8503-2a535c6c432c",
+        "model": "MiniMax-M3"
+      },
+      "human_author": "meichao <meichao@bigo.sg>"
+    },
+    "s_c03f3e4975d856": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f91d4229-35d0-4269-a878-957dfb6a7056",
+        "model": "MiniMax-M3"
+      },
+      "human_author": "meichao <meichao@bigo.sg>"
+    }
+  }
+}
