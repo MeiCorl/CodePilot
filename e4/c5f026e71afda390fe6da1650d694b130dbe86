@@ -1,0 +1,43 @@
+src/internal/skill/builtin/codebase-overview/reference/ui-interaction.md
+  s_3d650083f17928::t_966203cc12aa47 1-72,77-126
+  s_3d650083f17928::t_a7df4a28d4bc11 73-76
+src/internal/skill/builtin/codebase-overview/reference/llm-adapter.md
+  s_3d650083f17928::t_bad0fde88e67b4 1-144
+src/internal/skill/builtin/codebase-overview/reference/tool-system.md
+  s_3d650083f17928::t_a7a838117decba 1-200
+src/internal/skill/builtin/codebase-overview/reference/skill-system.md
+  s_3d650083f17928::t_89ccdabfbb8296 1-27,29-166
+  s_3d650083f17928::t_d8e70676854b43 28
+src/internal/skill/builtin/codebase-overview/reference/context-management.md
+  s_3d650083f17928::t_ced7972fa78cbb 1-145
+src/internal/skill/builtin/codebase-overview/reference/mcp-integration.md
+  s_3d650083f17928::t_c2a5a006abb621 1-179
+src/internal/skill/builtin/codebase-overview/reference/system-prompt.md
+  s_3d650083f17928::t_895a9ba5076757 1-180
+src/internal/skill/builtin/codebase-overview/reference/auto-memory.md
+  s_3d650083f17928::t_ccce07ad94c083 1-176
+src/internal/skill/builtin/codebase-overview/reference/self-awareness.md
+  s_3d650083f17928::t_583b509132d6bc 1-159
+src/internal/skill/builtin/codebase-overview/reference/permission.md
+  s_3d650083f17928::t_7d301340b0eef2 1-28,30-207
+  s_3d650083f17928::t_21ce50a3f70b1f 29
+src/internal/skill/builtin/codebase-overview/reference/session-management.md
+  s_3d650083f17928::t_0671152c9b75a8 1-151
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.13",
+  "base_commit_sha": "e4c5f026e71afda390fe6da1650d694b130dbe86",
+  "prompts": {},
+  "logical_commit_id": "e4c5f026e71afda390fe6da1650d694b130dbe86",
+  "sessions": {
+    "s_3d650083f17928": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f956b322-07fa-4d93-946b-aef3206cd113",
+        "model": "MiniMax-M3"
+      },
+      "human_author": "meichao <meichao@bigo.sg>"
+    }
+  }
+}
