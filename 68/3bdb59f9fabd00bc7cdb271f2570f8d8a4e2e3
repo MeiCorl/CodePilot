@@ -1,0 +1,22 @@
+docs/step10.2-代码自感知/checklist.md
+  s_3d650083f17928::t_189043c7e655c3 146,148-150,152-154,156-158,160-162,164-166,168-169,173-177,179-181,183-189,191-193,195-197,199-201,203-205,207-209,211-213,215-216,220,222-224,226-228,230-231
+src/internal/skill/builtin/codebase-overview/SKILL.md
+  s_3d650083f17928::t_fcca3d812150ee 3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.13",
+  "base_commit_sha": "683bdb59f9fabd00bc7cdb271f2570f8d8a4e2e3",
+  "prompts": {},
+  "logical_commit_id": "683bdb59f9fabd00bc7cdb271f2570f8d8a4e2e3",
+  "sessions": {
+    "s_3d650083f17928": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f956b322-07fa-4d93-946b-aef3206cd113",
+        "model": "MiniMax-M3"
+      },
+      "human_author": "meichao <meichao@bigo.sg>"
+    }
+  }
+}
