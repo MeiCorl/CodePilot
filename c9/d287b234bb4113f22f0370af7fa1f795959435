@@ -1,0 +1,20 @@
+docs/step10.2-代码自感知/checklist.md
+  s_3d650083f17928::t_5e6067fd1235d9 87-105
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.13",
+  "base_commit_sha": "c9d287b234bb4113f22f0370af7fa1f795959435",
+  "prompts": {},
+  "logical_commit_id": "c9d287b234bb4113f22f0370af7fa1f795959435",
+  "sessions": {
+    "s_3d650083f17928": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f956b322-07fa-4d93-946b-aef3206cd113",
+        "model": "MiniMax-M3"
+      },
+      "human_author": "meichao <meichao@bigo.sg>"
+    }
+  }
+}
