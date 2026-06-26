@@ -1,4 +1,5 @@
 *.exe
+!/CodePilot.exe
 .playwright-mcp/*
 *_test.go
 paper.md
