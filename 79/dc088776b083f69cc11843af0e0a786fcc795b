@@ -1,0 +1,23 @@
+src/internal/skill/builtin/codebase-overview/SKILL.md
+  s_3d650083f17928::t_d89035aa3a6142 1-60
+docs/step10.2-代码自感知/checklist.md
+  s_3d650083f17928::t_413fe8b4eeef82 82,84-85
+  s_3d650083f17928::t_c952d7245793ad 29,31-33,35-37,39-41,43-44
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.13",
+  "base_commit_sha": "79dc088776b083f69cc11843af0e0a786fcc795b",
+  "prompts": {},
+  "logical_commit_id": "79dc088776b083f69cc11843af0e0a786fcc795b",
+  "sessions": {
+    "s_3d650083f17928": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f956b322-07fa-4d93-946b-aef3206cd113",
+        "model": "MiniMax-M3"
+      },
+      "human_author": "meichao <meichao@bigo.sg>"
+    }
+  }
+}
