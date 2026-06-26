@@ -1,0 +1,22 @@
+docs/step10.2-代码自感知/tasks.md
+  s_3d650083f17928::t_63c59db341c6c6 47
+docs/step10.2-代码自感知/checklist.md
+  s_3d650083f17928::t_86107b87b4bc1a 12-13,20
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.13",
+  "base_commit_sha": "fcabc62bf9e7df00935ebf42025f31edc98ea5a8",
+  "prompts": {},
+  "logical_commit_id": "fcabc62bf9e7df00935ebf42025f31edc98ea5a8",
+  "sessions": {
+    "s_3d650083f17928": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f956b322-07fa-4d93-946b-aef3206cd113",
+        "model": "MiniMax-M3"
+      },
+      "human_author": "meichao <meichao@bigo.sg>"
+    }
+  }
+}
