@@ -1,0 +1,88 @@
+docs/step10.2-代码自感知/tasks.md
+  s_758a20b036f693::t_be2ced9efb6eb9 1-10,12-46,48-149,152,154,156-162,176-179,181-185,187,189-205,218-286,290-355,357-386,388-391,393-394,396-416,418-430,438
+  s_3d650083f17928::t_c2a046d92be815 11
+  s_758a20b036f693::t_2d1ada2dde8828 387,392,395
+  s_758a20b036f693::t_678045a53e581a 206-217
+  s_758a20b036f693::t_64d10c378678f8 150-151,153,155,163-175,180,186,188
+  s_758a20b036f693::t_d6f59768bc02f8 417
+  s_3d650083f17928::t_63c59db341c6c6 47
+  s_758a20b036f693::t_fa69f9d141c772 287-289
+  s_758a20b036f693::t_c8211e19409460 356
+src/internal/skill/builtin/codebase-overview/reference/skill-system.md
+  s_3d650083f17928::t_89ccdabfbb8296 1-27,29-166
+  s_3d650083f17928::t_d8e70676854b43 28
+src/internal/skill/builtin/codebase-overview/reference/hook-system.md
+  s_3d650083f17928::t_82f2bb0c6b7e7f 1-37
+docs/step10.2-代码自感知/spec.md
+  s_758a20b036f693::t_fee1e231ee8a6a 1-50,65-91,93,95-128
+  s_758a20b036f693::t_6358a27bdd9148 51-64
+  s_758a20b036f693::t_39fd2782d653ef 92,94
+docs/step10.2-代码自感知/checklist.md
+  s_3d650083f17928::t_5a8afcf14e4747 108,110-112,114-116,118-120,122-123
+  s_3d650083f17928::t_189043c7e655c3 146,148-150,152-154,156-158,160-162,164-166,168-169,173-177,179-181,183-189,191-193,195-197,199-201,203-205,207-209,211-231
+  s_3d650083f17928::t_f8bc336a9b5e61 10,14,16-18,21-22,24-25
+  s_758a20b036f693::t_612e3a9f52a926 45,47-59,63,75,79,83
+  s_3d650083f17928::t_c952d7245793ad 29,31-33,35-37,39-41,43-44
+  s_3d650083f17928::t_80b6c2c87f675e 74,76-78,80-81
+  s_758a20b036f693::t_bb1be581fc88a1 109,113,121
+  s_758a20b036f693::t_177a651b5e6be4 1-9,11,15,19,23,26-28,30,34,38,42,46,60-62,64-73,86,106-107,117,124-135,137-139,141-143,145,147,151,155,159,163,167,170-172,178,182,190,194,198,202,206,210
+  s_3d650083f17928::t_413fe8b4eeef82 82,84-85
+  s_3d650083f17928::t_5e6067fd1235d9 87-105
+  s_758a20b036f693::t_13aa97ae991cc6 136,140,144
+  s_3d650083f17928::t_86107b87b4bc1a 12-13,20
+src/internal/skill/builtin/codebase-overview/SKILL.md
+  s_3d650083f17928::t_d89035aa3a6142 1-2,4-51
+  s_3d650083f17928::t_fcca3d812150ee 3
+src/internal/skill/builtin/codebase-overview/reference/permission.md
+  s_3d650083f17928::t_21ce50a3f70b1f 29
+  s_3d650083f17928::t_7d301340b0eef2 1-28,30-207
+src/internal/skill/builtin/codebase-overview/reference/context-management.md
+  s_3d650083f17928::t_ced7972fa78cbb 1-145
+src/internal/skill/builtin/codebase-overview/reference/system-prompt.md
+  s_3d650083f17928::t_895a9ba5076757 1-180
+src/internal/skill/builtin/codebase-overview/reference/tool-system.md
+  s_3d650083f17928::t_a7a838117decba 1-200
+src/internal/skill/builtin/codebase-overview/reference/auto-memory.md
+  s_3d650083f17928::t_ccce07ad94c083 1-176
+src/internal/skill/builtin/codebase-overview/reference/llm-adapter.md
+  s_3d650083f17928::t_bad0fde88e67b4 1-144
+src/internal/skill/builtin/codebase-overview/reference/ui-interaction.md
+  s_3d650083f17928::t_a7df4a28d4bc11 73-76
+  s_3d650083f17928::t_966203cc12aa47 1-72,77-126
+src/internal/engine/prompt/sources/codebase_awareness.go
+  s_3d650083f17928::t_2a14362d2255ce 45
+  s_3d650083f17928::t_2eaa09ffba8c37 1-44,46-91
+src/internal/skill/builtin/codebase-overview/reference/sub-agent.md
+  s_3d650083f17928::t_7c2f1b92cd5b21 1-37
+src/internal/skill/builtin/codebase-overview/reference/mcp-integration.md
+  s_3d650083f17928::t_c2a5a006abb621 1-179
+src/internal/skill/builtin/codebase-overview/reference/self-awareness.md
+  s_3d650083f17928::t_583b509132d6bc 1-159
+src/internal/skill/builtin/codebase-overview/reference/session-management.md
+  s_3d650083f17928::t_0671152c9b75a8 1-151
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.13",
+  "base_commit_sha": "1d9f39c00a47317e9e81db1507f4565cded6fb18",
+  "prompts": {},
+  "logical_commit_id": "1d9f39c00a47317e9e81db1507f4565cded6fb18",
+  "sessions": {
+    "s_3d650083f17928": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f956b322-07fa-4d93-946b-aef3206cd113",
+        "model": "MiniMax-M3"
+      },
+      "human_author": "meichao <meichao@bigo.sg>"
+    },
+    "s_758a20b036f693": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f03c0fee-41b6-4a12-8461-6ad54c778272",
+        "model": "MiniMax-M3"
+      },
+      "human_author": "meichao <meichao@bigo.sg>"
+    }
+  }
+}
