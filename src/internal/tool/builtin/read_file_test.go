@@ -169,3 +169,20 @@ func itoa(i int) string {
 	}
 	return string(buf[pos:])
 }
+
+func TestReadFileEmbeddedBuiltinReference(t *testing.T) {
+	sandbox := t.TempDir()
+	uri := "embedded://internal/skill/builtin/codebase-overview/reference/context-management.md"
+	mw := security.SandboxMiddleware(sandbox, nil)
+	ctx, err := mw(context.Background(), "ReadFile", json.RawMessage(`{"file_path":"embedded://internal/skill/builtin/codebase-overview/reference/context-management.md","limit":5}`), tool.PermRead)
+	if err != nil {
+		t.Fatalf("embedded path should pass sandbox: %v", err)
+	}
+	out, err := NewReadFileTool(sandbox).Execute(ctx, json.RawMessage(`{"file_path":"embedded://internal/skill/builtin/codebase-overview/reference/context-management.md","limit":5}`))
+	if err != nil {
+		t.Fatalf("ReadFile embedded reference: %v", err)
+	}
+	if !strings.Contains(out, "L1:") || !strings.Contains(out, "context") {
+		t.Fatalf("embedded ReadFile output missing expected content for %s:\n%s", uri, out)
+	}
+}

@@ -3,6 +3,7 @@ package security
 import (
 	"context"
 	"encoding/json"
+	"strings"
 
 	"go.uber.org/zap"
 
@@ -219,6 +220,11 @@ func SandboxMiddleware(workdir string, ruleProvider PathRuleProvider, opts ...Mi
 		// 放行 ~/.codepilot/memory 等白名单目录；写入/执行类工具仅认 workdir，
 		// 防止 memory 目录被 WriteFile/EditFile 直接写入（纵深防御）。
 		// err 复用上方 parseInputParams 已声明的同名变量（同作用域，不可重新 :=）。
+		if perm == tool.PermRead && toolName == "ReadFile" && isEmbeddedBuiltinPath(pathStr) {
+			resolver := NewPathResolver()
+			resolver.Set(paramKey, strings.TrimSpace(strings.ReplaceAll(pathStr, "\\", "/")))
+			return WithPathResolver(ctx, resolver), nil
+		}
 		var absPath string
 		if perm == tool.PermRead && len(readRoots) > 0 {
 			absPath, err = ResolveInSandboxWithRoots(pathStr, workdir, readRoots)
@@ -295,4 +301,9 @@ func PathResolverFromContext(ctx context.Context) (*PathResolver, bool) {
 		return nil, false
 	}
 	return r, true
+}
+
+func isEmbeddedBuiltinPath(p string) bool {
+	p = strings.TrimSpace(strings.ReplaceAll(p, "\\", "/"))
+	return strings.HasPrefix(p, "embedded://internal/skill/builtin/")
 }

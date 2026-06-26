@@ -14,7 +14,7 @@ var readFileSchema = json.RawMessage(`{
   "properties": {
     "file_path": {
       "type": "string",
-      "description": "要读取的文件路径（相对工作目录或绝对路径）"
+      "description": "要读取的文件路径（相对工作目录、绝对路径或 embedded:// 内置 Skill 路径）"
     },
     "offset": {
       "type": "integer",

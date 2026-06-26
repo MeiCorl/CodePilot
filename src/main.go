@@ -352,6 +352,134 @@ func buildMemoryReadRoots(toolWorkdir string) []string {
 	return roots
 }
 
+// buildSkillReadRoots 计算 Skill 系统的「附加只读根」，供沙箱放行读取类工具
+// 访问工作目录之外的 Skill 资源目录（Step 10.2 Task 3）。
+//
+// 接收 buildSkillRoots 返回的三类根路径（workdir / homeDir / execDir），
+// 对每个根做 filepath.Abs 规范化,返回所有 Skill 根的绝对路径列表。
+//
+// [Why 需要放行] SKILL.md 内可索引 reference/<module>.md 等子文档,
+//  LLM 拿到 SKILL.md 总索引后,会主动调 ReadFile 读取具体模块子文档;
+//  这些子文档位于 Skill 根目录下(往往在工作目录之外),需放行沙箱才能读取。
+//
+// 空串根(用户无 homeDir 等场景)静默跳过,与 ResolveInSandboxWithRoots 的
+// extraRoots 语义保持一致;filepath.Abs 失败时静默跳过该根,避免单根异常
+// 阻断整个放行链。
+func buildSkillReadRoots(workdir, homeDir, execDir string) []string {
+	var roots []string
+	for _, r := range []string{workdir, homeDir, execDir} {
+		if r == "" {
+			continue
+		}
+		abs, err := filepath.Abs(r)
+		if err != nil {
+			// 单根解析失败不阻断,跳过即可(其他根继续生效)
+			continue
+		}
+		roots = append(roots, abs)
+	}
+	return roots
+}
+
+// findActiveBuiltinRoot 计算 builtin Skill 的「实际可读文件系统根目录」绝对路径,
+//供 use_skill 工具在返回时前置「Skill 根路径提示」,让 LLM 知道怎么用 ReadFile
+//拼出 reference/*.md 等子文档的绝对路径(Step 10.2 Bugfix)。
+//
+// 优先级(与 skill.LoadAll 的三段式 fallback 同构):
+//  1. exeDir 副本路径:<execDir>/internal/skill/builtin/(dist 模式 binary 旁的副本)
+//  2. workdir 向上 16 级找 src/internal/skill/builtin/(dev 模式 / 非 dist 部署)
+//
+// 两段是「或」关系,任一段成功即可;两段都失败返回空字符串(此时 use_skill 会告诉
+// LLM「embedded-only,无 filesystem 副本」)。
+//
+// 防御性:任一候选路径要求至少有一个子目录含 SKILL.md(scanner.findSrcBuiltinFallback
+// 的同款防御,避免空目录误命中)。
+//
+// [Why 不复用 scanner.findSrcBuiltinFallback] findSrcBuiltinFallback 是 unexported,
+// 且它只向上找 src/ 路径,不含 execDir 副本分支;这里需要两个分支同时考虑,
+// 故单独实现一个 main.go 顶层 helper。
+//
+// [Why 返回绝对路径而非相对路径] use_skill 提示里的路径是给 LLM 直接 ReadFile 用的,
+// LLM 用 ReadFile 时传入相对路径会以 sandboxDir(workdir)为基准,可能导致路径越界,
+// 绝对路径更安全。
+func findActiveBuiltinRoot(workdir, execDir string) string {
+	// 1. exeDir 副本优先(dist 模式)
+	if execDir != "" {
+		candidate := filepath.Join(execDir, "internal", "skill", "builtin")
+		if hasBuiltinSkillMDAt(candidate) {
+			if abs, err := filepath.Abs(candidate); err == nil {
+				return abs
+			}
+		}
+	}
+	// 2. workdir 向上 16 级找 src/(dev 模式 / 非 dist 部署)
+	if workdir != "" {
+		absWD, err := filepath.Abs(workdir)
+		if err == nil {
+			cur := absWD
+			for i := 0; i < 16; i++ {
+				candidate := filepath.Join(cur, "src", "internal", "skill", "builtin")
+				if hasBuiltinSkillMDAt(candidate) {
+					return candidate
+				}
+				parent := filepath.Dir(cur)
+				if parent == cur {
+					break
+				}
+				cur = parent
+			}
+		}
+	}
+	return ""
+}
+
+// hasBuiltinSkillMDAt 校验 candidate 目录下是否至少存在一个子目录含 SKILL.md。
+//
+// 与 scanner.findSrcBuiltinFallback 的同名防御逻辑一致:避免「目录存在但没有 SKILL.md」
+// 时误命中(如某些项目里 src/internal/skill/builtin 目录里只是 README.md 占位)。
+func hasBuiltinSkillMDAt(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		skillPath := filepath.Join(dir, e.Name(), "SKILL.md")
+		if _, ferr := os.Stat(skillPath); ferr == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// buildSkillRootBySource 构造 use_skill 工具所需的「三档 Skill 实际可读文件系统根」映射。
+//
+// 三档分别:
+//   - SourceBuiltin → findActiveBuiltinRoot(workdir, execDir) 优先 execDir 副本,
+//     fallback 到 workdir 向上 16 级找 src/internal/skill/builtin/
+//   - SourceUser → filepath.Join(homeDir, ".codepilot/skills")
+//   - SourceProject → filepath.Join(workdir, ".codepilot/skills")
+//
+// 返回值中,某档对应的根不存在时,该档映射为空字符串;use_skill 工具会据此告诉
+// LLM「该 Source 暂无可读路径」,避免 LLM 盲目尝试各种路径。
+//
+// [Why 全档都返回 map,即使路径为空] use_skill 实现用 map[Source]string 取值,
+// 返回 nil vs 返回空 map 行为不一致;返回空 map 更明确「我知道这三档,只是某档
+// 现在没有可读路径」。
+func buildSkillRootBySource(workdir, homeDir, execDir string) map[skill.Source]string {
+	rootBySource := make(map[skill.Source]string, 3)
+	rootBySource[skill.SourceBuiltin] = findActiveBuiltinRoot(workdir, execDir)
+	if homeDir != "" {
+		rootBySource[skill.SourceUser] = filepath.Join(homeDir, ".codepilot/skills")
+	}
+	if workdir != "" {
+		rootBySource[skill.SourceProject] = filepath.Join(workdir, ".codepilot/skills")
+	}
+	return rootBySource
+}
+
 // run 是主流程入口；返回 error 表示启动或运行过程中发生不可恢复错误。
 // 拆出独立函数便于在测试中调用（虽然 step1.1 暂未引入 main 测试）。
 func run() error {
@@ -479,12 +607,27 @@ func run() error {
 
 	// use_skill 工具注册(skillReg != nil 时)。
 	// 走 toolRegistry.Register(同名走 "use_skill" 字符串)而不是 MustRegister,
-	// 因为同名校验失败时只记录 warn 不阻断启动(理论不会发生冲突,5 个内置工具
+	// 因为同校验证失败时只记录 warn 不阻断启动(理论不会发生冲突,5 个内置工具
 	// 不含 use_skill)。工具由 Skill 系统独占时使用,无副作用(只读)。
+	//
+	// rootBySource 注入三档 Skill 的「实际可读文件系统根」绝对路径(Step 10.2 Bugfix):
+	//   - builtin → findActiveBuiltinRoot(skillWorkdir, skillExecDir) 优先 execDir 副本,
+	//     fallback 到 workdir 向上 16 级找 src/internal/skill/builtin/
+	//   - user → <homeDir>/.codepilot/skills
+	//   - project → <skillWorkdir>/.codepilot/skills
+	// use_skill 工具在返回 SKILL.md 内容前会前置一段 XML 路径提示,告诉 LLM 怎么用
+	// ReadFile 拼出 reference/*.md 等子文档的绝对路径;没有 rootBySource 时 LLM
+	// 拿不到 builtin Skill 的真实路径,会出现「embedded Skill 找不到子文档」的 bug。
 	if skillReg != nil {
-		if err := toolRegistry.Register(skilladapter.NewUseSkillTool(skillReg)); err != nil {
+		rootBySource := buildSkillRootBySource(skillWorkdir, skillHomeDir, skillExecDir)
+		if err := toolRegistry.Register(skilladapter.NewUseSkillTool(skillReg, rootBySource)); err != nil {
 			logger.Warn("use_skill 工具注册失败", zap.Error(err))
 		}
+		logger.Info("use_skill 路径提示注入就绪",
+			zap.String("builtin_root", rootBySource[skill.SourceBuiltin]),
+			zap.String("user_root", rootBySource[skill.SourceUser]),
+			zap.String("project_root", rootBySource[skill.SourceProject]),
+		)
 	}
 
 	// 6.5 Step 5：权限系统构造。
@@ -510,10 +653,22 @@ func run() error {
 	// 实际目录一致。仅 PermRead 工具生效（写入类工具不能直接改 memory，纵深防御）；
 	// 沙箱放行仅解除路径限制，权限层 permission.Decide 仍照常按 mode 决策
 	// （跨 workdir 读取用户级 memory 在 Strict 模式仍走 Ask/Deny）。
+	//
+	// Step 10.2 Task 3：在记忆附加根之上追加「Skill 根目录附加只读根」,
+	// 使 LLM 拿到 SKILL.md 总索引后可主动 ReadFile 读取 reference/<module>.md
+	// 等同目录子文档。skillRoots 与上文 skillWorkdir/skillHomeDir/skillExecDir
+	// 同源(Step 10 Task 7 已计算),保证沙箱放行范围与 Skill 实际目录一致。
 	memoryReadRoots := buildMemoryReadRoots(toolWorkdir)
+	skillReadRoots := buildSkillReadRoots(skillWorkdir, skillHomeDir, skillExecDir)
+	allReadRoots := append(memoryReadRoots, skillReadRoots...)
 	toolHandler.RegisterMiddleware(security.SandboxMiddleware(
-		toolWorkdir, checker, security.WithReadRoots(memoryReadRoots),
+		toolWorkdir, checker, security.WithReadRoots(allReadRoots),
 	))
+	logger.Info("沙箱 ReadFile 附加只读根就绪",
+		zap.Int("memory_roots", len(memoryReadRoots)),
+		zap.Int("skill_roots", len(skillReadRoots)),
+		zap.Strings("skill_roots_paths", skillReadRoots),
+	)
 
 	logger.Info("权限系统就绪",
 		zap.String("mode", string(checker.Mode())),
@@ -603,6 +758,12 @@ func run() error {
 	}
 	// Step 10.1:无条件追加配置自感知 Source 到链尾（最稳定、零依赖）
 	promptSources = append(promptSources, sources.NewConfigAwarenessSource())
+	// Step 10.2:无条件追加代码自感知 Source 到链尾（最稳定、零依赖）。
+	// 与 ConfigAwarenessSource 范式一致：纯静态常量 + 零值 struct + ~40-50 token，
+	// 告知 Agent「CodePilot 自身实现原理 → 加载 codebase-overview skill」。
+	// skill.enabled=false 时本段仍生效（自描述与 Skill 可用性解耦），
+	// 符合 Step 10/10.1 「指向 Skill 不可用是已知降级」的范式。
+	promptSources = append(promptSources, sources.NewCodebaseAwarenessSource())
 	promptBuilder := prompt.NewBuilder(promptSources...)
 
 	// 8. 构造 Handler / Server

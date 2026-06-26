@@ -144,7 +144,7 @@ func LoadAll(workdir, homeDir, execDir string, maxBytes int) (*Registry, []LoadI
 }
 
 // findSrcBuiltinFallback 从 workdir 向上查找 src/internal/skill/builtin 目录,
-//作为「内置 Skill」第三段 fallback 路径,用于支持以下场景:
+// 作为「内置 Skill」第三段 fallback 路径,用于支持以下场景:
 //
 //  1. binary 在 dist 路径编译并启动(典型 release 模式):exeDir 路径有 SKILL.md
 //     副本,本函数不参与(返回 "");
@@ -257,7 +257,7 @@ func scanEmbeddedBuiltins(reg *Registry, maxBytes int, issues *[]LoadIssue) erro
 		return nil
 	}
 	for _, entry := range entries {
-		displayPath := "embedded://internal/skill/builtin/" + entry.Path
+		displayPath := skillbuiltin.EmbeddedRoot + "/" + entry.Path
 		s, perr := parseFrontmatterString(displayPath, entry.Content)
 		if perr != nil {
 			*issues = append(*issues, LoadIssue{Path: displayPath, Err: perr, Source: SourceBuiltin})
