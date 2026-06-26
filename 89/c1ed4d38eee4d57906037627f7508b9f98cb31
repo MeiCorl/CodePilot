@@ -1,0 +1,49 @@
+src/internal/engine/prompt/sources/codebase_awareness.go
+  s_3d650083f17928::t_2eaa09ffba8c37 1-44,46-91
+  s_3d650083f17928::t_2a14362d2255ce 45
+docs/step10.2-代码自感知/spec.md
+  s_758a20b036f693::t_6358a27bdd9148 51-64
+  s_758a20b036f693::t_39fd2782d653ef 92,94
+  s_758a20b036f693::t_fee1e231ee8a6a 1-50,65-91,93,95-128
+docs/step10.2-代码自感知/checklist.md
+  s_3d650083f17928::t_f8bc336a9b5e61 10,12-14,16-18,20-22,24-25
+  s_758a20b036f693::t_bb1be581fc88a1 109,113,121
+  s_758a20b036f693::t_13aa97ae991cc6 136,140,144
+  s_758a20b036f693::t_177a651b5e6be4 1-9,11,15,19,23,26-44,46,60-62,64-74,76-78,84-96,99-108,110-112,114-120,122-135,137-139,141-143,145-212
+  s_758a20b036f693::t_612e3a9f52a926 45,47-59,63,75,79-83
+  s_758a20b036f693::t_08b8b59799a69e 97-98
+docs/step10.2-代码自感知/tasks.md
+  s_3d650083f17928::t_c2a046d92be815 11
+  s_758a20b036f693::t_fa69f9d141c772 287-289
+  s_758a20b036f693::t_2d1ada2dde8828 387,392,395
+  s_758a20b036f693::t_678045a53e581a 206-217
+  s_758a20b036f693::t_c8211e19409460 356
+  s_758a20b036f693::t_be2ced9efb6eb9 1-10,12-149,152,154,156-162,176-179,181-185,187,189-205,218-286,290-355,357-386,388-391,393-394,396-416,418-430
+  s_758a20b036f693::t_d6f59768bc02f8 417
+  s_758a20b036f693::t_64d10c378678f8 150-151,153,155,163-175,180,186,188
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.13",
+  "base_commit_sha": "89c1ed4d38eee4d57906037627f7508b9f98cb31",
+  "prompts": {},
+  "logical_commit_id": "89c1ed4d38eee4d57906037627f7508b9f98cb31",
+  "sessions": {
+    "s_3d650083f17928": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f956b322-07fa-4d93-946b-aef3206cd113",
+        "model": "MiniMax-M3"
+      },
+      "human_author": "meichao <meichao@bigo.sg>"
+    },
+    "s_758a20b036f693": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f03c0fee-41b6-4a12-8461-6ad54c778272",
+        "model": "MiniMax-M3"
+      },
+      "human_author": "meichao <meichao@bigo.sg>"
+    }
+  }
+}
