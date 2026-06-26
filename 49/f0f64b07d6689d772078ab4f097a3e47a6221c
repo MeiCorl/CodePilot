@@ -1,0 +1,24 @@
+src/internal/skill/builtin/codebase-overview/SKILL.md
+  s_3d650083f17928::t_66f2e0e02b02be 15,17,19,21-23,25
+src/internal/skill/adapter/tool.go
+  s_3d650083f17928::t_bf2ab07b45998a 240,242,244-260,268-272
+  s_3d650083f17928::t_107d63ad5407b1 298-300,302-304,307-310
+  s_3d650083f17928::t_60f242bddee9d7 293,297,301,305-306,311-312
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.13",
+  "base_commit_sha": "49f0f64b07d6689d772078ab4f097a3e47a6221c",
+  "prompts": {},
+  "logical_commit_id": "49f0f64b07d6689d772078ab4f097a3e47a6221c",
+  "sessions": {
+    "s_3d650083f17928": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "f956b322-07fa-4d93-946b-aef3206cd113",
+        "model": "MiniMax-M3"
+      },
+      "human_author": "meichao <meichao@bigo.sg>"
+    }
+  }
+}
