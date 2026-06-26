@@ -1,0 +1,43 @@
+README.md
+  s_44ca7aa15ea85b::t_9a7413d4461d20 121,125,165,172-189,191
+  h_04e25195537956 123
+  s_44ca7aa15ea85b::t_8a61b17a12a394 837
+  s_44ca7aa15ea85b::t_0c5bb23f3712d7 669-674
+  s_44ca7aa15ea85b::t_92c5c2f1a1b21d 110-120,122,124,126-164,166-171,190,192-200,202,204,211,214-216,222-223
+  s_44ca7aa15ea85b::t_b0b2178b60bc52 889,893,910-911
+  s_44ca7aa15ea85b::t_c188d3125fddc5 95-97
+  s_44ca7aa15ea85b::t_f07487d3f17a6f 15
+  s_44ca7aa15ea85b::t_51e64853446f10 224
+.gitignore
+  s_e9b5f95669fe4c::t_5d3214ddd34eb5 2
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "8342d6abe167340c5244267d39d68d728565a638",
+  "prompts": {},
+  "logical_commit_id": "8342d6abe167340c5244267d39d68d728565a638",
+  "humans": {
+    "h_04e25195537956": {
+      "author": "meichao <meichao@bigo.sg>"
+    }
+  },
+  "sessions": {
+    "s_44ca7aa15ea85b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "fb2d0c0a-4dd1-4792-95e6-1c6d8f586a2b",
+        "model": "MiniMax-M3"
+      },
+      "human_author": "meichao <meichao@bigo.sg>"
+    },
+    "s_e9b5f95669fe4c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f0303-ac10-7411-ba21-3e00c3f25992",
+        "model": "gpt-5.5"
+      },
+      "human_author": "meichao <meichao@bigo.sg>"
+    }
+  }
+}
