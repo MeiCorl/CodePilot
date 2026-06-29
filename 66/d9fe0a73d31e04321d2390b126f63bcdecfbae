@@ -1,0 +1,185 @@
+src/internal/hook/matcher/condition.go
+  s_42e2f898ab9c9b::t_eaf2e40b5f0a83 1-95,108-113,121,126,129-156
+  s_42e2f898ab9c9b::t_c36bcd52e2dd88 96-101
+  s_42e2f898ab9c9b::t_b2b1028db38621 102-107
+  s_42e2f898ab9c9b::t_503c1d1707d2ab 114-120,122-125,127-128
+src/internal/hook/executor/command.go
+  s_42e2f898ab9c9b::t_64681ff260ee92 1-230
+src/internal/hook/interpolate.go
+  s_42e2f898ab9c9b::t_417a9868d4538a 6-7,10
+  s_42e2f898ab9c9b::t_855741e386e4d9 2-4,8,11-12
+  s_42e2f898ab9c9b::t_fafd53b1d8db01 1,5,9
+  s_42e2f898ab9c9b::t_10cb72e4790d58 13
+docs/step11-Hook系统/spec.md
+  s_1b897f1dee75ed::t_c25eb839b1df72 1-319
+docs/step11-Hook系统/checklist.md
+  s_42e2f898ab9c9b::t_f82229c19eb56a 108,110-112,114-116,118-120,122-124,126-128,130-132,134-136,138-140,142-144,146-148,150-152,154-156,158-159
+  s_42e2f898ab9c9b::t_b836a9ed0a0b80 51,53-55,57-59,61-63,65-67,69-71,73-75,77-79,81-83,85-87,89-91,93-95,97-99,101-102
+  s_42e2f898ab9c9b::t_c695c4c2d499ac 10,12-14,16-18,20-22,24-26,28-30,32-34,36-38,40-42,44-45
+  s_1b897f1dee75ed::t_3520633366b1e7 1-9,11,15,19,23,27,31,35,39,43,46-50,52,56,60,64,68,72,76,80,84,88,92,96,100,103-107,109,113,117,121,125,129,133,137,141,145,149,153,157,160-164,166,170,174,178,182,186,190,194,198,202,206,210,214,218,222,226,230,234,238,242,246,249-535
+  s_42e2f898ab9c9b::t_d4f63d9bac721e 165,167-169,171-173,175-177,179-181,183-185,187-189,191-193,195-197,199-201,203-205,207-209,211-213,215-217,219-221,223-225,227-229,231-233,235-237,239-241,243-245,247-248
+docs/step11-Hook系统/tasks.md
+  s_42e2f898ab9c9b::t_b995e25317ef45 148
+  s_42e2f898ab9c9b::t_c25044eff7c966 210
+  s_42e2f898ab9c9b::t_31ecc446b1bd2e 13
+  s_1b897f1dee75ed::t_e358594adb2b00 1-12,14-70,72-147,149-209,211-611
+  s_42e2f898ab9c9b::t_7212d1864acb69 71
+src/internal/hook/executor/prompt.go
+  s_42e2f898ab9c9b::t_16104da99f5a59 16-18,22-24,46-47,64-65,92-93,95,103,105-106,108-110,112-116
+  s_42e2f898ab9c9b::t_2a2dae004f6060 8,15,19-21,50-52,54-55,80,84-90,96,99,107
+  s_42e2f898ab9c9b::t_894c1da8fdf3c9 1-7,9-14,25-45,48-49,53,56-63,66-79,81-83,91,94,97-98,100-102,104,111,117-137
+src/internal/hook/executor/http.go
+  s_42e2f898ab9c9b::t_93ba6611b2a1b3 54-56,59,95,135
+  s_42e2f898ab9c9b::t_3207e74ef01267 1-53,57-58,60-94,96-134,136-181
+src/internal/config/config_test.go
+  s_42e2f898ab9c9b::t_917f8d29585195 394-396
+  s_42e2f898ab9c9b::t_cb19deda423f14 503-504
+  s_42e2f898ab9c9b::t_d4dcdb1e89cc84 384-392
+  s_42e2f898ab9c9b::t_ed2da1fd1c38b7 430-431
+  s_42e2f898ab9c9b::t_2ffcfd346cbde8 398-399
+  s_42e2f898ab9c9b::t_4e17a27cf8f54d 420-423
+  s_42e2f898ab9c9b::t_31ca409cb80c8d 425-428
+  s_42e2f898ab9c9b::t_d3562734a377f7 369
+  s_42e2f898ab9c9b::t_e586f4b025f8d8 433-437
+  s_42e2f898ab9c9b::t_120e4ddafa6d33 490-491
+  s_42e2f898ab9c9b::t_88a57ea9041ec6 414-415
+  s_42e2f898ab9c9b::t_3141dbec65e020 493-495
+  s_42e2f898ab9c9b::t_7b470d62dc45e1 417-418
+  s_42e2f898ab9c9b::t_ae38ef16480b51 372-381
+  s_42e2f898ab9c9b::t_deab3947c3605a 7,149-366,368,370-371,382-383,393,397,400,403-404,413,416,419,424,429,432,438,444-446,479-480,486,489,492,496,499,502,505,508-509
+  s_42e2f898ab9c9b::t_1e4f9e4a1aeea5 439-443
+  s_42e2f898ab9c9b::t_d517986e92f9e5 447-478
+  s_42e2f898ab9c9b::t_14089e52ad023d 481-485
+  s_42e2f898ab9c9b::t_0b5cb7659094ba 487-488
+  s_42e2f898ab9c9b::t_7ce35b5c2ddd19 497-498
+  s_42e2f898ab9c9b::t_b24b5cd3c95929 405-412
+  s_42e2f898ab9c9b::t_e77cd756507762 401-402
+  s_42e2f898ab9c9b::t_be1ad27b67d3af 506-507
+  s_42e2f898ab9c9b::t_bceba1d9711c57 510-512
+  s_42e2f898ab9c9b::t_eea59096ed68d2 367
+  s_42e2f898ab9c9b::t_a8f66958c7ba91 500-501
+  s_42e2f898ab9c9b::t_648c882525a0a8 513-514
+src/internal/hook/matcher/matcher.go
+  s_42e2f898ab9c9b::t_dc9d74d6cabb47 92-96,106-107
+  s_42e2f898ab9c9b::t_90396474b3a904 1-91,97-105,108-303,309-310,315-326,332,342,345-439
+  s_42e2f898ab9c9b::t_e61106636cac61 304-308,311-314,327-331,333-341,343-344
+src/internal/hook/context.go
+  s_42e2f898ab9c9b::t_002f4d964567cd 16
+  s_42e2f898ab9c9b::t_32035cce5662af 1-15,17-38
+src/internal/hook/executor/executor.go
+  s_42e2f898ab9c9b::t_c2ccca73b6ce63 1-156,160,164-284
+  s_42e2f898ab9c9b::t_8669ebb3a52c12 157-159,161-163
+src/internal/config/config.go
+  s_42e2f898ab9c9b::t_de709b9c8dca79 668
+  s_42e2f898ab9c9b::t_a6c3e3c719c8ef 647-651
+  s_42e2f898ab9c9b::t_2cad45536faa54 730
+  s_42e2f898ab9c9b::t_9c06a117ce2811 616
+  s_42e2f898ab9c9b::t_903f0b8b66cbba 706-721,723-728
+  s_42e2f898ab9c9b::t_ef1da4e929ab2a 639
+  s_42e2f898ab9c9b::t_dede54fc4def25 349-359
+  s_42e2f898ab9c9b::t_d0588dcfd31188 328-344
+  s_42e2f898ab9c9b::t_61e352b5bb896e 653-662
+  s_42e2f898ab9c9b::t_baeefb8afb1f72 319-326
+  s_42e2f898ab9c9b::t_aa048995a683e8 618-631
+  s_42e2f898ab9c9b::t_d54bb374e9a62d 670-676
+  s_42e2f898ab9c9b::t_426f2c2a9fb2b9 633-634
+  s_42e2f898ab9c9b::t_e1f94fca108a86 641-645
+  s_42e2f898ab9c9b::t_8f1479b0bf8adf 316-317
+  s_42e2f898ab9c9b::t_7a5180a19d0241 262-265
+  s_42e2f898ab9c9b::t_acdf3a623b6e5b 678-704,761
+  s_42e2f898ab9c9b::t_2e40279754eb57 259-261
+  s_42e2f898ab9c9b::t_5f01e9501b9f66 257-258
+  s_42e2f898ab9c9b::t_de386f3cfe858b 267-268
+  s_42e2f898ab9c9b::t_bc33ff80f21a32 270-294
+  s_42e2f898ab9c9b::t_e49be782628a2d 636-637
+  s_42e2f898ab9c9b::t_61b6ab7b83f70a 299-314
+  s_42e2f898ab9c9b::t_f33599de57df2a 346-347
+  s_42e2f898ab9c9b::t_b0e2b821695eae 64-68
+  s_42e2f898ab9c9b::t_5f6d378a104bba 233-256,266,269,295,298,315,318,327,345,348,360,614,617,632,635,638,640,646,652,664,667,669,677,705,729
+  s_42e2f898ab9c9b::t_56280bd0af4cfc 296-297
+  s_42e2f898ab9c9b::t_5ed9da8aa2315a 665-666
+  s_42e2f898ab9c9b::t_5d6394d5defb6d 361
+  s_42e2f898ab9c9b::t_dbd99d60da8407 663
+  s_42e2f898ab9c9b::t_f1a4763909fe04 722
+  s_42e2f898ab9c9b::t_b135fde8eb302d 762-764
+src/internal/hook/executor/agent.go
+  s_42e2f898ab9c9b::t_99ca702e6c1332 37
+  s_42e2f898ab9c9b::t_d3b7857d9c6062 1-36,38-241
+src/internal/hook/event.go
+  s_42e2f898ab9c9b::t_c8d7908ed61d9d 1-8,10-46
+  s_42e2f898ab9c9b::t_babc1996c1e9e3 9
+.harness/PROGRESS.md
+  s_4b36131f8e3479::t_c60888dc259e62 1,16-17,19-20,25,53,60-61,90-91
+src/internal/engine/conversation/agent_loop.go
+  s_4b36131f8e3479::t_dac5f38196567e 14,17,117,129-136,143,157-158,173,177-178,187-188,194,205-206,215,223-224,228,240-241,261-262,277-278,284,322,328,356,368
+src/internal/engine/conversation/manager.go
+  s_4b36131f8e3479::t_898b40a6a827f3 14-15,19,49-58,102-192,322,330,635-638,663
+src/internal/engine/conversation/tool_handler.go
+  s_4b36131f8e3479::t_8f071499a59c7f 14,18,83-87,140-160,200,205,248,272,283,364-412,433-435
+src/internal/engine/prompt/sources/hooks_awareness.go
+  s_4b36131f8e3479::t_57b56c0d40d3a9 1-28
+src/internal/hook/engine.go
+  s_4b36131f8e3479::t_83332cefc2fa2a 1-535
+src/internal/hook/integration/compact.go
+  s_4b36131f8e3479::t_435ca8cb5c4d74 1-16
+src/internal/hook/integration/integration_smoke_test.go.1780235583488307049
+  s_4b36131f8e3479::t_08da2c0e41503a 1-180
+src/internal/hook/integration/integration_smoke_test.go.3248436821680735967
+  s_4b36131f8e3479::t_6059439829f6fb 1-180
+src/internal/hook/integration/integration_smoke_test.go.403152778345127698
+  s_4b36131f8e3479::t_2139b108d77b8e 1-180
+src/internal/hook/integration/integration_smoke_test.go.542520334398215749
+  s_4b36131f8e3479::t_f029acaadafd2c 1-180
+src/internal/hook/integration/loop.go
+  s_4b36131f8e3479::t_8ea09fea0c586c 1-14
+src/internal/hook/integration/prompt.go
+  s_4b36131f8e3479::t_6a98e14317d6d1 1-8
+src/internal/hook/integration/session.go
+  s_4b36131f8e3479::t_82aa5ffbefbd9f 1-16
+src/internal/hook/integration/tool.go
+  s_4b36131f8e3479::t_ed80928a464e9e 1-14
+src/internal/interaction/web/handler.go
+  s_4b36131f8e3479::t_0683567e1880c0 23,126-127,359-417,630,831,833,837,839-842,844,850-856,863-864,901,935-936,943-945,954,1590
+src/internal/skill/builtin/hook-system/SKILL.md
+  s_4b36131f8e3479::t_6813e1bf85e2ba 1-259
+src/main.go
+  s_4b36131f8e3479::t_79c0050e461a2e 42-43,769-770,861-893
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "66d9fe0a73d31e04321d2390b126f63bcdecfbae",
+  "prompts": {},
+  "logical_commit_id": "66d9fe0a73d31e04321d2390b126f63bcdecfbae",
+  "humans": {
+    "h_04e25195537956": {
+      "author": "meichao <meichao@bigo.sg>"
+    }
+  },
+  "sessions": {
+    "s_1b897f1dee75ed": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "56c3249b-1a89-4fe7-b759-24bf303b87aa",
+        "model": "MiniMax-M3"
+      },
+      "human_author": "meichao <meichao@bigo.sg>"
+    },
+    "s_42e2f898ab9c9b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7b461a0d-b19f-4c47-893a-f35d0968481b",
+        "model": "MiniMax-M3"
+      },
+      "human_author": "meichao <meichao@bigo.sg>"
+    },
+    "s_4b36131f8e3479": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f119c-4f33-7973-99a2-18dcf3f650ac",
+        "model": "gpt-5.5"
+      },
+      "human_author": "meichao <meichao@bigo.sg>"
+    }
+  }
+}
