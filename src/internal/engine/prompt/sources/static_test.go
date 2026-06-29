@@ -123,7 +123,7 @@ func TestStaticSource_StaticOverride(t *testing.T) {
 	custom := "<system_role>\n我是定制的角色\n</system_role>"
 
 	section, err := s.Assemble(context.Background(), Env{
-		OS: "linux",
+		OS:  "linux",
 		CWD: "/tmp",
 		StaticOverrides: map[string]string{
 			ModuleSystemRole: custom,
@@ -193,5 +193,39 @@ func TestStaticSource_OrderPreserved(t *testing.T) {
 			t.Errorf("子模块 %q 出现位置 (%d) 早于前一个子模块 (%d)，顺序错乱", m, idx, lastIdx)
 		}
 		lastIdx = idx
+	}
+}
+func TestHooksAwarenessSourceAssemble(t *testing.T) {
+	src := NewHooksAwarenessSource()
+	if src.Name() != "hooks_awareness" {
+		t.Fatalf("Name() = %q", src.Name())
+	}
+
+	section, err := src.Assemble(context.Background(), Env{})
+	if err != nil {
+		t.Fatalf("Assemble() error = %v", err)
+	}
+	if section.Name != "hooks_awareness" {
+		t.Fatalf("section.Name = %q", section.Name)
+	}
+	if section.Placement != PlacementSystem {
+		t.Fatalf("Placement = %v, want PlacementSystem", section.Placement)
+	}
+	if section.Content == "" {
+		t.Fatal("Content is empty")
+	}
+	if section.Tokens >= 100 {
+		t.Fatalf("Tokens = %d, want < 100", section.Tokens)
+	}
+	for _, want := range []string{
+		"config-management",
+		"codebase-overview",
+		"setting.json",
+		"command/http/prompt/agent",
+		"ReadFile+EditFile/WriteFile",
+	} {
+		if !strings.Contains(section.Content, want) {
+			t.Fatalf("Content missing %q: %s", want, section.Content)
+		}
 	}
 }

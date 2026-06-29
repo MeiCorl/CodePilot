@@ -61,6 +61,11 @@ type Config struct {
 	// use_skill 工具、不注入 SkillsIndexSource、不注册 Skill 类 slash 命令），
 	// 但 /skills client 命令仍注册（前端可拉到空 Skill 列表）。
 	Skill SkillConfig `json:"skill,omitempty"`
+	// Hook 为 Hook 系统配置（Step 11），控制 Hook 引擎的总开关与 entries 列表。
+	// 留空（零值）时由 setDefaults 填充默认值；总开关默认开启，
+	// enabled=false 时 Hook 引擎完全跳过（不加载配置、不注册事件、不影响主流程）。
+	// 不存在 hooks 段时等同于 enabled=true + entries=[]（零配置安全降级）。
+	Hook HookConfig `json:"hook,omitempty"`
 }
 
 // MCPConfig 是 MCP 客户端的整体配置段,对应 setting.json 中 "mcp" 对象。
@@ -225,6 +230,135 @@ func (s SkillConfig) IsEnabled() bool {
 	return *s.Enabled
 }
 
+// HookConfig 是 Hook 系统（Step 11）的配置段，对应 setting.json 中 "hook" 对象。
+//
+// 字段语义与默认值：
+//   - Enabled：Hook 引擎总开关。默认 true；显式设 false 时 Hook 引擎完全跳过
+//     （不加载配置、不注册事件、不影响主流程）。使用 *bool 指针以区分
+//     「未配置（→默认 true）」与「显式关闭（false）」——Go 的 bool 零值是 false，
+//     若用值类型将无法表达「默认开启」，与 CompactionConfig / MemoryConfig /
+//     SkillConfig 同理。
+//   - Entries：单条 hook 配置数组。空切片表示零配置安全降级（Hook 引擎存在但空跑，
+//     启动耗时增加 < 5ms）。数组顺序敏感——同事件内按数组顺序执行。
+//
+// 多层合并：项目级 <cwd>/.codepilot/setting.json 与全局 ~/.codepilot/setting.json
+// 沿用 Step 5/8/10 的「字段级合并」语义：
+//   - Enabled：项目级显式设置（非 nil）时覆盖全局，否则沿用全局；
+//   - Entries：项目级非空时整体替换（项目级 entries 完全覆盖全局 entries），
+//     为空时沿用全局——这是「数组替换」而非「数组拼接」，与 Step 5 权限的「规则追加」
+//     不同，原因是 hook 列表属于「事件触发器」而非「白名单规则」，整体替换语义
+//     更贴近用户对「项目级 hook」的直觉。
+type HookConfig struct {
+	// Enabled 为 Hook 系统总开关；nil 视为 true（默认开启），通过 IsEnabled() 访问。
+	Enabled *bool `json:"enabled,omitempty"`
+	// Entries 为单条 hook 配置数组，顺序敏感。可为空切片（等同于零配置降级）。
+	Entries []HookEntryConfig `json:"entries,omitempty"`
+}
+
+// IsEnabled 返回 Hook 总开关的最终生效值：未配置（nil）时默认 true，
+// 否则取显式设置。调用方（hook.LoadFromConfig / hook.Engine.New）通过本方法
+// 读取，避免到处判 nil。
+func (h HookConfig) IsEnabled() bool {
+	if h.Enabled == nil {
+		return true
+	}
+	return *h.Enabled
+}
+
+// HookEntryConfig 是单条 hook 配置，对应 setting.json 中 hook.entries[] 单元素。
+//
+// 字段语义：
+//   - Name：hook 唯一标识（同事件内可重复，按数组顺序执行；同名仅便于排错）。
+//   - Event：触发事件名，必须 12 类事件之一（程序启动/退出/压缩/错误/会话开始/结束/
+//     轮次开始/结束/工具前后/消息前后），由 ValidateHookConfig 校验。
+//   - Condition：触发条件，可选。JSON.RawMessage 透传：保留原始结构以便 hook
+//     matcher 包后续按需解析（leaf/all/any 三层结构）。nil / 空对象均视为「永远匹配」。
+//   - Action：动作定义，必填。包含 Type（command/http/prompt/agent 四选一）+ type-specific
+//     子字段（同样用 JSON.RawMessage 透传，由 hook/executor 包解析）。
+//   - Async：异步执行标志。true 时 Engine 在 goroutine 中执行,不阻塞主 Agent Loop;
+//     false 时同步阻塞,默认超时由 Engine 配置。
+//   - Once：单会话内一次性触发标志。true 时同 sessionID + Name 第二次起跳过 + 记 debug 日志。
+type HookEntryConfig struct {
+	// Name 为 hook 唯一标识，便于排错与 once 追踪；同事件内可重复。
+	Name string `json:"name"`
+	// Event 为触发事件名，必须 12 类事件之一。
+	Event string `json:"event"`
+	// Condition 为可选触发条件（all/any/leaf），nil/空对象视为永远匹配。
+	// 用 RawMessage 透传原始 JSON 以便 matcher 包解析。
+	Condition *json.RawMessage `json:"condition,omitempty"`
+	// Action 为动作定义，必填（Type 必须 command/http/prompt/agent 之一）。
+	Action HookActionConfig `json:"action"`
+	// Async 为异步执行标志，默认 false。
+	Async bool `json:"async,omitempty"`
+	// Once 为单会话一次性触发标志，默认 false。
+	Once bool `json:"once,omitempty"`
+}
+
+// HookActionConfig 是单条 hook 的动作定义，对应 setting.json 中 hook.entries[].action。
+//
+// Type-specific 字段（Command / WorkingDir / Env / Timeout / Method / URL /
+// Headers / Body / Text / As / Prompt / MaxIterations / AllowTools）统一用
+// json.RawMessage 透传，由 hook/executor 包按 Type 分别反序列化。
+// [Why RawMessage] 4 种 action 的字段差异巨大（command 用 command/working_dir/env/timeout；
+// http 用 method/url/headers/body/timeout；prompt 用 text/as；agent 用 prompt/
+// max_iterations/allow_tools/timeout），若用强类型字段会把 4 套字段塞进同一 struct，
+// 序列化时互相干扰且不利于后续新增 action 类型。RawMessage 延迟解析到 executor 阶段，
+// config 包只校验 Type 合法性。
+type HookActionConfig struct {
+	// Type 为动作类型，必填，必须 command/http/prompt/agent 之一。
+	Type string `json:"type"`
+	// Raw 透传 type-specific 字段原始 JSON，由 hook/executor 包按 Type 分支解析。
+	// 序列化为 action 对应的内联对象（即展开在 action 节点下，而非嵌套 raw 字段）。
+	// [Why 暴露字段] 使用 MarshalJSON/UnmarshalJSON 把 Raw 平铺进 action 对象，
+	// 与 Type 同层（避免 setting.json 里出现 action: { type, raw: {...} 这种丑陋结构）。
+	Raw json.RawMessage `json:"-"`
+}
+
+// UnmarshalJSON 让 HookActionConfig 接受「type 与 type-specific 字段同层」的 JSON 结构。
+//
+// 输入示例（来自 setting.json）:
+//   {
+//     "type": "command",
+//     "command": "echo $TOOL_INPUT_FILE_PATH",
+//     "working_dir": "",
+//     "env": { "NO_COLOR": "1" },
+//     "timeout": "10s"
+//   }
+//
+// [Why 自定义 Unmarshal] 标准库对带 `json:"-"` 字段的 struct 无能为力——
+// 若只声明 Type 字段并把其它字段透传为 Raw,标准库会丢掉 type-specific 部分。
+// 这里用「先反序列化为 map,提取 type 后把剩余部分整体打包成 Raw」的两步走,
+//保证 Executor 阶段拿到完整的 type-specific 原始 JSON。
+func (a *HookActionConfig) UnmarshalJSON(data []byte) error {
+	// 用临时 struct 接收 type，避免 type 字段被吃进 Raw
+	var probe struct {
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return err
+	}
+	a.Type = probe.Type
+	// 把「整个原始 JSON」存入 Raw，由 executor 按 Type 自行再解析（保留 type 字段,
+	// 方便 executor 用 map 方式访问或整体 json.Unmarshal 到专用结构体）
+	a.Raw = append(a.Raw[:0], data...)
+	return nil
+}
+
+// MarshalJSON 把 HookActionConfig 序列化为「type 与 type-specific 字段同层」结构。
+//
+// 若 Raw 为空（用户代码直接构造 HookActionConfig{Type: "command"} 未填充 Raw）,
+// 仅输出 {"type":"command"}；若 Raw 非空,直接把 Raw 写出即可（因为 UnmarshalJSON
+// 已经把原始 JSON 完整存进 Raw,「type」字段在 Raw 中也存在,不会丢）。
+func (a HookActionConfig) MarshalJSON() ([]byte, error) {
+	if len(a.Raw) == 0 {
+		// 零 Raw 场景：构造一个只含 type 的最小 JSON 对象
+		return json.Marshal(struct {
+			Type string `json:"type"`
+		}{Type: a.Type})
+	}
+	return a.Raw, nil
+}
+
 // ToolsConfig 是工具系统的配置项。
 //
 // Enabled 列表为空时视为"启用全部已注册工具"；否则按 Name 白名单过滤。
@@ -294,6 +428,11 @@ const (
 	// 用下方布尔常量取址填充，以表达「未配置 → 默认开启」。
 	defaultSkillEnabled          = true
 	defaultSkillMaxSizeBytes     = 64 * 1024 // 单 SKILL.md 正文截断阈值（64KB）
+
+	// ---- Step 11 Hook 系统默认值 ----
+	// 与 Compaction / Memory / Skill 同模式：Enabled 是 *bool，用下方布尔常量
+	// 取址填充，以表达「未配置 → 默认开启」。Entries 不需要默认常量（nil 即「空配置降级」）。
+	defaultHookEnabled = true
 )
 
 // Load 从 ~/.codepilot/setting.json 加载配置文件。
@@ -361,6 +500,7 @@ func (c *Config) setDefaults() {
 	applyCompactionDefaults(&c.Compaction)
 	applyMemoryDefaults(&c.Memory)
 	applySkillDefaults(&c.Skill)
+	applyHookDefaults(&c.Hook)
 }
 
 // applyCompactionDefaults 为 Compaction 配置段填充默认值。
@@ -473,6 +613,121 @@ func MergeMemory(global, project MemoryConfig) MemoryConfig {
 	return merged
 }
 
+// applyHookDefaults 为 Hook 配置段填充默认值。
+//
+// 单独抽成函数以便 config 包测试直接调用（无需构造完整 Config），与
+// applyCompactionDefaults / applyMemoryDefaults / applySkillDefaults 风格保持一致。
+// [Why 只填 Enabled 不填 Entries] HookConfig 不像 Skill/Memory/Compaction
+// 那样有「数值阈值字段」需要默认填充——hook 列表是用户自定义数组，nil 本身就
+// 是合法的「零配置安全降级」状态（Engine 空跑），不需要再填空切片。
+// 因此本函数只负责 Enabled 指针的 nil → 默认 true 填充。
+func applyHookDefaults(h *HookConfig) {
+	if h == nil {
+		return
+	}
+	if h.Enabled == nil {
+		on := defaultHookEnabled
+		h.Enabled = &on
+	}
+}
+
+// MergeHooks 合并全局与项目级 hook 配置，返回填好默认值的最终生效配置。
+//
+// 多层合并机制沿用 Step 5 权限 / Step 8 记忆 / Step 10 Skill 的「项目级覆盖全局」语义，
+// 区别在于 hook.entries 是数组类型，做【整体替换】而非列表拼接：
+//   - Enabled：项目级显式设置（非 nil）时覆盖全局，否则沿用全局；
+//   - Entries：项目级显式设置（len > 0）时整体替换全局 entries，空时沿用全局。
+//
+// [Why Entries 整体替换而非拼接] hook 列表是「事件触发器」——同事件内多 hook 按顺序
+// 执行，配置数组顺序敏感；若拼接，项目级追加的 hook 会出现在全局 hook 之后，破坏
+// 「项目级 hook 优先级最高」的直觉，且容易出现「全局 hook 提前返回 + 项目级 hook
+// 后置触发」的语义混乱。整体替换语义让用户能完全在项目级定义 hook 而无需担心
+// 全局 hook 干扰，符合 Claude Code / Cursor 等同类产品的项目级覆盖行为。
+//
+// [Why 必须传原始解析值] 同 MergeMemory：合并依据「是否显式配置」判断覆盖——
+// Enabled 用 *bool 的 nil、Entries 用 len() == 0 识别「该层未配置此项」。
+// 因此调用方必须传入 JSON 解析后、【尚未 applyHookDefaults】的原始值；若传入已
+// 填默认的值（Enabled 被填成默认 true），会被误判为「显式配置」而错误覆盖。
+// 本函数内部在合并完成后调用 applyHookDefaults 填充最终默认值，调用方无需再填。
+//
+// 参数 global 为全局 hook 配置原始值，project 为项目级原始值（可为零值，表示无项目级配置）。
+func MergeHooks(global, project HookConfig) HookConfig {
+	merged := global
+	if project.Enabled != nil {
+		merged.Enabled = project.Enabled
+	}
+	if len(project.Entries) > 0 {
+		merged.Entries = project.Entries
+	}
+	applyHookDefaults(&merged)
+	return merged
+}
+
+// ValidateHookConfig 校验 hook 配置的合法性。
+//
+// 导出以方便 hook 包的测试调用；运行时由 c.validate() 内部自动调用。
+//
+// 校验内容：
+//   - 每条 entry 的 Name 非空（用于排错与 once 追踪）；
+//   - 每条 entry 的 Event 必须 12 类事件之一（program_start / program_exit /
+//     compact / error / session_start / session_end / iteration_start /
+//     iteration_end / pre_tool_use / post_tool_use / pre_message / post_message）；
+//   - 每条 entry 的 Action.Type 必须 command/http/prompt/agent 之一；
+//   - HookConfig 整体允许 Enabled=nil（applyHookDefaults 会填默认），Entries=nil（空降级）。
+//
+// [Why 不校验 Action type-specific 字段] 4 种 action 的字段差异巨大（command 用
+// command/working_dir/env/timeout；http 用 method/url/headers/body/timeout 等），
+// config 包不解析 action 内层（HookActionConfig 用 RawMessage 透传），由 hook/executor
+// 包按 Type 分别反序列化时再校验。config 包只把「Type 是否合法」这一最小门槛守住。
+func ValidateHookConfig(h *HookConfig) error {
+	if h == nil {
+		return nil
+	}
+	for i, e := range h.Entries {
+		if e.Name == "" {
+			return fmt.Errorf("配置校验失败: hook.entries[%d].name 不能为空", i)
+		}
+		if !isValidHookEvent(e.Event) {
+			return fmt.Errorf("配置校验失败: hook.entries[%d] (name=%q) event=%q 非法(必须 12 类事件之一)",
+				i, e.Name, e.Event)
+		}
+		switch e.Action.Type {
+		case "command", "http", "prompt", "agent":
+			// 合法 Type，type-specific 字段由 executor 阶段校验
+		case "":
+			return fmt.Errorf("配置校验失败: hook.entries[%d] (name=%q) action.type 不能为空", i, e.Name)
+		default:
+			return fmt.Errorf("配置校验失败: hook.entries[%d] (name=%q) action.type=%q 非法(仅支持 command/http/prompt/agent)",
+				i, e.Name, e.Action.Type)
+		}
+	}
+	return nil
+}
+
+// 12 类合法事件名常量集合——与 spec §A 表格一一对应。
+// 单独维护一份而非 import hook 包（避免 config → hook 的反向依赖；hook 包可以依赖 config）。
+var validHookEvents = map[string]bool{
+	"program_start":    true,
+	"program_exit":     true,
+	"compact":          true,
+	"error":            true,
+	"session_start":    true,
+	"session_end":      true,
+	"iteration_start":  true,
+	"iteration_end":    true,
+	"pre_tool_use":     true,
+	"post_tool_use":    true,
+	"pre_message":      true,
+	"post_message":     true,
+}
+
+// isValidHookEvent 判断事件名是否在 12 类合法事件集合内。
+// 单独抽成函数便于 ValidateHookConfig 复用与未来扩展（若需支持自定义事件，
+// 可在此处改为查外部 EventRegistry）。
+func isValidHookEvent(event string) bool {
+	return validHookEvents[event]
+}
+
 // validate 校验配置项的合法性。
 func (c *Config) validate() error {
 	if c.Provider == "" {
@@ -502,6 +757,11 @@ func (c *Config) validate() error {
 
 	// MCP 配置校验:仅校验关键字段,具体传输类型在 mcp/config.BuildTransports 阶段构造
 	if err := ValidateMCPConfig(&c.MCP); err != nil {
+		return err
+	}
+
+	// Hook 配置校验:Name 非空 + Event 合法 + Action.Type 合法
+	if err := ValidateHookConfig(&c.Hook); err != nil {
 		return err
 	}
 	return nil

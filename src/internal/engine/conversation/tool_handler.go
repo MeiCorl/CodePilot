@@ -11,10 +11,11 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/MeiCorl/CodePilot/src/internal/hook"
 	"github.com/MeiCorl/CodePilot/src/internal/logger"
 	"github.com/MeiCorl/CodePilot/src/internal/security"
-	"github.com/MeiCorl/CodePilot/src/llm"
 	"github.com/MeiCorl/CodePilot/src/internal/tool"
+	"github.com/MeiCorl/CodePilot/src/llm"
 )
 
 // ToolExecutionEvent 描述单次工具执行的完整生命周期事件。
@@ -79,6 +80,11 @@ type ToolHandler struct {
 	timeout time.Duration
 	// workdir 为路径沙箱的工作目录；为空时取当前进程 cwd
 	workdir string
+	// hookEngine 为工具级 Hook 事件派发器。为 nil 时工具流程保持原行为。
+	hookEngine *hook.Engine
+	// hookSessionID / hookIteration 由 AgentLoop 或 Handler 在会话/轮次切换时刷新。
+	hookSessionID string
+	hookIteration int
 	// interceptor 为权限拦截器；为 nil 时不做权限检查（向后兼容）
 	interceptor *security.Interceptor
 	// middlewares 为 Tool Execute 前的中间件链，按注册顺序执行。
@@ -131,6 +137,27 @@ func (h *ToolHandler) RegisterMiddleware(mw security.MiddlewareFunc) {
 	h.middlewares = append(h.middlewares, mw)
 }
 
+// SetHookEngine 注入工具级 Hook 派发器。nil 表示禁用 Hook,不影响工具执行。
+func (h *ToolHandler) SetHookEngine(engine *hook.Engine) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.hookEngine = engine
+}
+
+// SetHookSessionID 刷新当前会话 ID,供工具事件 HookContext 使用。
+func (h *ToolHandler) SetHookSessionID(sessionID string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.hookSessionID = sessionID
+}
+
+// SetHookIteration 刷新当前 AgentLoop 轮次,供工具事件 HookContext 使用。
+func (h *ToolHandler) SetHookIteration(iteration int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.hookIteration = iteration
+}
+
 // SetOnStart 注册工具开始事件回调。传入 nil 表示清空。
 //
 // 回调可能在 Execute 内部被同步调用，注意不要在回调里执行阻塞操作。
@@ -170,10 +197,12 @@ func (h *ToolHandler) Execute(ctx context.Context, toolUse llm.ToolUseBlock) llm
 		StartedAt: startedAt,
 	}
 	h.fireStart(event)
+	h.dispatchPreToolUse(ctx, toolUse)
 
 	output, execErr := h.doExecute(ctx, toolUse)
 
 	duration := time.Since(startedAt).Milliseconds()
+	h.dispatchPostToolUse(ctx, toolUse, output, execErr, duration)
 	result := llm.ToolResultBlock{
 		ToolUseID: toolUse.ID,
 		Content:   output,
@@ -216,7 +245,7 @@ func (h *ToolHandler) doExecute(ctx context.Context, toolUse llm.ToolUseBlock) (
 	if h.interceptor != nil {
 		result, err := h.interceptor.Check(execCtx, toolUse.Name, toolUse.Input, t.Permission())
 		if err != nil {
-			logger.WarnCtx(ctx,"权限拦截器检查异常",
+			logger.WarnCtx(ctx, "权限拦截器检查异常",
 				zap.String("tool", toolUse.Name),
 				zap.Error(err),
 			)
@@ -240,7 +269,7 @@ func (h *ToolHandler) doExecute(ctx context.Context, toolUse llm.ToolUseBlock) (
 		for _, mw := range mws {
 			mwCtx, err := mw(execCtx, toolUse.Name, toolUse.Input, t.Permission())
 			if err != nil {
-				logger.WarnCtx(ctx,"中间件拦截工具执行",
+				logger.WarnCtx(ctx, "中间件拦截工具执行",
 					zap.String("tool", toolUse.Name),
 					zap.Error(err),
 				)
@@ -251,7 +280,7 @@ func (h *ToolHandler) doExecute(ctx context.Context, toolUse llm.ToolUseBlock) (
 	}
 
 	// 权限分级仅做信息记录，强制拦截由工具自身 + safety 包负责。
-	logger.DebugCtx(ctx,"工具开始执行",
+	logger.DebugCtx(ctx, "工具开始执行",
 		zap.String("tool", t.Name()),
 		zap.String("permission", t.Permission().String()),
 		zap.String("tool_use_id", toolUse.ID),
@@ -332,6 +361,55 @@ func (h *ToolHandler) fireEnd(evt ToolExecutionEvent) {
 	}
 }
 
+func (h *ToolHandler) hookState() (*hook.Engine, string, int, string) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.hookEngine, h.hookSessionID, h.hookIteration, h.workdir
+}
+
+func (h *ToolHandler) dispatchPreToolUse(ctx context.Context, toolUse llm.ToolUseBlock) {
+	engine, sessionID, iteration, workdir := h.hookState()
+	if engine == nil {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			logger.ErrorCtx(ctx, "pre_tool_use Hook 派发 panic，已恢复", zap.Any("panic", r))
+		}
+	}()
+	engine.Dispatch(ctx, hook.EventPreToolUse,
+		hook.NewPreToolUseContext(toolUse.Name, toolInputMap(toolUse.Input), sessionID, workdir, iteration))
+}
+
+func (h *ToolHandler) dispatchPostToolUse(ctx context.Context, toolUse llm.ToolUseBlock, output string, execErr error, durationMs int64) {
+	engine, sessionID, iteration, workdir := h.hookState()
+	if engine == nil {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			logger.ErrorCtx(ctx, "post_tool_use Hook 派发 panic，已恢复", zap.Any("panic", r))
+		}
+	}()
+	errText := ""
+	if execErr != nil {
+		errText = execErr.Error()
+	}
+	engine.Dispatch(ctx, hook.EventPostToolUse,
+		hook.NewPostToolUseContext(toolUse.Name, toolInputMap(toolUse.Input), output, execErr != nil, durationMs, errText, sessionID, workdir, iteration))
+}
+
+func toolInputMap(raw json.RawMessage) map[string]any {
+	if len(raw) == 0 {
+		return map[string]any{}
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil || out == nil {
+		return map[string]any{}
+	}
+	return out
+}
+
 // ExecuteBatch 批量执行 LLM 发出的多个 tool_use，根据工具权限分级调度执行策略。
 //
 // 执行策略：
@@ -352,9 +430,9 @@ func (h *ToolHandler) ExecuteBatch(ctx context.Context, toolUses []llm.ToolUseBl
 
 	// 第一步：对所有 tool_use 做预分类——查出对应的工具实例和权限
 	type indexedToolUse struct {
-		index     int
-		toolUse   llm.ToolUseBlock
-		tool      tool.Tool     // nil 表示未注册
+		index      int
+		toolUse    llm.ToolUseBlock
+		tool       tool.Tool // nil 表示未注册
 		permission tool.ToolPermission
 	}
 	items := make([]indexedToolUse, len(toolUses))

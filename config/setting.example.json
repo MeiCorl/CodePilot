@@ -120,5 +120,47 @@
         "index_max_lines": 200,
         "index_max_bytes": 25600,
         "review_model": ""
+    },
+
+    "_hook_comment": "Hook 系统（Step 11）配置段：在 Agent 生命周期的关键节点插入自定义动作。详见 docs/step11-Hook系统/spec.md",
+    "hook": {
+        "enabled": true,
+        "entries": [
+            {
+                "_comment": "示例 1: WriteFile 后对 .go 文件自动 gofmt（同步阻塞,直到格式化完成）",
+                "name": "auto-gofmt",
+                "event": "post_tool_use",
+                "condition": {
+                    "all": [
+                        { "field": "tool_name", "op": "eq", "value": "WriteFile" },
+                        { "field": "tool_input.file_path", "op": "glob", "value": "*.go" }
+                    ]
+                },
+                "action": {
+                    "type": "command",
+                    "command": "gofmt -w $TOOL_INPUT_FILE_PATH",
+                    "working_dir": "",
+                    "env": { "NO_COLOR": "1" },
+                    "timeout": "10s"
+                },
+                "async": false,
+                "once": false
+            },
+            {
+                "_comment": "示例 2: 会话开始时调一次 LLM 子任务做安全审计（once=true 仅触发一次）",
+                "name": "security-audit",
+                "event": "session_start",
+                "condition": null,
+                "action": {
+                    "type": "agent",
+                    "prompt": "请扫描当前项目,识别最近会话中可能被改动的高风险文件路径,以 JSON 列表返回。",
+                    "max_iterations": 1,
+                    "allow_tools": ["ReadFile", "Grep"],
+                    "timeout": "60s"
+                },
+                "async": true,
+                "once": true
+            }
+        ]
     }
 }

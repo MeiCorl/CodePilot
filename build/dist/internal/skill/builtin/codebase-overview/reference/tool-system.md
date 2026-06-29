@@ -6,8 +6,8 @@
 
 工具系统位于第 3 层 工具层,是 Agent 的「双手」—— 提供与外部世界交互的能力(文件读写、Shell 执行、代码搜索等)。Step 3 在此基础上加入 Agent Loop 与 ReAct 调度,让 LLM 能自主决定调用哪个工具。
 
-- **统一 `Tool` 接口**(`src/internal/tool/tool.go:48`)—— `Name / Description / InputSchema / Permission / Execute`
-- **全局 Registry**(`src/internal/tool/registry.go:12`)—— `map[string]Tool + sync.RWMutex`,支持 MCP / Skill / SubAgent 等后续工具动态注册
+- **统一 `Tool` 接口**(`src/internal/tool/tool.go`)—— `Name / Description / InputSchema / Permission / Execute`
+- **全局 Registry**(`src/internal/tool/registry.go`)—— `map[string]Tool + sync.RWMutex`,支持 MCP / Skill / SubAgent 等后续工具动态注册
 - **6 个内置工具**:ReadFile / WriteFile / EditFile / Bash / Glob / Grep(`src/internal/tool/builtin/`)
 - **tool_use schema 转换**:`ToolSpec` → Anthropic `ToolUnionParam` / OpenAI `ChatCompletionToolParam`
 - **Agent Loop ReAct 调度**:`ConversationManager.RunAgentLoop` 迭代 `思考→决策→行动→观察`
@@ -15,18 +15,18 @@
 
 ## §2 核心数据结构
 
-- `ToolPermission`(tool.go:13)— `PermRead / PermWrite / PermExec` 三级权限分级
-- `Tool`(tool.go:48)— 工具统一接口
-- `BaseTool`(tool.go:77)— 元数据公共字段,内置到具体工具结构体即可减少样板
-- `Registry`(registry.go:12)— 全局工具注册表,`Register / Get / Names / Count`
+- `ToolPermission`(tool.go)— `PermRead / PermWrite / PermExec` 三级权限分级
+- `Tool`(tool.go)— 工具统一接口
+- `BaseTool`(tool.go)— 元数据公共字段,内置到具体工具结构体即可减少样板
+- `Registry`(registry.go)— 全局工具注册表,`Register / Get / Names / Count`
 - `ToolSpec`(registry.go)— Provider 视角的工具描述,字段 `Name / Description / InputSchema []byte`
-- `ToolHandler`(`src/internal/engine/conversation/tool_handler.go:75`)— 工具执行协调器,字段 `registry / timeout / workdir / interceptor / middlewares / onStart / onEnd`
-- `ToolExecutionEvent`(tool_handler.go:28)— 工具生命周期事件,`Status` 字段含 `running / completed / error / aborted`
-- `AgentLoopConfig`(agent_loop.go:22)— `MaxIterations / ContextSafetyMargin / ContextWindowSize`
+- `ToolHandler`(`src/internal/engine/conversation/tool_handler.go`)— 工具执行协调器,字段 `registry / timeout / workdir / interceptor / middlewares / onStart / onEnd`
+- `ToolExecutionEvent`(tool_handler.go)— 工具生命周期事件,`Status` 字段含 `running / completed / error / aborted`
+- `AgentLoopConfig`(agent_loop.go)— `MaxIterations / ContextSafetyMargin / ContextWindowSize`
 - `StopReason`(agent_loop.go)— `end_turn / max_iterations / context_overflow / user_aborted / tool_error`
-- `AgentLoopResult`(agent_loop.go:53)— `FinalText / Iterations / TotalToolCalls / StopReason / Aborted / Error`
-- `TurnHooks`(manager.go:366)— `OnStreamChunk / OnToolUse / OnToolResult / OnError / OnCompaction`
-- `TurnResult`(manager.go:390)— 单轮对话最终结果
+- `AgentLoopResult`(agent_loop.go)— `FinalText / Iterations / TotalToolCalls / StopReason / Aborted / Error`
+- `TurnHooks`(manager.go)— `OnStreamChunk / OnToolUse / OnToolResult / OnError / OnCompaction`
+- `TurnResult`(manager.go)— 单轮对话最终结果
 
 ## §3 关键流程
 
@@ -42,23 +42,23 @@
 
 ### 3.2 Bash 工具的黑名单与平台分支
 
-`BashTool.Execute`(`src/internal/tool/builtin/bash.go:61`)流程:
+`BashTool.Execute`(`src/internal/tool/builtin/bash.go`)流程:
 
-1. `cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", utf8Setup+in.Command)`(Windows)或 `exec.CommandContext(ctx, "sh", "-c", in.Command)`(Unix)(`bash.go:83-89`)
-2. **黑名单检查已提升至拦截器层**(`security.Checker.Decide` 硬安全预检,bash.go:70 注释)
-3. `limitedWriter` 截断 stdout/stderr 各 1MB 防内存撑爆(bash.go:91-92)
+1. `cmd := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command", utf8Setup+in.Command)`(Windows)或 `exec.CommandContext(ctx, "sh", "-c", in.Command)`(Unix)(`bash.go`)
+2. **黑名单检查已提升至拦截器层**(`security.Checker.Decide` 硬安全预检,bash.go 注释)
+3. `limitedWriter` 截断 stdout/stderr 各 1MB 防内存撑爆(bash.go)
 4. 退出码非零时 `formatBashOutput` 拼 stdout + stderr + exit code 返回(LLM 友好文本)
-5. 中文环境解码:优先 UTF-8,失败时 GBK → UTF-8 兜底(`decodeOutput` bash.go:171)
+5. 中文环境解码:优先 UTF-8,失败时 GBK → UTF-8 兜底(`decodeOutput` bash.go)
 
 [Why] 黑名单提到拦截器层:**Why** 黑名单是权限决策而非工具实现细节;拦截器层(`security.Interceptor`)对所有工具统一拦截,工具自身无需关心黑名单规则。
 
 ### 3.3 路径类工具的沙箱解析
 
-`SandboxMiddleware`(`src/internal/security/sandbox_middleware.go:183`)在 Tool.Execute 前置路径校验:
+`SandboxMiddleware`(`src/internal/security/sandbox_middleware.go`)在 Tool.Execute 前置路径校验:
 
 1. `IsPathTool(toolName)` 判断是否路径类工具(ReadFile / WriteFile / EditFile / Glob / Grep)
 2. 提取 `params[paramKey]`(如 ReadFile 的 `file_path`)
-3. `ResolveInSandboxWithRoots(pathStr, workdir, readRoots)`(`sandbox.go:64`)规范化 + 范围校验
+3. `ResolveInSandboxWithRoots(pathStr, workdir, readRoots)`(`sandbox.go`)规范化 + 范围校验
 4. 越界时 `ruleProvider.MatchPathRule` 查路径级 allow 规则,命中则放行,未命中则拦截
 5. 合法路径经 `WithPathResolver(ctx, resolver)` 注入 ctx,工具 Execute 内 `resolvePathFromContext(ctx, "file_path")` 直接拿到 absPath
 
@@ -66,7 +66,7 @@
 
 ### 3.4 Agent Loop ReAct 调度(本模块核心)
 
-`ConversationManager.RunAgentLoop(ctx, provider, sp, toolSpecs, toolHandler, cfg, hooks) AgentLoopResult`(manager.go:469)流程:
+`ConversationManager.RunAgentLoop(ctx, provider, sp, toolSpecs, toolHandler, cfg, hooks) AgentLoopResult`(manager.go)流程:
 
 1. 进入循环 `for i := 1; i <= cfg.MaxIterations; i++`
 2. 调 `runOneLLM(ctx, provider, sp, toolSpecs, hooks.TurnHooks)` 发起 LLM 流式调用
@@ -85,7 +85,7 @@
 
 ### 3.5 工具并行执行(Step 3)
 
-`ToolHandler.ExecuteBatch(toolUses []ToolUseBlock) []ToolResultBlock`(tool_handler.go:335)流程:
+`ToolHandler.ExecuteBatch(toolUses []ToolUseBlock) []ToolResultBlock`(tool_handler.go)流程:
 
 1. 按 `tool.Permission` 分组:
    - **PermRead**(ReadFile/Glob/Grep)→ 可并行(只读无副作用)
@@ -143,24 +143,24 @@
 
 | 路径 | 角色 |
 |------|------|
-| `src/internal/tool/tool.go:13` | `ToolPermission` 权限分级枚举 |
-| `src/internal/tool/tool.go:48` | `Tool` 接口定义 |
-| `src/internal/tool/tool.go:77` | `BaseTool` 公共字段 |
-| `src/internal/tool/registry.go:12` | `Registry` 全局工具注册表 |
+| `src/internal/tool/tool.go` | `ToolPermission` 权限分级枚举 |
+| `src/internal/tool/tool.go` | `Tool` 接口定义 |
+| `src/internal/tool/tool.go` | `BaseTool` 公共字段 |
+| `src/internal/tool/registry.go` | `Registry` 全局工具注册表 |
 | `src/internal/tool/tool_spec.go` | `ToolSpec` Provider 视角工具描述 |
 | `src/internal/tool/file_diff.go` | `FileDiffStore` 进程内 LRU diff 存储 |
-| `src/internal/tool/builtin/read_file.go:43` | `ReadFileTool` ReadFile 工具 |
-| `src/internal/tool/builtin/write_file.go:37` | `WriteFileTool` WriteFile 工具 |
-| `src/internal/tool/builtin/edit_file.go:38` | `EditFileTool` EditFile 工具 |
-| `src/internal/tool/builtin/bash.go:38` | `BashTool` Bash 工具 |
-| `src/internal/engine/conversation/agent_loop.go:94` | `AgentLoop` ReAct 循环入口 |
-| `src/internal/engine/conversation/agent_loop.go:31` | `StopReason` 5 种终止原因 |
-| `src/internal/engine/conversation/manager.go:469` | `RunAgentLoop` 对外入口 |
-| `src/internal/engine/conversation/manager.go:520` | `runOneLLM` 单次 LLM 流式调用 |
-| `src/internal/engine/conversation/tool_handler.go:75` | `ToolHandler` 工具执行协调器 |
-| `src/internal/engine/conversation/tool_handler.go:335` | `ExecuteBatch` 并行/串行调度 |
-| `src/internal/security/sandbox_middleware.go:183` | `SandboxMiddleware` 沙箱中间件 |
-| `src/internal/security/sandbox.go:64` | `ResolveInSandboxWithRoots` 路径校验 |
+| `src/internal/tool/builtin/read_file.go` | `ReadFileTool` ReadFile 工具 |
+| `src/internal/tool/builtin/write_file.go` | `WriteFileTool` WriteFile 工具 |
+| `src/internal/tool/builtin/edit_file.go` | `EditFileTool` EditFile 工具 |
+| `src/internal/tool/builtin/bash.go` | `BashTool` Bash 工具 |
+| `src/internal/engine/conversation/agent_loop.go` | `AgentLoop` ReAct 循环入口 |
+| `src/internal/engine/conversation/agent_loop.go` | `StopReason` 5 种终止原因 |
+| `src/internal/engine/conversation/manager.go` | `RunAgentLoop` 对外入口 |
+| `src/internal/engine/conversation/manager.go` | `runOneLLM` 单次 LLM 流式调用 |
+| `src/internal/engine/conversation/tool_handler.go` | `ToolHandler` 工具执行协调器 |
+| `src/internal/engine/conversation/tool_handler.go` | `ExecuteBatch` 并行/串行调度 |
+| `src/internal/security/sandbox_middleware.go` | `SandboxMiddleware` 沙箱中间件 |
+| `src/internal/security/sandbox.go` | `ResolveInSandboxWithRoots` 路径校验 |
 | `src/internal/mcp/adapter/registry.go` | MCP 工具自动注册到 tool.Registry |
 
 ## §X Agent Loop 调度与 ReAct(子章节)
@@ -185,7 +185,7 @@ type AgentLoopHooks struct {
 
 ### 撞墙兜底(Step 7 接入)
 
-`runOneLLM`(`manager.go:520`)中 `provider.StreamChat` 返回 `IsContextTooLongError(err)` 时:
+`runOneLLM`(`manager.go`)中 `provider.StreamChat` 返回 `IsContextTooLongError(err)` 时:
 
 1. `m.emergencyCompactOnWallHit(ctx, provider, hooks)` 调协调器 `EmergencyCompact`(强制第二层摘要 + 无视余量 + 临时豁免熔断)
 2. 紧急压缩成功后 `messages = m.GetContext()` 拿压缩后历史,重试一次 `StreamChat`
@@ -195,6 +195,6 @@ type AgentLoopHooks struct {
 
 ### 收尾提示与空回复兜底
 
-`injectTerminationPrompt`(agent_loop.go:284):在 max_iterations / context_overflow 时注入 user 消息「请总结…」让 LLM 给出收尾回复。
+`injectTerminationPrompt`(agent_loop.go):在 max_iterations / context_overflow 时注入 user 消息「请总结…」让 LLM 给出收尾回复。
 
-`ensureNonEmptyReply`(agent_loop.go:313):当 AgentLoop 结束时 finalText 为空(LLM 全程只调工具),注入提示消息请求 LLM 总结;补充回复失败时用兜底消息「(任务已执行完成,但模型未返回可显示的文本内容)」。
+`ensureNonEmptyReply`(agent_loop.go):当 AgentLoop 结束时 finalText 为空(LLM 全程只调工具),注入提示消息请求 LLM 总结;补充回复失败时用兜底消息「(任务已执行完成,但模型未返回可显示的文本内容)」。

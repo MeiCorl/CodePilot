@@ -20,6 +20,7 @@ import (
 	"github.com/MeiCorl/CodePilot/src/internal/engine/conversation"
 	"github.com/MeiCorl/CodePilot/src/internal/engine/prompt"
 	"github.com/MeiCorl/CodePilot/src/internal/engine/prompt/sources"
+	"github.com/MeiCorl/CodePilot/src/internal/hook"
 	"github.com/MeiCorl/CodePilot/src/internal/logger"
 	"github.com/MeiCorl/CodePilot/src/internal/mcp/adapter"
 	mcpsession "github.com/MeiCorl/CodePilot/src/internal/mcp/session"
@@ -122,6 +123,8 @@ type Handler struct {
 	workdir           string
 	registry          *tool.Registry
 	toolHandler       *conversation.ToolHandler
+	// hookEngine 为 Hook 系统派发器。nil 时所有 Hook 集成点降级为 no-op。
+	hookEngine *hook.Engine
 	// fileDiffStore 是 WriteFile/EditFile 工具写入的 diff 数据存储。
 	// Step 1.4 接入；Task 3 (get_file_diff 协议) 真正消费此字段。
 	// 为 nil 时前端请求 diff 会得到 not_found 提示，等价于"未启用 diff 预览"。
@@ -353,6 +356,65 @@ func (h *Handler) CurrentSessionID() string {
 	return h.current.ID
 }
 
+// ConversationManager 返回当前 Handler 持有的对话管理器,供 main.go 装配 Hook/测试使用。
+func (h *Handler) ConversationManager() *conversation.ConversationManager {
+	if h == nil {
+		return nil
+	}
+	return h.conv
+}
+
+// SetHookEngine 注入 HookEngine 并转发给 ConversationManager / ToolHandler。
+func (h *Handler) SetHookEngine(engine *hook.Engine) {
+	h.mu.Lock()
+	h.hookEngine = engine
+	currentID := ""
+	if h.current != nil {
+		currentID = h.current.ID
+	}
+	h.mu.Unlock()
+	h.conv.SetHookEngine(engine, h.workdir)
+	if h.toolHandler != nil {
+		h.toolHandler.SetHookEngine(engine)
+		h.toolHandler.SetHookSessionID(currentID)
+	}
+}
+
+// AppendToCurrentMessage 实现 hook.PromptSink,由 Engine 的 prompt action 调用。
+func (h *Handler) AppendToCurrentMessage(text string) error {
+	return h.conv.AppendToCurrentMessage(text)
+}
+
+// DispatchCurrentSessionStart 在 main.go 完成 wire 后触发启动恢复会话的 session_start。
+func (h *Handler) DispatchCurrentSessionStart(ctx context.Context) {
+	h.dispatchSessionHook(ctx, hook.EventSessionStart, h.CurrentSessionID())
+}
+
+func (h *Handler) dispatchSessionHook(ctx context.Context, event, sessionID string) {
+	if h.hookEngine == nil || sessionID == "" {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			logger.ErrorCtx(ctx, "session Hook 派发 panic，已恢复", zap.String("event", event), zap.Any("panic", r))
+		}
+	}()
+	h.hookEngine.Dispatch(ctx, event, hook.NewSessionContext(event, sessionID, h.workdir))
+}
+
+func (h *Handler) dispatchCompactHook(ctx context.Context, sessionID string, res memctx.CompactionResult) {
+	if h.hookEngine == nil || sessionID == "" {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			logger.ErrorCtx(ctx, "compact Hook 派发 panic，已恢复", zap.Any("panic", r))
+		}
+	}()
+	h.hookEngine.Dispatch(ctx, hook.EventCompact,
+		hook.NewCompactContext(sessionID, h.workdir, string(res.Level), res.BeforeTokens, res.AfterTokens, 0))
+}
+
 // ---- 消息 handler ----
 
 // 以下是 Step 9.1 为 slash 命令提供的"零参数版本"包装函数。
@@ -565,6 +627,7 @@ func (h *Handler) runStream(ctx context.Context, conn *websocket.Conn, userInput
 			// Step 7：每轮自动压缩产生变更时推送 compaction_event（自动模式 manual=false）
 			// 并刷新用量展示。回调在 runOneLLM 内同步触发，与流式写共享 writeMu，安全。
 			OnCompaction: func(res memctx.CompactionResult) {
+				h.dispatchCompactHook(ctx, sessionID, res)
 				_ = h.sendCompactionEvent(conn, res, false)
 				_ = h.sendContextUsage(conn)
 			},
@@ -765,30 +828,40 @@ func (h *Handler) handleListSessions(conn *websocket.Conn, msg Message) error {
 
 // handleNewSession 保存当前会话（如有消息）并创建新会话，重置 ConvMgr。
 func (h *Handler) handleNewSession(conn *websocket.Conn, msg Message) error {
-	h.mu.Lock()
-	defer h.mu.Unlock()
+	h.dispatchSessionHook(context.Background(), hook.EventSessionEnd, h.CurrentSessionID())
 
+	h.mu.Lock()
 	// 增量落盘当前会话（切换点已持 h.mu，必须用 Locked 版本避免死锁）
 	h.saveCurrentSessionLocked()
 	h.current = h.sessMgr.CreateNew()
+	newSessionID := h.current.ID
 	h.conv.Reset(nil)
-	h.conv.SetSessionID(h.current.ID)
+	h.conv.SetSessionID(newSessionID)
+	if h.toolHandler != nil {
+		h.toolHandler.SetHookSessionID(newSessionID)
+	}
 	// 打开新会话专属日志器（切换点已持 h.mu；OpenSession 自身线程安全，不会死锁）。
-	h.openSessionLogger(h.current.ID)
+	h.openSessionLogger(newSessionID)
 	h.persistedMsgCount = 0
 	// 新会话触发 SP 重新组装（虽然 result 通常一致，但保持与切换路径一致的处理）
 	h.assembleSP()
 	// 刷新前端 ctx left 显示：新会话无历史，remaining 应回到 ~100%
-	// 注意：此处已持有 h.mu，必须使用 Locked 版本避免死锁
 	usage := h.conv.GetContextUsage(h.contextWindowSize)
-	_ = h.sendContextUsageLocked(conn, usage, h.sp)
-	return h.sendSessionLoaded(conn, h.current)
+	spSnapshot := h.sp
+	current := h.current
+	h.mu.Unlock()
+
+	h.dispatchSessionHook(context.Background(), hook.EventSessionStart, newSessionID)
+	_ = h.sendContextUsageLocked(conn, usage, spSnapshot)
+	return h.sendSessionLoaded(conn, current)
 }
 
 // handleClearSession 清空当前会话的上下文：保留 session_id，
 // 把消息数组置空、重置 ConvMgr，并落盘覆盖。
 // 与 handleNewSession 的差异：不创建新会话，不在左侧历史中新增条目。
 func (h *Handler) handleClearSession(conn *websocket.Conn, msg Message) error {
+	h.dispatchSessionHook(context.Background(), hook.EventSessionEnd, h.CurrentSessionID())
+
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -815,7 +888,6 @@ func (h *Handler) handleClearSession(conn *websocket.Conn, msg Message) error {
 	}
 	h.persistedMsgCount = 0
 	// 刷新前端 ctx left 显示：清空后历史为空，remaining 应回到 ~100%
-	// 注意：此处已持有 h.mu，必须使用 Locked 版本避免死锁
 	usage := h.conv.GetContextUsage(h.contextWindowSize)
 	_ = h.sendContextUsageLocked(conn, usage, h.sp)
 	return h.sendSessionLoaded(conn, h.current)
@@ -826,6 +898,7 @@ func (h *Handler) handleClearSession(conn *websocket.Conn, msg Message) error {
 //   - 1 匹配：加载、注入历史到 ConvMgr
 //   - 多匹配：stream_error(session_ambiguous)
 func (h *Handler) handleResumeSession(conn *websocket.Conn, msg Message) error {
+	oldSessionID := h.CurrentSessionID()
 	p, err := AsPayload[ResumeSessionPayload](msg)
 	if err != nil {
 		return h.sendStreamError(conn, "invalid_payload", err.Error())
@@ -859,12 +932,17 @@ func (h *Handler) handleResumeSession(conn *websocket.Conn, msg Message) error {
 		return h.sendStreamError(conn, "session_load_failed", err.Error())
 	}
 
+	h.dispatchSessionHook(context.Background(), hook.EventSessionEnd, oldSessionID)
+
 	h.mu.Lock()
 	// 增量落盘当前会话（切换点已持 h.mu，必须用 Locked 版本避免死锁）
 	h.saveCurrentSessionLocked()
 	h.current = sess
 	h.conv.Reset(sess.Messages)
 	h.conv.SetSessionID(sess.ID)
+	if h.toolHandler != nil {
+		h.toolHandler.SetHookSessionID(sess.ID)
+	}
 	// 打开恢复会话专属日志器（幂等：已打开则直接复用，便于反复 resume）。
 	h.openSessionLogger(sess.ID)
 	// 恢复的消息已在磁盘上，已落盘计数对齐到其长度
@@ -873,6 +951,7 @@ func (h *Handler) handleResumeSession(conn *websocket.Conn, msg Message) error {
 	h.assembleSP()
 	h.mu.Unlock()
 
+	h.dispatchSessionHook(context.Background(), hook.EventSessionStart, sess.ID)
 	// 刷新前端 ctx left 显示：恢复会话后上下文用量已变
 	_ = h.sendContextUsage(conn)
 	return h.sendSessionLoaded(conn, sess)
@@ -1508,6 +1587,7 @@ func (h *Handler) runManualCompact(ctx context.Context, conn *websocket.Conn) {
 	_ = h.sendStatusUpdate(conn, StatusCompacting)
 
 	res, err := h.compactor.Compact(ctx, h.provider, h.conv, sessionID, true)
+	h.dispatchCompactHook(ctx, sessionID, res)
 	// 总是推送压缩事件（manual=true）；Level=none 时前端据此提示「当前无需压缩」。
 	_ = h.sendCompactionEvent(conn, res, true)
 	// 压缩改变了历史，刷新前端用量展示。

@@ -49,8 +49,8 @@ $env:GOOS = "windows"; $env:GOARCH = "amd64"
 go build -ldflags="-s -w" -o $OutExe $Entry
 
 # 5. Copy builtin Skill resources (Step 10.1 Task 4)
-#    Source: src/internal/skill/builtin/<name>/SKILL.md
-#    Target: <output>/internal/skill/builtin/<name>/SKILL.md
+#    Source: src/internal/skill/builtin/<name>/
+#    Target: <output>/internal/skill/builtin/<name>/
 #    This matches the only path scanned by skill.LoadAll (scanner.go builtinRelPath = "internal/skill/builtin").
 if (-not $ProjectRoot) {
     $ProjectRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
@@ -58,11 +58,12 @@ if (-not $ProjectRoot) {
 $SkillSrc = Join-Path $ProjectRoot "src\internal\skill\builtin"
 if (Test-Path $SkillSrc) {
     $SkillDstBuiltin = Join-Path $DistDir "internal\skill\builtin"
-    if (-not (Test-Path $SkillDstBuiltin)) { New-Item -ItemType Directory -Path $SkillDstBuiltin | Out-Null }
+    if (Test-Path $SkillDstBuiltin) { Remove-Item -LiteralPath $SkillDstBuiltin -Recurse -Force }
+    New-Item -ItemType Directory -Path $SkillDstBuiltin | Out-Null
     Copy-Item -Path (Join-Path $SkillSrc "*") -Destination $SkillDstBuiltin -Recurse -Force
 
-    $CopiedCount = (Get-ChildItem -Recurse -Path $SkillSrc -Filter "SKILL.md" | Measure-Object).Count
-    Write-Host ">> Copied $CopiedCount builtin SKILL.md -> $DistDir\internal\skill\builtin\"
+    $CopiedCount = (Get-ChildItem -Path $SkillSrc -Directory | Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName "SKILL.md") } | Measure-Object).Count
+    Write-Host ">> Copied $CopiedCount builtin skill resource dirs -> $DistDir\internal\skill\builtin\"
 }
 
 Write-Host ">> 完成: $OutExe"

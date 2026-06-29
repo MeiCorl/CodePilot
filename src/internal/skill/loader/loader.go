@@ -132,7 +132,7 @@ func splitFrontmatter(raw string, path string) (Frontmatter, string, error) {
 	for start < len(lines) && strings.TrimSpace(lines[start]) == "" {
 		start++
 	}
-	if start >= len(lines) || strings.TrimSpace(lines[start]) != frontmatterMarker {
+	if start >= len(lines) || strings.TrimSpace(strings.TrimPrefix(lines[start], "\ufeff")) != frontmatterMarker {
 		return Frontmatter{}, "", &ErrMissingFrontmatter{Path: path}
 	}
 

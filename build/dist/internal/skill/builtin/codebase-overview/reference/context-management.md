@@ -7,28 +7,28 @@
 上下文管理位于第 4 层 记忆层,在 LLM 上下文窗口有限的前提下,自动压缩历史消息以保留最相关信息,避免对话因 token 超限而中断。
 
 - **两层压缩** — L1(工具结果存盘预览,`src/internal/memory/context/light_compactor.go`)+ L2(LLM 摘要,`src/internal/memory/context/summary_compactor.go`)
-- **撞墙紧急压缩** — Provider 返回 `prompt_too_long` 时强制第二层摘要 + 重试一次(`manager.go:551`)
-- **会话级熔断** — `Compactor.tripped map[string]bool`(`compactor.go:139`)按 sessionID 隔离,连续摘要失败达阈值后自动模式跳过第二层
+- **撞墙紧急压缩** — Provider 返回 `prompt_too_long` 时强制第二层摘要 + 重试一次(`manager.go`)
+- **会话级熔断** — `Compactor.tripped map[string]bool`(`compactor.go`)按 sessionID 隔离,连续摘要失败达阈值后自动模式跳过第二层
 - **历史归档** — `HistoryArchiver` 接口(`summary_compactor.go`)把原文归档到磁盘,活跃历史用摘要 + 最近 N 条消息替代
-- **可观测性** — `OnCompaction` 回调(manager.go:378)推 `compaction_event` 给前端
+- **可观测性** — `OnCompaction` 回调(manager.go)推 `compaction_event` 给前端
 
 ## §2 核心数据结构
 
-- `Compactor`(`src/internal/memory/context/compactor.go:124`)— 压缩协调器,字段 `light / summary / cfg / failures / tripped`,所有读写经 `mu sync.Mutex`
-- `CompactionResult`(compactor.go:87)— 单轮压缩结果,字段 `Level / BeforeTokens / AfterTokens / Applied / Tripped / Err`
-- `CompactionLevel`(compactor.go:75)— `CompactionLevelNone / CompactionLevelLight / CompactionLevelSummary`
-- `ConversationHistory` interface(`compactor.go:65`)— 协调器与 ConversationManager 协作契约,方法 `History() / ReplaceHistory(msgs) / Remaining() int`
+- `Compactor`(`src/internal/memory/context/compactor.go`)— 压缩协调器,字段 `light / summary / cfg / failures / tripped`,所有读写经 `mu sync.Mutex`
+- `CompactionResult`(compactor.go)— 单轮压缩结果,字段 `Level / BeforeTokens / AfterTokens / Applied / Tripped / Err`
+- `CompactionLevel`(compactor.go)— `CompactionLevelNone / CompactionLevelLight / CompactionLevelSummary`
+- `ConversationHistory` interface(`compactor.go`)— 协调器与 ConversationManager 协作契约,方法 `History() / ReplaceHistory(msgs) / Remaining() int`
 - `LightCompactor`(`src/internal/memory/context/light_compactor.go`)— 第一层压缩器,无状态;把超长工具结果存盘预览(替换为 `<preview>...</preview>` 引用)
-- `SummaryCompactor`(`src/internal/memory/context/summary_compactor.go:94`)— 第二层压缩器,无状态;调 LLM 摘要 + 归档原文
+- `SummaryCompactor`(`src/internal/memory/context/summary_compactor.go`)— 第二层压缩器,无状态;调 LLM 摘要 + 归档原文
 - `HistoryArchiver`(summary_compactor.go)— 摘要后原文归档接口,通常由 `*session.SessionManager` 实现
-- `splitByTailTokens`(summary_compactor.go:229)— 按 token 维度切分消息,工具对 (tool_use / tool_result) 对齐到同侧(`alignSplitForToolPairs`)
-- `alignSplitForToolPairs`(summary_compactor.go:280)— 防止 tool_result 留在活跃 tail 但其 tool_use 已被摘要掉(Anthropic 协议校验失败)
+- `splitByTailTokens`(summary_compactor.go)— 按 token 维度切分消息,工具对 (tool_use / tool_result) 对齐到同侧(`alignSplitForToolPairs`)
+- `alignSplitForToolPairs`(summary_compactor.go)— 防止 tool_result 留在活跃 tail 但其 tool_use 已被摘要掉(Anthropic 协议校验失败)
 
 ## §3 关键流程
 
 ### 3.1 每轮 API 请求前的自动压缩(`runOneLLM`)
 
-`runOneLLM`(manager.go:520)在调 `provider.StreamChat` 前先调 `m.runAutoCompaction(ctx, provider, hooks)`(manager.go:645):
+`runOneLLM`(manager.go)在调 `provider.StreamChat` 前先调 `m.runAutoCompaction(ctx, provider, hooks)`(manager.go):
 
 1. **第一层预防压缩必跑**:`compactor.Compact` 第一阶段调 `light.Compact(history)`,把超长工具结果存盘替换为预览引用
 2. **第二层摘要按余量 + 熔断判定**:
@@ -41,7 +41,7 @@
 
 ### 3.2 两层压缩编排(`Compactor.Compact`)
 
-`Compactor.Compact(ctx, provider, ch, sessionID, manual) (CompactionResult, error)`(`compactor.go:157`)流程:
+`Compactor.Compact(ctx, provider, ch, sessionID, manual) (CompactionResult, error)`(`compactor.go`)流程:
 
 1. **第一层(Light)**:`c.light.Compact(ctx, msgs)` 把超长工具结果替换为预览
    - 预览判定:复用 `preview.go isPreview`(以固定尾注锚点 HasSuffix)与 LightCompactor 跳过已处理 block 同口径
@@ -58,9 +58,9 @@
 
 ### 3.3 撞墙紧急压缩(`emergencyCompactOnWallHit`)
 
-`runOneLLM`(manager.go:520)中 Provider 返回 `IsContextTooLongError(err)` 时(`llm/context_error.go`):
+`runOneLLM`(manager.go)中 Provider 返回 `IsContextTooLongError(err)` 时(`llm/context_error.go`):
 
-1. `m.emergencyCompactOnWallHit(ctx, provider, hooks)`(manager.go:698)调 `compactor.EmergencyCompact`(compactor.go:359)
+1. `m.emergencyCompactOnWallHit(ctx, provider, hooks)`(manager.go)调 `compactor.EmergencyCompact`(compactor.go)
 2. `EmergencyCompact` 内部走 `Compact(manual=true)` 路径——强制第二层摘要 + 无视余量 + 临时豁免熔断
 3. 紧急压缩成功后 `messages = m.GetContext()` 拿压缩后历史,重试一次 `provider.StreamChat`
 4. **重试成功** → 继续正常消费流
@@ -70,7 +70,7 @@
 
 ### 3.4 tool_use / tool_result 对齐
 
-`splitByTailTokens` 切分点对齐到消息边界(绝不拆单条消息),`alignSplitForToolPairs`(summary_compactor.go:280)额外保证 Anthropic 协议约束:
+`splitByTailTokens` 切分点对齐到消息边界(绝不拆单条消息),`alignSplitForToolPairs`(summary_compactor.go)额外保证 Anthropic 协议约束:
 
 - **问题**:Anthropic 协议校验要求每条 `tool_result` 必须在历史中能找到对应的 `assistant` `tool_use`;若 `tool_result` 留在活跃 tail 但 `tool_use` 已被摘要掉,请求会被 Anthropic 拒绝
 - **方案**:`alignSplitForToolPairs` 检查 `startsWithToolResult(history[split])` 且 `assistantHasToolUseFor(history[split-1], history[split])` 时,把 split 往前挪,让配对留在同侧
@@ -132,14 +132,14 @@
 
 | 路径 | 角色 |
 |------|------|
-| `src/internal/memory/context/compactor.go:124` | `Compactor` 压缩协调器 |
-| `src/internal/memory/context/compactor.go:157` | `Compact` 两层编排 |
-| `src/internal/memory/context/compactor.go:359` | `EmergencyCompact` 紧急压缩 |
-| `src/internal/memory/context/light_compactor.go:66` | `Compact` 第一层工具结果预览 |
-| `src/internal/memory/context/summary_compactor.go:94` | `SummaryCompactor` 第二层摘要 |
-| `src/internal/memory/context/summary_compactor.go:229` | `splitByTailTokens` 按 token 切分 |
-| `src/internal/memory/context/summary_compactor.go:280` | `alignSplitForToolPairs` 协议对齐 |
-| `src/internal/engine/conversation/manager.go:520` | `runOneLLM` 含撞墙兜底 |
-| `src/internal/engine/conversation/manager.go:645` | `runAutoCompaction` 每轮自动压缩 |
-| `src/internal/engine/conversation/manager.go:698` | `emergencyCompactOnWallHit` 紧急压缩入口 |
+| `src/internal/memory/context/compactor.go` | `Compactor` 压缩协调器 |
+| `src/internal/memory/context/compactor.go` | `Compact` 两层编排 |
+| `src/internal/memory/context/compactor.go` | `EmergencyCompact` 紧急压缩 |
+| `src/internal/memory/context/light_compactor.go` | `Compact` 第一层工具结果预览 |
+| `src/internal/memory/context/summary_compactor.go` | `SummaryCompactor` 第二层摘要 |
+| `src/internal/memory/context/summary_compactor.go` | `splitByTailTokens` 按 token 切分 |
+| `src/internal/memory/context/summary_compactor.go` | `alignSplitForToolPairs` 协议对齐 |
+| `src/internal/engine/conversation/manager.go` | `runOneLLM` 含撞墙兜底 |
+| `src/internal/engine/conversation/manager.go` | `runAutoCompaction` 每轮自动压缩 |
+| `src/internal/engine/conversation/manager.go` | `emergencyCompactOnWallHit` 紧急压缩入口 |
 | `src/llm/context_error.go` | `IsContextTooLongError` 撞墙判定 |

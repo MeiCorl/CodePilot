@@ -19,23 +19,23 @@
 - `Mode`(`src/internal/security/config.go`)— 枚举 `ModeStrict / ModeDefault / ModePermissive`
 - `Action`(`src/internal/security/`)— 枚举 `ActionAllow / ActionAsk / ActionDeny`
 - `Rule`(security)— 单条权限规则,字段 `Tool / Pattern / Action / Reason`
-- `PermissionPolicy`(`src/internal/security/config.go:14`)— 多层合并后的最终策略,字段 `Mode / Rules / HasProjectConfig`
-- `Checker`(`src/internal/security/checker.go:29`)— 权限检查器,字段 `mode / rules / workdir / sessionRules / oneTimePathRules / mu`
+- `PermissionPolicy`(`src/internal/security/config.go`)— 多层合并后的最终策略,字段 `Mode / Rules / HasProjectConfig`
+- `Checker`(`src/internal/security/checker.go`)— 权限检查器,字段 `mode / rules / workdir / sessionRules / oneTimePathRules / mu`
 - `Decision`(checker.go)— 单次检查决策,字段 `Action / Reason / Pattern / Rule`
-- `Interceptor`(`src/internal/security/interceptor.go:36`)— 拦截器,字段 `checker / hitlCallback / mu`
-- `InterceptorResult`(interceptor.go:18)— 拦截结果,字段 `Decision / PermanentRule`
+- `Interceptor`(`src/internal/security/interceptor.go`)— 拦截器,字段 `checker / hitlCallback / mu`
+- `InterceptorResult`(interceptor.go)— 拦截结果,字段 `Decision / PermanentRule`
 - `HITLCallback`(interceptor.go)— 人在回路回调函数,签名 `func(ctx, tool, input, Decision) (HITLResponse, error)`
 - `HITLResponse`(security)— 授权范围响应,字段 `Scope (one-time / session / permanent) / ApprovedRule`
-- 拦截器校验流程总览(见下方 §3.7):`src/internal/security/interceptor.go:67`(Check 入口)+ `src/internal/security/checker.go:60`(Decide 单次检查)+ `src/internal/security/sandbox_middleware.go:183`(SandboxMiddleware)
-- `SandboxMiddleware`(`src/internal/security/sandbox_middleware.go:183`)— 路径沙箱中间件
-- `ResolveInSandboxWithRoots`(`src/internal/security/sandbox.go:64`)— 附加只读根机制
+- 拦截器校验流程总览(见下方 §3.7):`src/internal/security/interceptor.go`(Check 入口)+ `src/internal/security/checker.go`(Decide 单次检查)+ `src/internal/security/sandbox_middleware.go`(SandboxMiddleware)
+- `SandboxMiddleware`(`src/internal/security/sandbox_middleware.go`)— 路径沙箱中间件
+- `ResolveInSandboxWithRoots`(`src/internal/security/sandbox.go`)— 附加只读根机制
 - `CheckBashCommand`(`src/internal/security/blacklist.go`)— Bash 危险命令黑名单
 
 ## §3 关键流程
 
 ### 3.1 多层配置合并(`LoadPermissions`)
 
-`LoadPermissions(globalConf, projectConf) *PermissionPolicy`(`src/internal/security/config.go:35`)流程:
+`LoadPermissions(globalConf, projectConf) *PermissionPolicy`(`src/internal/security/config.go`)流程:
 
 1. 初始化 `policy{Mode: ModeDefault, Rules: []}`
 2. 解析全局 `globalRules := parseRules(globalConf)`
@@ -52,8 +52,8 @@
 
 `ToolHandler.doExecute`(tool_handler.go 内部)流程:
 
-1. **Middlewares 链**:`SandboxMiddleware`(tool_handler.go:124 注释)做路径类工具的硬兜底沙箱校验
-2. **Interceptor.Check**(interceptor.go:67)— `Checker.Decide` + 可选 HITL
+1. **Middlewares 链**:`SandboxMiddleware`(tool_handler.go 注释)做路径类工具的硬兜底沙箱校验
+2. **Interceptor.Check**(interceptor.go)— `Checker.Decide` + 可选 HITL
 3. **执行工具**:`tool.Execute(ctx, input)`
 4. **执行后事件**:fire `OnEnd` 回调(包含执行结果 / 错误)
 
@@ -61,7 +61,7 @@
 
 ### 3.3 `Checker.Decide` 决策流程
 
-`Checker.Decide(ctx, toolName, input) Decision`(`src/internal/security/checker.go:60+`)流程:
+`Checker.Decide(ctx, toolName, input) Decision`(`src/internal/security/checker.go`)流程:
 
 1. **路径工具路径提取**:`extractStringParam(params, paramKey)` 拿 `file_path` / `command` 等参数
 2. **规则匹配**(顺序):
@@ -78,7 +78,7 @@
 
 ### 3.4 HITL 人在回路
 
-`Interceptor.Check`(interceptor.go:67)在决策为 ActionAsk 时:
+`Interceptor.Check`(interceptor.go)在决策为 ActionAsk 时:
 
 1. 调 `hitlCallback(ctx, toolName, input, decision)`(interceptor.go 注释)
 2. callback 返回 `HITLResponse{Scope, ApprovedRule}`
@@ -92,7 +92,7 @@ WebUI 的权限对话框(`src/internal/interaction/web/`)在收到 `permission_a
 
 ### 3.5 路径沙箱(SandboxMiddleware)
 
-`SandboxMiddleware(workdir, ruleProvider, opts...) MiddlewareFunc`(`src/internal/security/sandbox_middleware.go:183`)流程:
+`SandboxMiddleware(workdir, ruleProvider, opts...) MiddlewareFunc`(`src/internal/security/sandbox_middleware.go`)流程:
 
 1. `IsPathTool(toolName)` 判断是否路径类工具
 2. 提取 `params[paramKey]`,空时 `Glob / Grep` 默认走 workdir,其他工具透传
@@ -107,7 +107,7 @@ WebUI 的权限对话框(`src/internal/interaction/web/`)在收到 `permission_a
 
 ### 3.6 黑名单(`CheckBashCommand`)
 
-`BashTool.Execute` 不再做黑名单检查(已提升至拦截器层,`bash.go:70` 注释)—— 由 `security.Checker.Decide` 在拦截器层做硬安全预检。`blacklist.go` 列出 rm -rf / 、 mkfs 、 shutdown 等危险命令模式。
+`BashTool.Execute` 不再做黑名单检查(已提升至拦截器层,`bash.go` 注释)—— 由 `security.Checker.Decide` 在拦截器层做硬安全预检。`blacklist.go` 列出 rm -rf / 、 mkfs 、 shutdown 等危险命令模式。
 
 [Why] 黑名单提到拦截器层:**Why** 黑名单是权限决策而非工具实现细节;拦截器层对所有工具统一拦截,工具自身无需关心黑名单规则。
 
@@ -151,7 +151,7 @@ fire OnEnd 回调 → WebUI 工具徽标更新
   - `internal/tool/builtin/Bash` — 黑名单拦截
   - `internal/memory/autolearn/Store`(`Store.RootFor` 注入 `WithReadRoots`)
   - `internal/skill/scanner`(`builtin/user/project` skill 根注入 `WithReadRoots`)
-  - `main.go:547-557`(装配 SandboxMiddleware + ReadFile 附加根)
+  - `main.go`(装配 SandboxMiddleware + ReadFile 附加根)
 
 ## §5 设计决策
 
@@ -183,25 +183,25 @@ fire OnEnd 回调 → WebUI 工具徽标更新
 
 - **问题**:ActionAsk 决策如何在 UI 上让用户做选择
 - **方案**:WebUI handler 收到 `permission_ask` 事件后弹对话框,展示工具名 + 参数摘要 + 三个选项按钮
-- **理由**:**Why** 「可视化确认」是工业惯例;参数摘要(`buildParamsSummary` interceptor.go:261)让用户能基于实际参数决策而非盲选
+- **理由**:**Why** 「可视化确认」是工业惯例;参数摘要(`buildParamsSummary` interceptor.go)让用户能基于实际参数决策而非盲选
 
 ## §6 关键文件索引
 
 | 路径 | 角色 |
 |------|------|
-| `src/internal/security/config.go:14` | `PermissionPolicy` 多层合并策略 |
-| `src/internal/security/config.go:35` | `LoadPermissions` 多层合并 |
-| `src/internal/security/checker.go:29` | `Checker` 权限检查器 |
-| `src/internal/security/checker.go:60+` | `Decide` 单次检查决策 |
-| `src/internal/security/checker.go:220` | `SetMode` 运行时切换档位 |
-| `src/internal/security/interceptor.go:36` | `Interceptor` 拦截器 |
-| `src/internal/security/interceptor.go:67` | `Check` 拦截入口 |
-| `src/internal/security/interceptor.go:261` | `buildParamsSummary` HITL 参数摘要 |
-| `src/internal/security/sandbox_middleware.go:183` | `SandboxMiddleware` 路径沙箱中间件 |
-| `src/internal/security/sandbox.go:64` | `ResolveInSandboxWithRoots` 附加只读根 |
-| `src/internal/security/sandbox.go:139` | `IsPathOutsideSandbox` 权限层路径判定 |
+| `src/internal/security/config.go` | `PermissionPolicy` 多层合并策略 |
+| `src/internal/security/config.go` | `LoadPermissions` 多层合并 |
+| `src/internal/security/checker.go` | `Checker` 权限检查器 |
+| `src/internal/security/checker.go` | `Decide` 单次检查决策 |
+| `src/internal/security/checker.go` | `SetMode` 运行时切换档位 |
+| `src/internal/security/interceptor.go` | `Interceptor` 拦截器 |
+| `src/internal/security/interceptor.go` | `Check` 拦截入口 |
+| `src/internal/security/interceptor.go` | `buildParamsSummary` HITL 参数摘要 |
+| `src/internal/security/sandbox_middleware.go` | `SandboxMiddleware` 路径沙箱中间件 |
+| `src/internal/security/sandbox.go` | `ResolveInSandboxWithRoots` 附加只读根 |
+| `src/internal/security/sandbox.go` | `IsPathOutsideSandbox` 权限层路径判定 |
 | `src/internal/security/blacklist.go` | `CheckBashCommand` Bash 危险命令黑名单 |
 | `src/internal/security/policy.go` | 策略相关 helpers |
 | `src/internal/security/hitl.go` | HITL 响应结构定义 |
-| `src/internal/interaction/web/protocol.go:470` | `PermissionModePayload` 权限模式 WS 推送 |
-| `src/main.go:547-557` | `buildMemoryReadRoots / buildSkillReadRoots` 沙箱附加根装配 |
+| `src/internal/interaction/web/protocol.go` | `PermissionModePayload` 权限模式 WS 推送 |
+| `src/main.go` | `buildMemoryReadRoots / buildSkillReadRoots` 沙箱附加根装配 |

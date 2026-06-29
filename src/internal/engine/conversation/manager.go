@@ -11,9 +11,12 @@ package conversation
 
 import (
 	"context"
+	"strings"
+	"sync"
 
 	"go.uber.org/zap"
 
+	"github.com/MeiCorl/CodePilot/src/internal/hook"
 	"github.com/MeiCorl/CodePilot/src/internal/logger"
 	memctx "github.com/MeiCorl/CodePilot/src/internal/memory/context"
 	"github.com/MeiCorl/CodePilot/src/internal/tool"
@@ -43,6 +46,16 @@ type ConversationManager struct {
 	// 通常由 prompt.Builder 的 AGENTS.md Source 注入；空字符串时 GetContext
 	// 不构造空消息。
 	leadUserMessage string
+	// promptInjections 暂存 prompt action 产生的 user-message 尾部注入文本。
+	// 它只影响下一次发送给 LLM 的上下文视图,不写入持久化 history。
+	promptMu         sync.Mutex
+	promptInjections []string
+
+	// hookEngine 为 Hook 系统集成点。ConversationManager 位于引擎层,只向下依赖
+	// hook 的公共接口;hook 包本身不反向依赖本包。
+	hookEngine       *hook.Engine
+	hookWorkdir      string
+	currentIteration int
 
 	// ---- Step 7：上下文压缩相关（Task 6 撞墙兜底 + Task 7 每轮自动压缩共用）----
 	//
@@ -84,6 +97,97 @@ func (m *ConversationManager) SetLeadUserMessage(text string) {
 // 用于 WebUI 可观测性展示（状态栏 tooltip、开发者模式导出）。
 func (m *ConversationManager) LeadUserMessage() string {
 	return m.leadUserMessage
+}
+
+// SetHookEngine 注入 HookEngine。nil 表示关闭 Hook 派发,主流程保持原行为。
+func (m *ConversationManager) SetHookEngine(engine *hook.Engine, workdir string) {
+	m.hookEngine = engine
+	m.hookWorkdir = workdir
+}
+
+// AppendToCurrentMessage 实现 hook.PromptSink。
+// 文本会追加到下一次发送给 LLM 的最后一条 user 消息尾部,但不会写入 history。
+func (m *ConversationManager) AppendToCurrentMessage(text string) error {
+	if text == "" {
+		return nil
+	}
+	m.promptMu.Lock()
+	defer m.promptMu.Unlock()
+	m.promptInjections = append(m.promptInjections, text)
+	m.invalidateContextUsage()
+	return nil
+}
+
+func (m *ConversationManager) dispatchHook(ctx context.Context, event string, hookCtx *hook.HookContext) {
+	if m.hookEngine == nil || hookCtx == nil {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			logger.ErrorCtx(ctx, "Hook 派发 panic，已恢复", zap.String("event", event), zap.Any("panic", r))
+		}
+	}()
+	m.hookEngine.Dispatch(ctx, event, hookCtx)
+}
+
+func (m *ConversationManager) contextForLLM() []llm.Message {
+	messages := m.GetContext()
+	m.promptMu.Lock()
+	if len(m.promptInjections) > 0 {
+		m.promptInjections = nil
+	}
+	m.promptMu.Unlock()
+	return messages
+}
+
+func (m *ConversationManager) appendPendingPrompt(messages []llm.Message) []llm.Message {
+	m.promptMu.Lock()
+	if len(m.promptInjections) == 0 {
+		m.promptMu.Unlock()
+		return messages
+	}
+	text := strings.Join(m.promptInjections, "\n\n")
+	m.promptMu.Unlock()
+	if text == "" {
+		return messages
+	}
+	idx := -1
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == llm.RoleUser {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return append(messages, llm.Message{Role: llm.RoleUser, Content: []llm.ContentBlock{llm.NewTextBlock(text)}})
+	}
+	content := make([]llm.ContentBlock, 0, len(messages[idx].Content)+1)
+	content = append(content, messages[idx].Content...)
+	content = append(content, llm.NewTextBlock(text))
+	messages[idx].Content = content
+	return messages
+}
+
+func messageText(msg llm.Message) string {
+	parts := make([]string, 0, len(msg.Content))
+	for _, block := range msg.Content {
+		if block == nil {
+			continue
+		}
+		if s := block.ToText(); s != "" {
+			parts = append(parts, s)
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+func lastUserMessageText(messages []llm.Message) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == llm.RoleUser {
+			return messageText(messages[i])
+		}
+	}
+	return ""
 }
 
 // ---- Step 7：压缩协调器装配 + ConversationHistory 接口实现 ----
@@ -215,7 +319,7 @@ func (m *ConversationManager) GetContext() []llm.Message {
 
 	// 拼接 lead user message（如果存在）到最前
 	if m.leadUserMessage == "" {
-		return history
+		return m.appendPendingPrompt(history)
 	}
 	out := make([]llm.Message, 0, len(history)+1)
 	out = append(out, llm.Message{
@@ -223,7 +327,7 @@ func (m *ConversationManager) GetContext() []llm.Message {
 		Content: []llm.ContentBlock{llm.NewTextBlock(m.leadUserMessage)},
 	})
 	out = append(out, history...)
-	return out
+	return m.appendPendingPrompt(out)
 }
 
 // AllMessages 返回完整对话历史的副本，用于会话持久化归档。
@@ -528,7 +632,10 @@ func (m *ConversationManager) runOneLLM(
 	// 压缩失败不中断主流程（第二层失败时 history 仍可用），产生变更时通过 hooks.OnCompaction 外推。
 	m.runAutoCompaction(ctx, provider, hooks)
 
-	messages := m.GetContext()
+	previewMessages := m.GetContext()
+	m.dispatchHook(ctx, hook.EventPreMessage,
+		hook.NewMessageContext(hook.EventPreMessage, lastUserMessageText(previewMessages), string(llm.RoleUser), m.sessionID, m.hookWorkdir, m.currentIteration))
+	messages := m.contextForLLM()
 	chunkCh, err := provider.StreamChat(ctx, sp, messages, toolSpecs)
 	if err != nil {
 		// ---- Task 6：撞墙兜底——上下文超长时紧急压缩 + 重试一次 ----
@@ -553,7 +660,7 @@ func (m *ConversationManager) runOneLLM(
 			wallHitRetried = true
 			if compactErr := m.emergencyCompactOnWallHit(ctx, provider, hooks); compactErr == nil {
 				// 紧急压缩成功：用压缩后的历史重试一次请求。
-				messages = m.GetContext()
+				messages = m.contextForLLM()
 				chunkCh, err = provider.StreamChat(ctx, sp, messages, toolSpecs)
 			}
 			// 紧急压缩失败（compactErr != nil）：保留原始 err（超长错误）上报，不吞异常。

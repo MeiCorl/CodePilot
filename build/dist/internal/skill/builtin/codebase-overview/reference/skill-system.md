@@ -8,7 +8,7 @@ Skill 系统位于第 3 层 工具层,是「可插拔的工作流能力模块」
 
 - **三档优先级目录**:`builtin / user / project`,后注册的覆盖先注册的(`project > user > builtin`)
 - **SKILL.md 解析**:YAML frontmatter(`name / description / args / allowed-tools`)+ Markdown 正文
-- **`use_skill` 工具**(`src/internal/skill/adapter/tool.go:100`)— LLM 按需调用,加载 Skill 完整内容到上下文
+- **`use_skill` 工具**(`src/internal/skill/adapter/tool.go`)— LLM 按需调用,加载 Skill 完整内容到上下文
 - **slash 命令注册**:Skill 加载后通过 `skilladapter.AsSlashCommand` 注册为 `/<name>` slash 命令
 - **紫色徽标**:Category=`skill` 时前端在候选下拉加紫色「skill」标签,工具块头部加紫色「skill: <name>」徽标
 - **`enabled=false` 三层降级**:`skill.enabled=false` 时 `/skills` 列表为空、`use_skill` 工具不可用、slash 命令不注册
@@ -16,48 +16,48 @@ Skill 系统位于第 3 层 工具层,是「可插拔的工作流能力模块」
 ## §2 核心数据结构
 
 - `Skill`(`src/internal/skill/skill.go`)— 字段含 `Name / Description / Args / AllowedTools / Source / RootPath / body`
-- `Frontmatter`(`src/internal/skill/loader/loader.go:27`)— YAML 头结构,字段 `Name / Description / Args / AllowedTools []string`
+- `Frontmatter`(`src/internal/skill/loader/loader.go`)— YAML 头结构,字段 `Name / Description / Args / AllowedTools []string`
 - `Source` 常量— `SourceProject(1) / SourceUser(2) / SourceBuiltin(3)`,数值越小优先级越高
-- `Registry`(`src/internal/skill/registry.go:25`)— 内存合并注册表,字段 `byName map[string]*Skill / order []string / mu sync.RWMutex`
-- `ErrSkillConflict`(registry.go:51)— 同级别同名冲突错误,含 `Name / ExistingSource`
-- `LoadAll`(`src/internal/skill/scanner.go:92`)— 三档(内置 → 用户 → 项目)扫描与合并入口
-- `LoadIssue`(scanner.go:40)— 加载期 issue(非 fatal),含 `Path / Err / Source`
-- `scanOptions`(scanner.go:245)— 扫描选项,`SkipDuplicateSameSource: true` 避免重复条目
-- `slash.SlashCommand`(`src/internal/command/slash/command.go:26`)— Step 9.1 命令接口,Skill 适配器实现
-- `skillCmd`(`src/internal/skill/adapter/slash.go:67`)— Skill → SlashCommand 适配器
-- `useSkillTool`(`src/internal/skill/adapter/tool.go:100`)— `use_skill` 工具实现,返回 `tool.Tool` 接口;`src/internal/skill/adapter/tool.go` 整体是 Step 10 `use_skill` 工具实现
+- `Registry`(`src/internal/skill/registry.go`)— 内存合并注册表,字段 `byName map[string]*Skill / order []string / mu sync.RWMutex`
+- `ErrSkillConflict`(registry.go)— 同级别同名冲突错误,含 `Name / ExistingSource`
+- `LoadAll`(`src/internal/skill/scanner.go`)— 三档(内置 → 用户 → 项目)扫描与合并入口
+- `LoadIssue`(scanner.go)— 加载期 issue(非 fatal),含 `Path / Err / Source`
+- `scanOptions`(scanner.go)— 扫描选项,`SkipDuplicateSameSource: true` 避免重复条目
+- `slash.SlashCommand`(`src/internal/command/slash/command.go`)— Step 9.1 命令接口,Skill 适配器实现
+- `skillCmd`(`src/internal/skill/adapter/slash.go`)— Skill → SlashCommand 适配器
+- `useSkillTool`(`src/internal/skill/adapter/tool.go`)— `use_skill` 工具实现,返回 `tool.Tool` 接口;`src/internal/skill/adapter/tool.go` 整体是 Step 10 `use_skill` 工具实现
 
 ## §3 关键流程
 
 ### 3.1 三档加载(`LoadAll`)
 
-`LoadAll(workdir, homeDir, execDir, maxBytes) (*Registry, []LoadIssue, error)`(`scanner.go:92`)流程:
+`LoadAll(workdir, homeDir, execDir, maxBytes) (*Registry, []LoadIssue, error)`(`scanner.go`)流程:
 
 1. **内置级三段式 fallback**(Step 10.1 修复后):
-   - 段 1:`scanEmbeddedBuiltins(reg, maxBytes, &issues)`(`scanner.go:107`)读 `//go:embed */SKILL.md` 的 `embeddedFS`
-   - 段 2:`scanLevelWithOptions(filepath.Join(execDir, builtinRelPath), SourceBuiltin, maxBytes, ...)`(`scanner.go:110`)读 `<execDir>/internal/skill/builtin/`
-   - 段 3:`findSrcBuiltinFallback(workdir)` 向上找 `src/internal/skill/builtin/`,找到后调 `scanLevelWithOptions(SkipDuplicateSameSource:true)`(`scanner.go:113`)
-2. **用户级**:`scanLevel(reg, filepath.Join(homeDir, userSkillsDir), SourceUser, ...)`(`scanner.go:120`)读 `~/.codepilot/skills/`
-3. **项目级**:`scanLevel(reg, filepath.Join(workdir, projectSkillsDir), SourceProject, ...)`(`scanner.go:125`)读 `<cwd>/.codepilot/skills/`
-4. **可观测性**:三段 fallback 都没加载到任何内置 Skill 时 `logger.L().Warn(...)`(`scanner.go:136`)显式提示
+   - 段 1:`scanEmbeddedBuiltins(reg, maxBytes, &issues)`(`scanner.go`)读 `//go:embed */SKILL.md` 的 `embeddedFS`
+   - 段 2:`scanLevelWithOptions(filepath.Join(execDir, builtinRelPath), SourceBuiltin, maxBytes, ...)`(`scanner.go`)读 `<execDir>/internal/skill/builtin/`
+   - 段 3:`findSrcBuiltinFallback(workdir)` 向上找 `src/internal/skill/builtin/`,找到后调 `scanLevelWithOptions(SkipDuplicateSameSource:true)`(`scanner.go`)
+2. **用户级**:`scanLevel(reg, filepath.Join(homeDir, userSkillsDir), SourceUser, ...)`(`scanner.go`)读 `~/.codepilot/skills/`
+3. **项目级**:`scanLevel(reg, filepath.Join(workdir, projectSkillsDir), SourceProject, ...)`(`scanner.go`)读 `<cwd>/.codepilot/skills/`
+4. **可观测性**:三段 fallback 都没加载到任何内置 Skill 时 `logger.L().Warn(...)`(`scanner.go`)显式提示
 
 [Why] 三段式 fallback:**Why** 老 binary 编译时 `//go:embed */SKILL.md` 是空(源码目录无 SKILL.md)+ dist 副本丢失 + 用户在项目根启动二进制 → 三段全失败。显式 warn 让用户能定位是「重新 `make build`」还是「项目布局异常」。
 
 ### 3.2 SKILL.md 解析
 
-`loader.ParseFile(path) (*Skill, error)`(`src/internal/skill/loader/loader.go:87`):
+`loader.ParseFile(path) (*Skill, error)`(`src/internal/skill/loader/loader.go`):
 
 1. `os.ReadFile(path)` 读文件
-2. `splitFrontmatter(raw, path)`(`loader.go:127`)按 `---` 拆 YAML 头 + 正文;首行非 `---` 或未闭合均返回 `*ErrMissingFrontmatter`
+2. `splitFrontmatter(raw, path)`(`loader.go`)按 `---` 拆 YAML 头 + 正文;首行非 `---` 或未闭合均返回 `*ErrMissingFrontmatter`
 3. `yaml.Unmarshal` 解析 frontmatter;YAML 错误返回 `*ErrYAML`(unwrap 后是 yaml.v3 原始错误)
-4. `validateFrontmatter(fm, path)`(`loader.go:167`)校验 `name / description` 非空,缺失返回 `*ErrMissingField`
+4. `validateFrontmatter(fm, path)`(`loader.go`)校验 `name / description` 非空,缺失返回 `*ErrMissingField`
 5. `skill.NewSkill(...)` 构造 `*Skill`(Source 默认填 SourceProject,scanner 按目录覆盖)
 
 [Why] Source 默认填 SourceProject:**Why** loader 阶段不区分目录来源,scanner 负责在注册时按目录覆盖;loader 与 source 决策解耦便于测试。
 
 ### 3.3 Registry 合并规则
 
-`Registry.Register(s *Skill) error`(`src/internal/skill/registry.go:93`)冲突规则:
+`Registry.Register(s *Skill) error`(`src/internal/skill/registry.go`)冲突规则:
 
 - **未发现同名** → 正常注册,append 到 `order`
 - **同名且同 Source** → 返回 `*ErrSkillConflict{Name, ExistingSource}`
@@ -69,13 +69,13 @@ Skill 系统位于第 3 层 工具层,是「可插拔的工作流能力模块」
 
 ### 3.4 Skill → Slash 命令注册
 
-`skilladapter.RegisterAll(r *slash.Registry, skills []*skill.Skill, h LeadMessageInjector)`(`src/internal/skill/adapter/slash.go:248`):
+`skilladapter.RegisterAll(r *slash.Registry, skills []*skill.Skill, h LeadMessageInjector)`(`src/internal/skill/adapter/slash.go`):
 
 1. 遍历 `skills`,对每个 Skill 调 `AsSlashCommand(s, h)` 构造 `skillCmd`
 2. `r.Register(cmd)` 把 slash 命令注册到 `slash.Registry`
 3. 重复名错误收集到 `errs []error` 返回(不立即失败,让用户一次性看到所有冲突)
 
-`skillCmd.Category() = "skill"`(`slash.go:127`),前端 `applySlashCompletion` 识别后:
+`skillCmd.Category() = "skill"`(`slash.go`),前端 `applySlashCompletion` 识别后:
 - 候选下拉条目左侧加紫色「skill」标签
 - 工具块头部加紫色「skill: <name>」徽标(`handler.go` 内部 tool_call_start 推送)
 
@@ -95,7 +95,7 @@ Skill 系统位于第 3 层 工具层,是「可插拔的工作流能力模块」
 main.go 装配时若 `cfg.Skill.Enabled = false`:
 
 1. **加载层**:`LoadAll` 不被调用,`skill.Registry` 为 nil(后续 ListBySource 返回空)
-2. **SP 层**:`SkillsIndexSource.Assemble`(`src/internal/skill/sources/skills_index.go:49`)检测 registry 为空,返回空 Section
+2. **SP 层**:`SkillsIndexSource.Assemble`(`src/internal/skill/sources/skills_index.go`)检测 registry 为空,返回空 Section
 3. **命令层**:`skilladapter.RegisterAll` 不被调用,slash 命令不出现
 4. **WebUI 层**:`/skills` 模态框为空,候选下拉中无 Skill 条目
 
@@ -108,8 +108,8 @@ main.go 装配时若 `cfg.Skill.Enabled = false`:
   - `internal/interaction/web/handler`(`src/internal/interaction/web/handler.go`)— `skillProvider.ListBySource` 调用供 `/skills` 模态框
 - **下游被依赖**:
   - `internal/engine/prompt/sources/skills_index.go`(`SkillsIndexSource`)— 把 Skill 列表注入 SP LeadUserMessage
-  - `main.go:611`(`prompt.NewBuilder(...)`)— 装配 SkillsIndexSource + ConfigAwarenessSource + CodebaseAwarenessSource
-  - `main.go:355`(`buildSkillReadRoots`)— 把 builtin/user/project 三档 skill 根目录作为 ReadFile 附加只读根注入(Step 10.2 Task 3 落地)
+  - `main.go`(`prompt.NewBuilder(...)`)— 装配 SkillsIndexSource + ConfigAwarenessSource + CodebaseAwarenessSource
+  - `main.go`(`buildSkillReadRoots`)— 把 builtin/user/project 三档 skill 根目录作为 ReadFile 附加只读根注入(Step 10.2 Task 3 落地)
 
 ## §5 设计决策
 
@@ -148,19 +148,19 @@ main.go 装配时若 `cfg.Skill.Enabled = false`:
 | 路径 | 角色 |
 |------|------|
 | `src/internal/skill/skill.go` | `Skill` 数据结构定义 |
-| `src/internal/skill/scanner.go:92` | `LoadAll` 三档扫描入口 |
-| `src/internal/skill/scanner.go:107-117` | 内置级三段式 fallback |
-| `src/internal/skill/scanner.go:136` | 启动期可观测性 warn |
-| `src/internal/skill/loader/loader.go:87` | `ParseFile` SKILL.md 解析 |
-| `src/internal/skill/loader/loader.go:127` | `splitFrontmatter` frontmatter 拆分 |
-| `src/internal/skill/registry.go:25` | `Registry` 内存合并注册表 |
-| `src/internal/skill/registry.go:93` | `Register` 冲突规则 |
-| `src/internal/skill/sources/skills_index.go:49` | `SkillsIndexSource` SP 索引注入 |
-| `src/internal/skill/adapter/tool.go:100` | `NewUseSkillTool` `use_skill` 工具 |
-| `src/internal/skill/adapter/slash.go:67` | `skillCmd` Skill → Slash 适配 |
-| `src/internal/skill/adapter/slash.go:127` | `Category = "skill"` 紫色徽标 |
-| `src/internal/skill/adapter/slash.go:248` | `RegisterAll` 批量注册 |
-| `src/internal/skill/adapter/client.go:28` | `SkillsListCmd` `/skills` client 类 |
-| `src/internal/config/config.go:211` | `SkillConfig` 配置结构 |
+| `src/internal/skill/scanner.go` | `LoadAll` 三档扫描入口 |
+| `src/internal/skill/scanner.go` | 内置级三段式 fallback |
+| `src/internal/skill/scanner.go` | 启动期可观测性 warn |
+| `src/internal/skill/loader/loader.go` | `ParseFile` SKILL.md 解析 |
+| `src/internal/skill/loader/loader.go` | `splitFrontmatter` frontmatter 拆分 |
+| `src/internal/skill/registry.go` | `Registry` 内存合并注册表 |
+| `src/internal/skill/registry.go` | `Register` 冲突规则 |
+| `src/internal/skill/sources/skills_index.go` | `SkillsIndexSource` SP 索引注入 |
+| `src/internal/skill/adapter/tool.go` | `NewUseSkillTool` `use_skill` 工具 |
+| `src/internal/skill/adapter/slash.go` | `skillCmd` Skill → Slash 适配 |
+| `src/internal/skill/adapter/slash.go` | `Category = "skill"` 紫色徽标 |
+| `src/internal/skill/adapter/slash.go` | `RegisterAll` 批量注册 |
+| `src/internal/skill/adapter/client.go` | `SkillsListCmd` `/skills` client 类 |
+| `src/internal/config/config.go` | `SkillConfig` 配置结构 |
 | `src/internal/skill/builtin/codebase-overview/SKILL.md` | Step 10.2 总索引 |
-| `src/main.go:611` | `prompt.NewBuilder` 装配 SkillsIndexSource 等 |
+| `src/main.go` | `prompt.NewBuilder` 装配 SkillsIndexSource 等 |

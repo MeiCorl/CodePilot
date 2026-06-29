@@ -235,7 +235,7 @@ func extractBody(raw string) string {
 	for start < len(lines) && strings.TrimSpace(lines[start]) == "" {
 		start++
 	}
-	if start >= len(lines) || strings.TrimSpace(lines[start]) != "---" {
+	if start >= len(lines) || strings.TrimSpace(strings.TrimPrefix(lines[start], "\ufeff")) != "---" {
 		return raw
 	}
 	for i := start + 1; i < len(lines); i++ {
@@ -268,7 +268,7 @@ func splitFrontmatterForRead(raw string) (frontmatterRead, string, error) {
 	for start < len(lines) && strings.TrimSpace(lines[start]) == "" {
 		start++
 	}
-	if start >= len(lines) || strings.TrimSpace(lines[start]) != "---" {
+	if start >= len(lines) || strings.TrimSpace(strings.TrimPrefix(lines[start], "\ufeff")) != "---" {
 		return frontmatterRead{}, "", fmt.Errorf("missing frontmatter")
 	}
 	end := -1

@@ -364,7 +364,7 @@
 **完成情况记录(2026-06-26,Task Worker 派发执行)**:
 
 - **build 工具**:Windows 环境 `make` 不可用,改用 `powershell -File build/build.ps1`(系统默认策略放行本地脚本;`-ExecutionPolicy Bypass` 被沙箱拒绝,直接 powershell 即可)
-- **build 结果**:成功 — 日志输出 `>> Copied 2 builtin SKILL.md -> F:\CodePilot\build\dist\internal\skill\builtin\` + `CodePilot.exe 14.75MB`
+- **build 结果**:成功 — 日志输出 `>> Copied 2 builtin skill resource dirs -> F:\CodePilot\build\dist\internal\skill\builtin\` + `CodePilot.exe 14.75MB`
 - **build 脚本改动**:**无**。`build/build.ps1:62` 与 `Makefile:47` 已是整目录递归复制,新增的 `codebase-overview/` 子目录被自动包含,Task 7 纯验证任务
 - **产物校验**:
   - `build/dist/internal/skill/builtin/codebase-overview/SKILL.md` 4482 字节(同 source)

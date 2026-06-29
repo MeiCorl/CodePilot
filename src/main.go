@@ -39,6 +39,8 @@ import (
 	"github.com/MeiCorl/CodePilot/src/internal/engine/conversation"
 	"github.com/MeiCorl/CodePilot/src/internal/engine/prompt"
 	"github.com/MeiCorl/CodePilot/src/internal/engine/prompt/sources"
+	"github.com/MeiCorl/CodePilot/src/internal/hook"
+	"github.com/MeiCorl/CodePilot/src/internal/hook/integration"
 	"github.com/MeiCorl/CodePilot/src/internal/interaction/web"
 	"github.com/MeiCorl/CodePilot/src/internal/logger"
 	"github.com/MeiCorl/CodePilot/src/internal/mcp/adapter"
@@ -764,6 +766,8 @@ func run() error {
 	// skill.enabled=false 时本段仍生效（自描述与 Skill 可用性解耦），
 	// 符合 Step 10/10.1 「指向 Skill 不可用是已知降级」的范式。
 	promptSources = append(promptSources, sources.NewCodebaseAwarenessSource())
+	// Step 11 Task 7:追加 Hook 系统自感知 Source,引导 LLM 按需加载 hook-system Skill。
+	promptSources = append(promptSources, sources.NewHooksAwarenessSource())
 	promptBuilder := prompt.NewBuilder(promptSources...)
 
 	// 8. 构造 Handler / Server
@@ -854,6 +858,39 @@ func run() error {
 		logger.Info("上下文压缩已关闭（compaction.enabled=false），将发送完整活跃历史")
 	}
 
+	// Step 11 Task 6：HookEngine 装配与生命周期事件接入。
+	hookEngine, err := hook.LoadFromConfig(&cfg.Hook, hook.EngineConfig{
+		Enabled:      cfg.Hook.IsEnabled(),
+		Logger:       logger.L(),
+		LLMProvider:  provider,
+		ToolRegistry: toolRegistry,
+		PromptSink:   integration.RegisterPromptSink(handler),
+	})
+	if err != nil {
+		return fmt.Errorf("加载 Hook 配置失败: %w", err)
+	}
+	integration.WireAgentLoop(hookEngine, handler.ConversationManager(), workdir)
+	integration.WireToolHandler(hookEngine, toolHandler)
+	integration.WireSession(hookEngine, handler)
+	integration.WireCompact(hookEngine, handler)
+	handler.DispatchCurrentSessionStart(context.Background())
+	hookEngine.Dispatch(context.Background(), hook.EventProgramStart,
+		hook.NewProgramContext(hook.EventProgramStart, handler.CurrentSessionID(), workdir))
+	defer func() {
+		if hookEngine == nil {
+			return
+		}
+		defer func() {
+			if r := recover(); r != nil {
+				logger.Error("program_exit Hook 派发 panic，已恢复", zap.Any("panic", r))
+			}
+		}()
+		hookEngine.Dispatch(context.Background(), hook.EventProgramExit,
+			hook.NewProgramContext(hook.EventProgramExit, handler.CurrentSessionID(), workdir))
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		hookEngine.Shutdown(shutdownCtx)
+	}()
 	server := web.NewServer(web.DefaultAddr)
 	handler.Register(server.Router())
 	// 注入 ConnectionManager：让 MCP 后台初始化就绪后能向所有活跃连接广播 mcp_status。

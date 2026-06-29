@@ -1,0 +1,180 @@
+﻿package integration
+
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/MeiCorl/CodePilot/src/internal/config"
+	"github.com/MeiCorl/CodePilot/src/internal/engine/conversation"
+	"github.com/MeiCorl/CodePilot/src/internal/hook"
+	"github.com/MeiCorl/CodePilot/src/internal/tool"
+	"github.com/MeiCorl/CodePilot/src/llm"
+	"go.uber.org/zap"
+)
+
+type smokeTool struct{ tool.BaseTool }
+
+func (s smokeTool) Execute(ctx context.Context, input json.RawMessage) (string, error) {
+	return "tool-ok", nil
+}
+
+type hookTarget struct {
+	engine *hook.Engine
+	calls  int
+}
+
+func (t *hookTarget) SetHookEngine(engine *hook.Engine) {
+	t.engine = engine
+	t.calls++
+}
+
+func TestIntegrationSmoke_ToolHandlerWireTriggersHooksAndKeepsToolResult(t *testing.T) {
+	tmp := t.TempDir()
+	logPath := filepath.Join(tmp, "tool-hooks.log")
+	eng := newSmokeEngine(t, tmp, []config.HookEntryConfig{
+		smokeEntry("pre", hook.EventPreToolUse, smokeCond(`{"field":"tool_name","op":"eq","value":"smoke_tool"}`), smokeAction(map[string]any{"type": "command", "command": smokeAppendCommand(logPath, "pre:$TOOL_NAME:$TOOL_INPUT_FILE_PATH")})),
+		smokeEntry("post", hook.EventPostToolUse, smokeCond(`{"field":"tool_name","op":"eq","value":"smoke_tool"}`), smokeAction(map[string]any{"type": "command", "command": smokeAppendCommand(logPath, "post:$TOOL_NAME:$TOOL_RESULT")})),
+	})
+
+	reg := tool.NewRegistry()
+	if err := reg.Register(&smokeTool{BaseTool: tool.BaseTool{ToolName: "smoke_tool", ToolDescription: "smoke", ToolInputSchema: json.RawMessage(`{"type":"object"}`), ToolPermission: tool.PermRead}}); err != nil {
+		t.Fatalf("register tool: %v", err)
+	}
+	handler := conversation.NewToolHandler(reg, 2*time.Second, tmp)
+	WireToolHandler(eng, handler)
+	handler.SetHookSessionID("sess-smoke")
+	handler.SetHookIteration(7)
+
+	result := handler.Execute(context.Background(), llm.ToolUseBlock{ID: "tool-1", Name: "smoke_tool", Input: json.RawMessage(`{"file_path":"demo.go"}`)})
+	if result.IsError || result.Content != "tool-ok" {
+		t.Fatalf("工具主流程被破坏: %+v", result)
+	}
+	lines := smokeReadLines(t, logPath)
+	smokeMustContainLine(t, lines, "pre:smoke_tool:demo.go")
+	smokeMustContainLine(t, lines, "post:smoke_tool:tool-ok")
+	if stats := eng.Stats(); stats.FiredTotal != 2 || stats.FailedTotal != 0 {
+		t.Fatalf("hook stats = %+v,期望 fired=2 failed=0", stats)
+	}
+}
+
+func TestIntegrationSmoke_PromptSinkWireDoesNotPersistHistory(t *testing.T) {
+	mgr := conversation.NewConversationManager(10)
+	WireAgentLoop(nil, mgr, "")
+	WireAgentLoop(hook.New(hook.EngineConfig{Enabled: true, Logger: zap.NewNop()}), mgr, t.TempDir())
+	sink := RegisterPromptSink(mgr)
+	eng := hook.New(hook.EngineConfig{Enabled: true, Logger: zap.NewNop(), PromptSink: sink})
+	if err := eng.LoadEntries([]config.HookEntryConfig{
+		smokeEntry("prompt", hook.EventPreMessage, nil, smokeAction(map[string]any{"type": "prompt", "text": "<system-reminder>本轮提醒: $MESSAGE_CONTENT</system-reminder>", "as": "system_reminder"})),
+	}); err != nil {
+		t.Fatalf("LoadEntries: %v", err)
+	}
+
+	mgr.AddUserMessage("hello")
+	before := mgr.AllMessages()
+	eng.Dispatch(context.Background(), hook.EventPreMessage, hook.NewMessageContext(hook.EventPreMessage, "hello", "user", "sess-smoke", t.TempDir(), 1))
+	ctxMsgs := mgr.GetContext()
+	last := ctxMsgs[len(ctxMsgs)-1]
+	if last.Role != llm.RoleUser || !strings.Contains(messageText(last), "本轮提醒: hello") || !strings.Contains(messageText(last), "<system-reminder>") {
+		t.Fatalf("prompt 注入未出现在发送视图最后 user 消息: %#v", last)
+	}
+	after := mgr.AllMessages()
+	if len(after) != len(before) || messageText(after[len(after)-1]) != "hello" {
+		t.Fatalf("prompt 注入污染了 history: before=%v after=%v", before, after)
+	}
+}
+
+func TestIntegrationSmoke_WireTargetsAndNilAreSafe(t *testing.T) {
+	eng := hook.New(hook.EngineConfig{Enabled: true, Logger: zap.NewNop()})
+	sessionTarget := &hookTarget{}
+	compactTarget := &hookTarget{}
+	WireSession(eng, sessionTarget)
+	WireCompact(eng, compactTarget)
+	WireSession(eng, nil)
+	WireCompact(eng, nil)
+	WireToolHandler(eng, nil)
+	RegisterPromptSink(nil)
+	if sessionTarget.engine != eng || sessionTarget.calls != 1 {
+		t.Fatalf("WireSession 未正确注入: %+v", sessionTarget)
+	}
+	if compactTarget.engine != eng || compactTarget.calls != 1 {
+		t.Fatalf("WireCompact 未正确注入: %+v", compactTarget)
+	}
+}
+
+func newSmokeEngine(t *testing.T, workdir string, entries []config.HookEntryConfig) *hook.Engine {
+	t.Helper()
+	eng, err := hook.LoadFromConfig(&config.HookConfig{Enabled: smokeBool(true), Entries: entries}, hook.EngineConfig{Enabled: true, Logger: zap.NewNop(), DefaultTimeout: 3 * time.Second})
+	if err != nil {
+		t.Fatalf("LoadFromConfig: %v", err)
+	}
+	return eng
+}
+
+func smokeEntry(name, event string, condition *json.RawMessage, actionRaw config.HookActionConfig) config.HookEntryConfig {
+	return config.HookEntryConfig{Name: name, Event: event, Condition: condition, Action: actionRaw}
+}
+
+func smokeAction(v map[string]any) config.HookActionConfig {
+	b, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	typeName, _ := v["type"].(string)
+	return config.HookActionConfig{Type: typeName, Raw: b}
+}
+
+func smokeCond(raw string) *json.RawMessage {
+	r := json.RawMessage(raw)
+	return &r
+}
+
+func smokeBool(v bool) *bool { return &v }
+
+func smokeAppendCommand(path, line string) string {
+	if runtime.GOOS == "windows" {
+		return "Add-Content -LiteralPath " + smokePSQuote(path) + " -Value " + smokePSQuote(line)
+	}
+	return "printf '%s\\n' " + smokeSHQuote(line) + " >> " + smokeSHQuote(path)
+}
+
+func smokePSQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
+func smokeSHQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'" }
+
+func smokeReadLines(t *testing.T, path string) []string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("读取日志 %s: %v", path, err)
+	}
+	text := strings.TrimSpace(strings.ReplaceAll(string(b), "\r\n", "\n"))
+	if text == "" {
+		return nil
+	}
+	return strings.Split(text, "\n")
+}
+
+func smokeMustContainLine(t *testing.T, lines []string, want string) {
+	t.Helper()
+	for _, line := range lines {
+		if line == want {
+			return
+		}
+	}
+	t.Fatalf("日志未包含 %q; lines=%v", want, lines)
+}
+
+func messageText(msg llm.Message) string {
+	parts := make([]string, 0, len(msg.Content))
+	for _, block := range msg.Content {
+		if block != nil {
+			parts = append(parts, block.ToText())
+		}
+	}
+	return strings.Join(parts, "\n")
+}

@@ -6,37 +6,37 @@
 
 自动学习记忆位于第 4 层 记忆层,是 CodePilot 长期记忆的第三类——Agent 在使用过程中自主总结、按分类沉淀为独立 md 文件,跨会话持久化,让 Agent「想起」之前沉淀的用户偏好、反馈、项目知识与参考信息。
 
-- **4 类记忆分级**(`types.go:39-55`):用户偏好 / 用户反馈 / 项目知识 / 参考信息
+- **4 类记忆分级**(`types.go`):用户偏好 / 用户反馈 / 项目知识 / 参考信息
 - **存储域**:`ScopeUser(跨项目 ~/.codepilot/memory)+ ScopeProject(跟随项目 <cwd>/.codepilot/memory)`
 - **MEMORY.md 索引注入**:每会话启动时把两级索引注入到 SP LeadUserMessage(`memory_index.go`)
-- **后台异步 Reviewer**:`Reviewer.OnLoopDone`(`src/internal/memory/autolearn/reviewer.go:129`)每轮 AgentLoop 完成后异步回顾
+- **后台异步 Reviewer**:`Reviewer.OnLoopDone`(`src/internal/memory/autolearn/reviewer.go`)每轮 AgentLoop 完成后异步回顾
 - **敏感脱敏两道防线**:`prompt 约束(LLM 自觉跳过)` + `Sanitize 正则兜底(sanitizer.go)`
-- **ReadFile 附加只读根**:`buildMemoryReadRoots`(`src/main.go:343`)让 LLM 能读沙箱外的记忆文件
+- **ReadFile 附加只读根**:`buildMemoryReadRoots`(`src/main.go`)让 LLM 能读沙箱外的记忆文件
 
 ## §2 核心数据结构
 
-- `MemoryType`(`src/internal/memory/autolearn/types.go:37`)— 四类记忆,常量 `MemoryTypeUserPreference / MemoryTypeUserFeedback / MemoryTypeProjectKnowledge / MemoryTypeReference`
-- `StorageScope`(types.go:60)— 存储域,常量 `ScopeUser / ScopeProject`
-- `ScopeOf(t MemoryType) StorageScope`(types.go:99)— 偏好 / 反馈 → 用户级;项目知识 / 参考 → 项目级
-- `Frontmatter`(types.go:113)— YAML 头,字段 `Type / Title / CreatedAt / UpdatedAt`
-- `Memory`(types.go:144)— 单条记忆,字段 `Frontmatter + Slug + Content`
-- `IndexEntry`(types.go:160)— MEMORY.md 索引行,字段 `Type / Slug / Summary`,渲染格式 `- [user_preference](indent-style.md)——使用4个空格代替TAB`
-- `Store`(`src/internal/memory/autolearn/store.go:70`)— 文件持久化抽象,字段 `userRoot / projectRoot / mu`
-- `memoryTypeOrder`(types.go:70)— 4 类记忆在 MEMORY.md 索引中的渲染顺序(固定)
-- `IsValidType(t MemoryType) bool`(types.go:87)— 校验类型合法
-- `Reviewer`(`src/internal/memory/autolearn/reviewer.go:129`)— 后台异步回顾器,字段 `provider / store / cfg / inflight / wg`
-- `ReviewRequest` / `ReviewEvent`(reviewer.go:53, 78)— 回顾请求 / 事件
-- `ReviewerConfig`(reviewer.go:101)— `Enabled / ReviewTimeout`
-- `redactPattern`(sanitizer.go:34)— 敏感凭证正则 + 替换模板
-- `sensitivePatterns`(sanitizer.go:51)— 三类敏感模式(高熵凭证 / Bearer token / 键值对口令)
-- `MemoryIndexSource`(`src/internal/engine/prompt/sources/memory_index.go:58`)— SP 索引注入 Source
-- `MemoryIndexOptions`(memory_index.go:44)— `Enabled / MaxLines / MaxBytes`
+- `MemoryType`(`src/internal/memory/autolearn/types.go`)— 四类记忆,常量 `MemoryTypeUserPreference / MemoryTypeUserFeedback / MemoryTypeProjectKnowledge / MemoryTypeReference`
+- `StorageScope`(types.go)— 存储域,常量 `ScopeUser / ScopeProject`
+- `ScopeOf(t MemoryType) StorageScope`(types.go)— 偏好 / 反馈 → 用户级;项目知识 / 参考 → 项目级
+- `Frontmatter`(types.go)— YAML 头,字段 `Type / Title / CreatedAt / UpdatedAt`
+- `Memory`(types.go)— 单条记忆,字段 `Frontmatter + Slug + Content`
+- `IndexEntry`(types.go)— MEMORY.md 索引行,字段 `Type / Slug / Summary`,渲染格式 `- [user_preference](indent-style.md)——使用4个空格代替TAB`
+- `Store`(`src/internal/memory/autolearn/store.go`)— 文件持久化抽象,字段 `userRoot / projectRoot / mu`
+- `memoryTypeOrder`(types.go)— 4 类记忆在 MEMORY.md 索引中的渲染顺序(固定)
+- `IsValidType(t MemoryType) bool`(types.go)— 校验类型合法
+- `Reviewer`(`src/internal/memory/autolearn/reviewer.go`)— 后台异步回顾器,字段 `provider / store / cfg / inflight / wg`
+- `ReviewRequest` / `ReviewEvent`(reviewer.go)— 回顾请求 / 事件
+- `ReviewerConfig`(reviewer.go)— `Enabled / ReviewTimeout`
+- `redactPattern`(sanitizer.go)— 敏感凭证正则 + 替换模板
+- `sensitivePatterns`(sanitizer.go)— 三类敏感模式(高熵凭证 / Bearer token / 键值对口令)
+- `MemoryIndexSource`(`src/internal/engine/prompt/sources/memory_index.go`)— SP 索引注入 Source
+- `MemoryIndexOptions`(memory_index.go)— `Enabled / MaxLines / MaxBytes`
 
 ## §3 关键流程
 
 ### 3.1 4 类记忆分级与存储映射
 
-`ScopeOf(t MemoryType)`(`types.go:99`)映射规则:
+`ScopeOf(t MemoryType)`(`types.go`)映射规则:
 
 - **用户级**(`~/.codepilot/memory/`):`MemoryTypeUserPreference`(用户偏好,如「缩进用 4 个空格」)+ `MemoryTypeUserFeedback`(用户反馈,如「上次生成的代码漏了错误处理」)
 - **项目级**(`<cwd>/.codepilot/memory/`):`MemoryTypeProjectKnowledge`(项目知识,如架构 / 部署 / 内部约定)+ `MemoryTypeReference`(参考信息,如 API 文档 / 内部 wiki 链接)
@@ -45,17 +45,17 @@
 
 ### 3.2 MEMORY.md 索引渲染
 
-`Store.RewriteIndex(scope, entries)`(`store.go:189`)原子覆盖索引:
+`Store.RewriteIndex(scope, entries)`(`store.go`)原子覆盖索引:
 
 1. `os.MkdirAll(root, 0o755)` 惰性创建目录
 2. `renderIndex(entries)` 按 4 类分块渲染文本(`memoryTypeOrder` 固定顺序)
 3. `atomicWriteFile(path, content)` 写临时文件 + rename 原子覆盖
 
-`renderIndex`(`store.go:202`)按 4 类分块,每类下用 `- [type](slug.md)——一句话简介` 格式。**Why** 索引行类型标签同时出现在 `[type]` 中,使解析只依赖行内标签;渲染时的 H2 分块标题仅供人类阅读。
+`renderIndex`(`store.go`)按 4 类分块,每类下用 `- [type](slug.md)——一句话简介` 格式。**Why** 索引行类型标签同时出现在 `[type]` 中,使解析只依赖行内标签;渲染时的 H2 分块标题仅供人类阅读。
 
 ### 3.3 SP 索引注入(`MemoryIndexSource`)
 
-`MemoryIndexSource.Assemble`(`memory_index.go:90`)每会话启动时被 `Builder.Assemble` 调用:
+`MemoryIndexSource.Assemble`(`memory_index.go`)每会话启动时被 `Builder.Assemble` 调用:
 
 1. `store.ReadIndex(scope)` 读两级记忆索引(用户级 + 项目级)
 2. `truncateMemoryIndex(body)` 按 `MaxLines / MaxBytes` 双维度截断
@@ -69,11 +69,11 @@
 
 `Reviewer.OnLoopDone(result AgentLoopResult)`(reviewer.go)是每轮 AgentLoop 完成时触发的回调:
 
-1. `shouldReview(req)`(`reviewer.go:537`)过滤:`req.Completed == true && UserInput 非空 && 非闲聊词`
+1. `shouldReview(req)`(`reviewer.go`)过滤:`req.Completed == true && UserInput 非空 && 非闲聊词`
 2. 通过 `r.markInflight(sessionID)` 检查 inflight map,同 session 上一回顾未完成则 `drop`(避免并发回顾互覆盖)
 3. `r.wg.Add(1)` + `go r.asyncReview(req)` 启动后台 goroutine 异步执行
 
-`r.asyncReview(req)`(reviewer.go:281)defer 链:
+`r.asyncReview(req)`(reviewer.go)defer 链:
 - `defer r.wg.Done()`
 - `defer r.recoverReview(req)`(panic 兜底)
 - `defer r.clearInflight(req.SessionID)`
@@ -86,9 +86,9 @@
 
 **第一道防线(prompt 约束)**:`reviewSystemPrompt` 明确禁止记录敏感凭证(模型自觉跳过)。
 
-**第二道防线(正则兜底)**:`Sanitize(text) string`(sanitizer.go:77)落盘前兜底扫描:
+**第二道防线(正则兜底)**:`Sanitize(text) string`(sanitizer.go)落盘前兜底扫描:
 
-- **三类敏感模式**(`sensitivePatterns` sanitizer.go:51):
+- **三类敏感模式**(`sensitivePatterns` sanitizer.go):
   - 高熵凭证:OpenAI sk- / AWS AKIA / Slack xox- / GitHub ghp_ 等
   - Bearer token:保留 `Bearer ` 前缀,仅 token 主体脱敏
   - 键值对口口:保留键名+分隔符,仅值脱敏
@@ -101,7 +101,7 @@
 
 ### 3.6 ReadFile 附加只读根
 
-`buildMemoryReadRoots(toolWorkdir)`(`src/main.go:343`)计算记忆附加根:
+`buildMemoryReadRoots(toolWorkdir)`(`src/main.go`)计算记忆附加根:
 
 1. `userRoot = autolearn.UserMemoryRoot(homeDir) = <home>/.codepilot/memory`
 2. `projectRoot = autolearn.ProjectMemoryRoot(toolWorkdir) = <cwd>/.codepilot/memory`
@@ -116,11 +116,11 @@
 - **上游**(记忆模块依赖):
   - `internal/llm.Provider`— 后台 Reviewer 调 LLM 回顾 + 敏感凭证正则兜底
   - `internal/logger`(`src/internal/logger/`)
-  - `internal/security`(`src/internal/security/sandbox_middleware.go:223`)— 附加只读根机制复用 `ResolveInSandboxWithRoots`
+  - `internal/security`(`src/internal/security/sandbox_middleware.go`)— 附加只读根机制复用 `ResolveInSandboxWithRoots`
 - **下游被依赖**:
   - `internal/engine/prompt/sources/memory_index.go`— SP 索引注入
   - `internal/engine/conversation.manager`(`OnLoopDone` 回调)— Reviewer 装配
-  - `main.go:343`(`buildMemoryReadRoots`)— 沙箱附加根装配
+  - `main.go`(`buildMemoryReadRoots`)— 沙箱附加根装配
 
 ## §5 设计决策
 
@@ -158,19 +158,19 @@
 
 | 路径 | 角色 |
 |------|------|
-| `src/internal/memory/autolearn/types.go:37` | `MemoryType` 4 类枚举 |
-| `src/internal/memory/autolearn/types.go:99` | `ScopeOf` 类型→存储域映射 |
-| `src/internal/memory/autolearn/types.go:113` | `Frontmatter` YAML 头 |
-| `src/internal/memory/autolearn/types.go:144` | `Memory` 单条记忆 |
-| `src/internal/memory/autolearn/types.go:160` | `IndexEntry` 索引行 |
-| `src/internal/memory/autolearn/store.go:70` | `Store` 文件持久化 |
-| `src/internal/memory/autolearn/store.go:146` | `ReadIndex` 读两级索引 |
-| `src/internal/memory/autolearn/store.go:189` | `RewriteIndex` 原子重写索引 |
-| `src/internal/memory/autolearn/reviewer.go:129` | `Reviewer` 后台异步回顾 |
-| `src/internal/memory/autolearn/reviewer.go:281` | `asyncReview` defer 链 panic 兜底 |
-| `src/internal/memory/autolearn/reviewer.go:537` | `shouldReview` 过滤逻辑 |
-| `src/internal/memory/autolearn/sanitizer.go:51` | `sensitivePatterns` 三类敏感正则 |
-| `src/internal/memory/autolearn/sanitizer.go:77` | `Sanitize` 脱敏主入口 |
-| `src/internal/engine/prompt/sources/memory_index.go:58` | `MemoryIndexSource` SP 注入 |
-| `src/internal/engine/prompt/sources/memory_index.go:165` | `truncateMemoryIndex` 双维度截断 |
-| `src/main.go:343` | `buildMemoryReadRoots` 沙箱附加根 |
+| `src/internal/memory/autolearn/types.go` | `MemoryType` 4 类枚举 |
+| `src/internal/memory/autolearn/types.go` | `ScopeOf` 类型→存储域映射 |
+| `src/internal/memory/autolearn/types.go` | `Frontmatter` YAML 头 |
+| `src/internal/memory/autolearn/types.go` | `Memory` 单条记忆 |
+| `src/internal/memory/autolearn/types.go` | `IndexEntry` 索引行 |
+| `src/internal/memory/autolearn/store.go` | `Store` 文件持久化 |
+| `src/internal/memory/autolearn/store.go` | `ReadIndex` 读两级索引 |
+| `src/internal/memory/autolearn/store.go` | `RewriteIndex` 原子重写索引 |
+| `src/internal/memory/autolearn/reviewer.go` | `Reviewer` 后台异步回顾 |
+| `src/internal/memory/autolearn/reviewer.go` | `asyncReview` defer 链 panic 兜底 |
+| `src/internal/memory/autolearn/reviewer.go` | `shouldReview` 过滤逻辑 |
+| `src/internal/memory/autolearn/sanitizer.go` | `sensitivePatterns` 三类敏感正则 |
+| `src/internal/memory/autolearn/sanitizer.go` | `Sanitize` 脱敏主入口 |
+| `src/internal/engine/prompt/sources/memory_index.go` | `MemoryIndexSource` SP 注入 |
+| `src/internal/engine/prompt/sources/memory_index.go` | `truncateMemoryIndex` 双维度截断 |
+| `src/main.go` | `buildMemoryReadRoots` 沙箱附加根 |

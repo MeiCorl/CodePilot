@@ -11,9 +11,10 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/MeiCorl/CodePilot/src/internal/hook"
 	"github.com/MeiCorl/CodePilot/src/internal/logger"
-	"github.com/MeiCorl/CodePilot/src/llm"
 	"github.com/MeiCorl/CodePilot/src/internal/tool"
+	"github.com/MeiCorl/CodePilot/src/llm"
 )
 
 // ---- AgentLoop 配置与结果 ----
@@ -113,7 +114,7 @@ func (m *ConversationManager) AgentLoop(
 	for iteration := 1; iteration <= maxIter; iteration++ {
 		// ---- 检查 ctx 取消 ----
 		if ctx.Err() != nil {
-			logger.InfoCtx(ctx,"AgentLoop 被用户中断", zap.Int("iteration", iteration))
+			logger.InfoCtx(ctx, "AgentLoop 被用户中断", zap.Int("iteration", iteration))
 			result := AgentLoopResult{
 				FinalText:      finalText,
 				Iterations:     iteration - 1,
@@ -125,14 +126,21 @@ func (m *ConversationManager) AgentLoop(
 			return result
 		}
 
-		// ---- 通知上层迭代进度 ----
+		// ---- 通知 Hook 与上层迭代进度 ----
+		m.currentIteration = iteration
+		if toolHandler != nil {
+			toolHandler.SetHookSessionID(m.sessionID)
+			toolHandler.SetHookIteration(iteration)
+		}
+		m.dispatchHook(ctx, hook.EventIterationStart,
+			hook.NewIterationContext(hook.EventIterationStart, m.sessionID, m.hookWorkdir, iteration))
 		hooks.fireIterationStart(iteration, maxIter)
 
 		// ---- 检查上下文溢出 ----
 		if cfg.ContextWindowSize > 0 && cfg.ContextSafetyMargin > 0 {
 			remaining := m.RemainingTokens(cfg.ContextWindowSize)
 			if remaining < cfg.ContextSafetyMargin {
-				logger.WarnCtx(ctx,"上下文空间不足，触发优雅终止",
+				logger.WarnCtx(ctx, "上下文空间不足，触发优雅终止",
 					zap.Int("remaining", remaining),
 					zap.Int("safety_margin", cfg.ContextSafetyMargin),
 					zap.Int("iteration", iteration),
@@ -146,6 +154,8 @@ func (m *ConversationManager) AgentLoop(
 					TotalToolCalls: totalToolCalls,
 					StopReason:     StopReasonContextOverflow,
 				}
+				m.dispatchHook(ctx, hook.EventIterationEnd,
+					hook.NewIterationContext(hook.EventIterationEnd, m.sessionID, m.hookWorkdir, iteration))
 				hooks.fireLoopDone(result)
 				return result
 			}
@@ -160,10 +170,12 @@ func (m *ConversationManager) AgentLoop(
 
 		if turnResult.Err != nil {
 			// LLM 调用失败，中断循环
-			logger.ErrorCtx(ctx,"AgentLoop LLM 调用失败",
+			logger.ErrorCtx(ctx, "AgentLoop LLM 调用失败",
 				zap.Int("iteration", iteration),
 				zap.Error(turnResult.Err),
 			)
+			m.dispatchHook(ctx, hook.EventError,
+				hook.NewErrorContext(m.sessionID, m.hookWorkdir, turnResult.Err.Error(), hook.EventError, iteration))
 			result := AgentLoopResult{
 				FinalText:      finalText,
 				Iterations:     iteration,
@@ -172,12 +184,14 @@ func (m *ConversationManager) AgentLoop(
 				Aborted:        turnResult.Aborted,
 				Error:          turnResult.Err,
 			}
+			m.dispatchHook(ctx, hook.EventIterationEnd,
+				hook.NewIterationContext(hook.EventIterationEnd, m.sessionID, m.hookWorkdir, iteration))
 			hooks.fireLoopDone(result)
 			return result
 		}
 
 		if turnResult.Aborted {
-			logger.InfoCtx(ctx,"AgentLoop 在 LLM 调用中被取消", zap.Int("iteration", iteration))
+			logger.InfoCtx(ctx, "AgentLoop 在 LLM 调用中被取消", zap.Int("iteration", iteration))
 			// 将取消标记写入 history，保持对话结构完整，
 			// 使后续用户发新问题时 LLM 知道前一个问题已被取消，只需关注最新问题
 			m.persistAbortedTurn(turnResult)
@@ -188,6 +202,8 @@ func (m *ConversationManager) AgentLoop(
 				StopReason:     StopReasonAborted,
 				Aborted:        true,
 			}
+			m.dispatchHook(ctx, hook.EventIterationEnd,
+				hook.NewIterationContext(hook.EventIterationEnd, m.sessionID, m.hookWorkdir, iteration))
 			hooks.fireLoopDone(result)
 			return result
 		}
@@ -196,7 +212,7 @@ func (m *ConversationManager) AgentLoop(
 		if !turnResult.HasToolUse() {
 			// 检测 LLM 输出是否因 max_tokens 被截断
 			if turnResult.LLMStopReason == "max_tokens" || turnResult.LLMStopReason == "length" {
-				logger.WarnCtx(ctx,"AgentLoop 检测到 LLM 输出被截断（stop_reason=max_tokens/length），回复可能不完整",
+				logger.WarnCtx(ctx, "AgentLoop 检测到 LLM 输出被截断（stop_reason=max_tokens/length），回复可能不完整",
 					zap.Int("iteration", iteration),
 					zap.String("llm_stop_reason", turnResult.LLMStopReason),
 					zap.Int("text_length", len(turnResult.Text)),
@@ -204,10 +220,12 @@ func (m *ConversationManager) AgentLoop(
 			}
 			if turnResult.Text != "" {
 				m.AddAssistantMessage(turnResult.Text)
+				m.dispatchHook(ctx, hook.EventPostMessage,
+					hook.NewMessageContext(hook.EventPostMessage, turnResult.Text, string(llm.RoleAssistant), m.sessionID, m.hookWorkdir, iteration))
 				finalText = turnResult.Text
 			} else {
 				// LLM 返回了空文本且无工具调用，尝试补充一次让模型输出总结
-				logger.WarnCtx(ctx,"LLM 返回空文本且无工具调用，尝试补充生成回复",
+				logger.WarnCtx(ctx, "LLM 返回空文本且无工具调用，尝试补充生成回复",
 					zap.Int("iteration", iteration),
 					zap.Int("total_tool_calls", totalToolCalls),
 				)
@@ -219,6 +237,8 @@ func (m *ConversationManager) AgentLoop(
 				TotalToolCalls: totalToolCalls,
 				StopReason:     StopReasonCompleted,
 			}
+			m.dispatchHook(ctx, hook.EventIterationEnd,
+				hook.NewIterationContext(hook.EventIterationEnd, m.sessionID, m.hookWorkdir, iteration))
 			hooks.fireLoopDone(result)
 			return result
 		}
@@ -238,6 +258,8 @@ func (m *ConversationManager) AgentLoop(
 			}
 		}
 		m.AddMessage(llm.Message{Role: llm.RoleAssistant, Content: assistantContent})
+		m.dispatchHook(ctx, hook.EventPostMessage,
+			hook.NewMessageContext(hook.EventPostMessage, messageText(llm.Message{Role: llm.RoleAssistant, Content: assistantContent}), string(llm.RoleAssistant), m.sessionID, m.hookWorkdir, iteration))
 
 		// 2. 批量执行工具
 		results := toolHandler.ExecuteBatch(ctx, turnResult.ToolUses)
@@ -252,12 +274,14 @@ func (m *ConversationManager) AgentLoop(
 			}
 		}
 		m.AddMessage(llm.Message{Role: llm.RoleUser, Content: resultContent})
+		m.dispatchHook(ctx, hook.EventIterationEnd,
+			hook.NewIterationContext(hook.EventIterationEnd, m.sessionID, m.hookWorkdir, iteration))
 
 		// 继续下一轮迭代...
 	}
 
 	// ---- 达到最大迭代次数 ----
-	logger.WarnCtx(ctx,"AgentLoop 达到最大迭代次数",
+	logger.WarnCtx(ctx, "AgentLoop 达到最大迭代次数",
 		zap.Int("max_iterations", maxIter),
 		zap.Int("total_tool_calls", totalToolCalls),
 	)
@@ -295,13 +319,13 @@ func (m *ConversationManager) injectTerminationPrompt(
 	// 不传工具描述，让模型只回复文本
 	finalTurn := m.runOneLLM(ctx, provider, sp, nil, hooks.TurnHooks)
 	if finalTurn.Err != nil {
-		logger.ErrorCtx(ctx,"终止提示 LLM 调用失败", zap.Error(finalTurn.Err))
+		logger.ErrorCtx(ctx, "终止提示 LLM 调用失败", zap.Error(finalTurn.Err))
 		return ""
 	}
 	if finalTurn.Text != "" {
 		m.AddAssistantMessage(finalTurn.Text)
 	} else {
-		logger.WarnCtx(ctx,"终止提示后 LLM 仍然返回空文本")
+		logger.WarnCtx(ctx, "终止提示后 LLM 仍然返回空文本")
 	}
 	return finalTurn.Text
 }
@@ -329,7 +353,7 @@ func (m *ConversationManager) ensureNonEmptyReply(
 	// 不传工具，强制模型只回复文本
 	summarizeTurn := m.runOneLLM(ctx, provider, sp, nil, hooks.TurnHooks)
 	if summarizeTurn.Err != nil {
-		logger.ErrorCtx(ctx,"补充总结回复失败，使用兜底消息", zap.Error(summarizeTurn.Err))
+		logger.ErrorCtx(ctx, "补充总结回复失败，使用兜底消息", zap.Error(summarizeTurn.Err))
 		fallback := "（任务已执行完成，但生成回复时遇到问题）"
 		m.AddAssistantMessage(fallback)
 		return fallback
@@ -341,7 +365,7 @@ func (m *ConversationManager) ensureNonEmptyReply(
 	}
 
 	// 补充回复也为空，使用兜底消息
-	logger.WarnCtx(ctx,"补充总结回复仍然为空，使用兜底消息")
+	logger.WarnCtx(ctx, "补充总结回复仍然为空，使用兜底消息")
 	fallback := "（任务已执行完成，但模型未返回可显示的文本内容）"
 	m.AddAssistantMessage(fallback)
 	return fallback

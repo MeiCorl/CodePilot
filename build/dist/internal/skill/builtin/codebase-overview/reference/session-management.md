@@ -10,19 +10,19 @@
 - **三条核心命令**:`/new`(新建)、`/sessions`(列表面板,client 类由前端拦截)、`/resume <id>`(按 ID 前缀恢复)
 - **配套命令**:`/clear`(清空当前会话,Step 9 引入)、`/compact`(手动触发摘要压缩,Step 7)、`/dump`(导出 dump.json + dump.md)
 - **会话级临时规则**:`permission.Checker.sessionRules` 字段,跨工具调用生效
-- **与 Slash 系统解耦**:`/new` 等命令注册到 `slash.Registry`(`src/internal/command/slash/command.go:59`),Execute 委托给 `web.Handler` 的既有 `handleNewSession` 等函数
+- **与 Slash 系统解耦**:`/new` 等命令注册到 `slash.Registry`(`src/internal/command/slash/command.go`),Execute 委托给 `web.Handler` 的既有 `handleNewSession` 等函数
 
 ## §2 核心数据结构
 
-- `SessionManager`(`src/internal/memory/session/session.go:75`)— 会话管理器,字段 `sessionsRoot / projectName / projectPath / projectDir`
+- `SessionManager`(`src/internal/memory/session/session.go`)— 会话管理器,字段 `sessionsRoot / projectName / projectPath / projectDir`
 - `Session`(session.go)— 单个会话,字段含 `ID / CreatedAt / UpdatedAt / Messages []llm.Message` 等
 - `SessionSummary`(session.go)— 会话摘要,只含元信息与预览文本(避免加载完整消息列表)
 - `projectMeta`(session.go)— `.project.json` 内容,字段 `Path / Basename / CreatedAt`
-- `ResumeSessionPayload{ID}`(`src/internal/interaction/web/protocol.go:152`)— 恢复会话请求,ID 支持前缀匹配
+- `ResumeSessionPayload{ID}`(`src/internal/interaction/web/protocol.go`)— 恢复会话请求,ID 支持前缀匹配
 - `DeleteSessionPayload`(protocol.go)— 删除会话请求,ID 必须为完整 ID
-- `ListSessionsPayload{Mode}`(`protocol.go:221`)— 列表请求,`Mode="table"` 取最近 10 条 + `CreatedAt` 降序,空 Mode 按 `UpdatedAt` 降序全量
-- `sessionDump`(`src/internal/interaction/web/dump.go:75`)— dump.json 顶层结构,字段 `ExportedAt / Session / SystemPrompt / Messages`
-- `slash.Command` / `slash.Registry`(`src/internal/command/slash/command.go:26, 59`)— Step 9.1 引入的命令抽象 + 注册中心
+- `ListSessionsPayload{Mode}`(`protocol.go`)— 列表请求,`Mode="table"` 取最近 10 条 + `CreatedAt` 降序,空 Mode 按 `UpdatedAt` 降序全量
+- `sessionDump`(`src/internal/interaction/web/dump.go`)— dump.json 顶层结构,字段 `ExportedAt / Session / SystemPrompt / Messages`
+- `slash.Command` / `slash.Registry`(`src/internal/command/slash/command.go`)— Step 9.1 引入的命令抽象 + 注册中心
 
 ## §3 关键流程
 
@@ -40,17 +40,17 @@
       dump.md                                ← /dump 导出(可选)
 ```
 
-`newSessionManager(sessionsRoot, workdir)`(`session.go:136`)流程:
+`newSessionManager(sessionsRoot, workdir)`(`session.go`)流程:
 
 1. `os.MkdirAll(sessionsRoot, 0755)` 确保根目录存在
-2. `resolveProjectDir(sessionsRoot, workdir)` 算 `projectName`;失败时降级为 `shortHash(workdir)` 哈希目录(`session.go:147`),保证会话功能可用
+2. `resolveProjectDir(sessionsRoot, workdir)` 算 `projectName`;失败时降级为 `shortHash(workdir)` 哈希目录(`session.go`),保证会话功能可用
 3. `writeProjectMeta(projectDir, workdir)` 写 `.project.json`(便于后续识别归属)
 
 [Why] 降级到哈希目录:**Why** 项目目录解析失败是配置问题而非致命错误,降级到哈希目录保证启动不被阻断,用户仍能继续会话操作(只是 UI 上看不到项目分组)。
 
 ### 3.2 `/new` 新建会话
 
-`newCmd.Execute(ctx, conn, arg)`(`src/internal/command/slash/builtin.go:82`)委托给 `c.h.HandleNewSessionForSlash(conn)`(`src/internal/interaction/web/handler.go`):
+`newCmd.Execute(ctx, conn, arg)`(`src/internal/command/slash/builtin.go`)委托给 `c.h.HandleNewSessionForSlash(conn)`(`src/internal/interaction/web/handler.go`):
 
 1. `h.sessMgr.CreateNew()` 创建新会话(分配 UUID + 初始化消息列表为空)
 2. `h.saveCurrentSessionLocked()` 增量落盘当前会话(持 `h.mu` 写锁)
@@ -60,13 +60,13 @@
 
 ### 3.3 `/sessions` 列表面板(client 类)
 
-`sessionsCmd`(`builtin.go:97`)的 `Category() = CategoryClient("client")` 标识由前端识别后走本地逻辑(打开表格视图),`Execute` 是占位返回 nil。前端调 `list_sessions` 拉取,handler 调 `h.sessMgr.ListSessions()` 返回 `[]SessionSummary`。
+`sessionsCmd`(`builtin.go`)的 `Category() = CategoryClient("client")` 标识由前端识别后走本地逻辑(打开表格视图),`Execute` 是占位返回 nil。前端调 `list_sessions` 拉取,handler 调 `h.sessMgr.ListSessions()` 返回 `[]SessionSummary`。
 
 [Why] client 类:**Why** 列表面板的打开/关闭/分页是 UI 关注点,后端只负责提供数据;`Execute` 委托会让"打开/关闭"这类纯 UI 事件多一次 WS 往返。
 
 ### 3.4 `/resume <id>` 恢复会话
 
-`resumeCmd.Execute(ctx, conn, arg)`(`builtin.go:151`)委托给 `c.h.HandleResumeSessionForSlash(conn, arg)`:
+`resumeCmd.Execute(ctx, conn, arg)`(`builtin.go`)委托给 `c.h.HandleResumeSessionForSlash(conn, arg)`:
 
 1. 调 `h.sessMgr.ListSessions()` 获取所有会话摘要
 2. 对每个摘要 `strings.HasPrefix(s.ID, p.ID)` 做前缀匹配
@@ -78,13 +78,13 @@
 
 ### 3.5 `/dump` 导出
 
-`handleDump(conn, msg)`(`src/internal/interaction/web/handler.go:1538`)流程:
+`handleDump(conn, msg)`(`src/internal/interaction/web/handler.go`)流程:
 
 1. `h.stream.tryAcquire()` 抢占流式状态,确保此刻无并发 `runStream`(保证快照一致性)
 2. 复制 `h.sp / h.current` 快照(持 `h.mu` 读锁)
 3. `h.conv.AllMessages()` 拿历史副本(不含 leadUserMessage)
 4. `buildSessionDump(session.ID, session.CreatedAt, session.UpdatedAt, sp, messages, time.Now())` 组装 dump
-5. `writeDumpFiles(dir, sd)`(`dump.go:258`)原子写 `dump.json` + `dump.md`(`atomicWriteText` 写临时文件 + rename)
+5. `writeDumpFiles(dir, sd)`(`dump.go`)原子写 `dump.json` + `dump.md`(`atomicWriteText` 写临时文件 + rename)
 
 [Why] 同步执行而非 goroutine:**Why** dump 只做内存读 + 两次小文件写,无 LLM 调用无阻塞 IO;同步执行比异步 goroutine 更简单(无需 pendingConn 管理与 panic 兜底)。
 
@@ -110,7 +110,7 @@
 
 - **问题**:列表面板的打开/关闭/分页是 UI 关注点,后端只需要提供数据
 - **方案**:`Category = "client"`,前端识别后调本地 `openSessionsTable()`,`Execute` 永远返回 nil
-- **理由**:**Why** "打开面板"是纯 UI 事件,不应走 WS 业务消息;与 Step 10 `/skills` client 类同款(`src/internal/skill/adapter/client.go:50`)
+- **理由**:**Why** "打开面板"是纯 UI 事件,不应走 WS 业务消息;与 Step 10 `/skills` client 类同款(`src/internal/skill/adapter/client.go`)
 
 ### 决策 3:`/resume` 用前缀匹配 + 模糊保护
 
@@ -121,7 +121,7 @@
 ### 决策 4:会话级临时规则放在 Checker.sessionRules
 
 - **问题**:用户对某次操作选了"本会话允许",该权限应跨工具调用生效(而非每次重新问)
-- **方案**:`permission.Checker.sessionRules []Rule`(`src/internal/security/checker.go:40`),用户选"本会话允许"时 `AddSessionRule` 追加
+- **方案**:`permission.Checker.sessionRules []Rule`(`src/internal/security/checker.go`),用户选"本会话允许"时 `AddSessionRule` 追加
 - **理由**:**Why** 临时规则与会话生命周期绑定,会话切换 / 新建会自动失效;比"全局 allow"安全,比"每次问"友好
 
 ### 决策 5:`HandleNewSessionForSlash` 委托既有 handle 函数
@@ -134,18 +134,18 @@
 
 | 路径 | 角色 |
 |------|------|
-| `src/internal/memory/session/session.go:75` | `SessionManager` 会话管理器 |
-| `src/internal/memory/session/session.go:119` | `NewSessionManager` 构造(定位项目目录) |
-| `src/internal/memory/session/session.go:136` | `newSessionManager` 共用实现(降级哈希目录) |
-| `src/internal/memory/session/session.go:542` | `ListSessions` 列表(按 UpdatedAt 降序) |
-| `src/internal/command/slash/command.go:26` | `SlashCommand` 接口 |
-| `src/internal/command/slash/command.go:59` | `slash.Registry` 注册中心 |
-| `src/internal/command/slash/builtin.go:60` | `newCmd` `/new` 命令 |
-| `src/internal/command/slash/builtin.go:97` | `sessionsCmd` `/sessions` client 类 |
-| `src/internal/command/slash/builtin.go:130` | `resumeCmd` `/resume` 命令 |
-| `src/internal/interaction/web/handler.go:828` | `handleResumeSession` 前缀匹配恢复 |
-| `src/internal/interaction/web/handler.go:886` | `handleDeleteSession` 删除会话 |
-| `src/internal/interaction/web/handler.go:1538` | `handleDump` 会话导出 |
-| `src/internal/interaction/web/dump.go:75` | `sessionDump` dump.json 顶层结构 |
-| `src/internal/interaction/web/dump.go:258` | `writeDumpFiles` 原子写 dump.json + dump.md |
-| `src/internal/interaction/web/protocol.go:152` | `ResumeSessionPayload` 恢复请求 |
+| `src/internal/memory/session/session.go` | `SessionManager` 会话管理器 |
+| `src/internal/memory/session/session.go` | `NewSessionManager` 构造(定位项目目录) |
+| `src/internal/memory/session/session.go` | `newSessionManager` 共用实现(降级哈希目录) |
+| `src/internal/memory/session/session.go` | `ListSessions` 列表(按 UpdatedAt 降序) |
+| `src/internal/command/slash/command.go` | `SlashCommand` 接口 |
+| `src/internal/command/slash/command.go` | `slash.Registry` 注册中心 |
+| `src/internal/command/slash/builtin.go` | `newCmd` `/new` 命令 |
+| `src/internal/command/slash/builtin.go` | `sessionsCmd` `/sessions` client 类 |
+| `src/internal/command/slash/builtin.go` | `resumeCmd` `/resume` 命令 |
+| `src/internal/interaction/web/handler.go` | `handleResumeSession` 前缀匹配恢复 |
+| `src/internal/interaction/web/handler.go` | `handleDeleteSession` 删除会话 |
+| `src/internal/interaction/web/handler.go` | `handleDump` 会话导出 |
+| `src/internal/interaction/web/dump.go` | `sessionDump` dump.json 顶层结构 |
+| `src/internal/interaction/web/dump.go` | `writeDumpFiles` 原子写 dump.json + dump.md |
+| `src/internal/interaction/web/protocol.go` | `ResumeSessionPayload` 恢复请求 |

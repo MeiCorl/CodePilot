@@ -37,12 +37,13 @@ build: icon $(SYSO)
 	@GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o $(DIST_DIR)/$(APP).exe $(ENTRY)
 	@echo ">> 产物: $(DIST_DIR)/$(APP).exe"
 	@ls -lh $(DIST_DIR)/$(APP).exe
-	# Step 10.1 Task 4 — 复制内置 Skill 资源(SKILL.md)到输出目录
-	#   源:src/internal/skill/builtin/<name>/SKILL.md
-	#   目标:$(DIST_DIR)/internal/skill/builtin/<name>/SKILL.md
+	# Step 10.1 Task 4 — 复制内置 Skill 资源目录到输出目录
+	#   源:src/internal/skill/builtin/<name>/
+	#   目标:$(DIST_DIR)/internal/skill/builtin/<name>/
 	#   与 skill.LoadAll 实际扫描路径(scanner.go builtinRelPath = "internal/skill/builtin")对齐。
 	@if [ -n "$$(ls -A src/internal/skill/builtin 2>/dev/null)" ]; then \
 		echo ">> 复制内置 Skill 资源 ..."; \
+		rm -rf $(DIST_DIR)/internal/skill/builtin; \
 		mkdir -p $(DIST_DIR)/internal/skill/builtin; \
 		cp -r src/internal/skill/builtin/. $(DIST_DIR)/internal/skill/builtin/; \
 		echo ">> 已复制到 $(DIST_DIR)/internal/skill/builtin/"; \
