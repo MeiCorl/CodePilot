@@ -1,0 +1,36 @@
+src/internal/hook/matcher/matcher.go
+  s_42e2f898ab9c9b::t_e61106636cac61 304-308,311-314,327-331,333-341,343-344
+  s_42e2f898ab9c9b::t_dc9d74d6cabb47 92-96,106-107
+  s_42e2f898ab9c9b::t_90396474b3a904 1-91,97-105,108-303,309-310,315-326,332,342,345-439
+src/internal/hook/matcher/condition.go
+  s_42e2f898ab9c9b::t_eaf2e40b5f0a83 1-95,108-113,121,126,129-156
+  s_42e2f898ab9c9b::t_503c1d1707d2ab 114-120,122-125,127-128
+  s_42e2f898ab9c9b::t_b2b1028db38621 102-107
+  s_42e2f898ab9c9b::t_c36bcd52e2dd88 96-101
+docs/step11-Hook系统/tasks.md
+  s_42e2f898ab9c9b::t_b995e25317ef45 148
+docs/step11-Hook系统/checklist.md
+  s_42e2f898ab9c9b::t_f82229c19eb56a 108,110-112,114-116,118-120,122-124,126-128,130-132,134-136,138-140,142-144,146-148,150-152,154-156,158-159
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "634d03457fd1b4a52349910dcce6b52d3efe1895",
+  "prompts": {},
+  "logical_commit_id": "634d03457fd1b4a52349910dcce6b52d3efe1895",
+  "humans": {
+    "h_04e25195537956": {
+      "author": "meichao <meichao@bigo.sg>"
+    }
+  },
+  "sessions": {
+    "s_42e2f898ab9c9b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7b461a0d-b19f-4c47-893a-f35d0968481b",
+        "model": "MiniMax-M3"
+      },
+      "human_author": "meichao <meichao@bigo.sg>"
+    }
+  }
+}
