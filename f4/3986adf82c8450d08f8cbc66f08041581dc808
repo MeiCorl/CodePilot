@@ -1,0 +1,42 @@
+src/internal/hook/executor/executor.go
+  s_42e2f898ab9c9b::t_c2ccca73b6ce63 1-156,160,164-284
+  s_42e2f898ab9c9b::t_8669ebb3a52c12 157-159,161-163
+docs/step11-Hook系统/checklist.md
+  s_42e2f898ab9c9b::t_d4f63d9bac721e 165,167-169,171-173,175-177,179-181,183-185,187-189,191-193,195-197,199-201,203-205,207-209,211-213,215-217,219-221,223-225,227-229,231-233,235-237,239-241,243-245,247-248
+src/internal/hook/executor/http.go
+  s_42e2f898ab9c9b::t_93ba6611b2a1b3 54-56,59,95,135
+  s_42e2f898ab9c9b::t_3207e74ef01267 1-53,57-58,60-94,96-134,136-181
+src/internal/hook/executor/prompt.go
+  s_42e2f898ab9c9b::t_2a2dae004f6060 8,15,19-21,50-52,54-55,80,84-90,96,99,107
+  s_42e2f898ab9c9b::t_16104da99f5a59 16-18,22-24,46-47,64-65,92-93,95,103,105-106,108-110,112-116
+  s_42e2f898ab9c9b::t_894c1da8fdf3c9 1-7,9-14,25-45,48-49,53,56-63,66-79,81-83,91,94,97-98,100-102,104,111,117-137
+docs/step11-Hook系统/tasks.md
+  s_42e2f898ab9c9b::t_c25044eff7c966 210
+src/internal/hook/executor/command.go
+  s_42e2f898ab9c9b::t_64681ff260ee92 1-230
+src/internal/hook/executor/agent.go
+  s_42e2f898ab9c9b::t_d3b7857d9c6062 1-36,38-241
+  s_42e2f898ab9c9b::t_99ca702e6c1332 37
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "f43986adf82c8450d08f8cbc66f08041581dc808",
+  "prompts": {},
+  "logical_commit_id": "f43986adf82c8450d08f8cbc66f08041581dc808",
+  "humans": {
+    "h_04e25195537956": {
+      "author": "meichao <meichao@bigo.sg>"
+    }
+  },
+  "sessions": {
+    "s_42e2f898ab9c9b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7b461a0d-b19f-4c47-893a-f35d0968481b",
+        "model": "MiniMax-M3"
+      },
+      "human_author": "meichao <meichao@bigo.sg>"
+    }
+  }
+}
