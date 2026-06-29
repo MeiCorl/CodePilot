@@ -1,0 +1,96 @@
+docs/step11-Hook系统/tasks.md
+  s_1b897f1dee75ed::t_e358594adb2b00 1-12,14-611
+  s_42e2f898ab9c9b::t_31ecc446b1bd2e 13
+docs/step11-Hook系统/checklist.md
+  s_1b897f1dee75ed::t_3520633366b1e7 1-9,11,15,19,23,27,31,35,39,43,46-538
+  s_42e2f898ab9c9b::t_c695c4c2d499ac 10,12-14,16-18,20-22,24-26,28-30,32-34,36-38,40-42,44-45
+docs/step11-Hook系统/spec.md
+  s_1b897f1dee75ed::t_c25eb839b1df72 1-319
+src/internal/config/config.go
+  s_42e2f898ab9c9b::t_b0e2b821695eae 64-68
+  s_42e2f898ab9c9b::t_5f6d378a104bba 233-256,266,269,295,298,315,318,327,345,348,360,614,617,632,635,638,640,646,652,664,667,669,677,705,729
+  s_42e2f898ab9c9b::t_2e40279754eb57 259-261
+  s_42e2f898ab9c9b::t_5f01e9501b9f66 257-258
+  s_42e2f898ab9c9b::t_7a5180a19d0241 262-265
+  s_42e2f898ab9c9b::t_de386f3cfe858b 267-268
+  s_42e2f898ab9c9b::t_bc33ff80f21a32 270-272,292-294
+  s_42e2f898ab9c9b::t_56280bd0af4cfc 296-297
+  s_42e2f898ab9c9b::t_61b6ab7b83f70a 299-301,312-314
+  s_42e2f898ab9c9b::t_8f1479b0bf8adf 316-317
+  s_42e2f898ab9c9b::t_baeefb8afb1f72 319-321,324-326
+  s_42e2f898ab9c9b::t_d0588dcfd31188 328-330,342-344
+  s_42e2f898ab9c9b::t_f33599de57df2a 346-347
+  s_42e2f898ab9c9b::t_dede54fc4def25 349-351,357-359
+  s_42e2f898ab9c9b::t_5d6394d5defb6d 361
+  s_42e2f898ab9c9b::t_9c06a117ce2811 616
+  s_42e2f898ab9c9b::t_aa048995a683e8 618-620,629-631
+  s_42e2f898ab9c9b::t_426f2c2a9fb2b9 633-634
+  s_42e2f898ab9c9b::t_e49be782628a2d 636-637
+  s_42e2f898ab9c9b::t_ef1da4e929ab2a 639
+  s_42e2f898ab9c9b::t_e1f94fca108a86 641-645
+  s_42e2f898ab9c9b::t_a6c3e3c719c8ef 647-651
+  s_42e2f898ab9c9b::t_61e352b5bb896e 653-655,661-663
+  s_42e2f898ab9c9b::t_5ed9da8aa2315a 665-666
+  s_42e2f898ab9c9b::t_de709b9c8dca79 668
+  s_42e2f898ab9c9b::t_d54bb374e9a62d 670-672,674-676
+  s_42e2f898ab9c9b::t_acdf3a623b6e5b 678-680,702-704
+  s_42e2f898ab9c9b::t_903f0b8b66cbba 706-708,726-728
+  s_42e2f898ab9c9b::t_2cad45536faa54 730
+src/internal/config/config_test.go
+  s_42e2f898ab9c9b::t_deab3947c3605a 7,149-366,368,370-371,382-383,393,397,400,403-404,413,416,419,424,429,432,438,444-446,479-480,486,489,492,496,499,502,505,508-509
+  s_42e2f898ab9c9b::t_eea59096ed68d2 367
+  s_42e2f898ab9c9b::t_d3562734a377f7 369
+  s_42e2f898ab9c9b::t_ae38ef16480b51 372-374,379-381
+  s_42e2f898ab9c9b::t_d4dcdb1e89cc84 384-386,390-392
+  s_42e2f898ab9c9b::t_917f8d29585195 394-396
+  s_42e2f898ab9c9b::t_2ffcfd346cbde8 398-399
+  s_42e2f898ab9c9b::t_e77cd756507762 401-402
+  s_42e2f898ab9c9b::t_b24b5cd3c95929 405-407,410-412
+  s_42e2f898ab9c9b::t_88a57ea9041ec6 414-415
+  s_42e2f898ab9c9b::t_7b470d62dc45e1 417-418
+  s_42e2f898ab9c9b::t_4e17a27cf8f54d 420-423
+  s_42e2f898ab9c9b::t_31ca409cb80c8d 425-428
+  s_42e2f898ab9c9b::t_ed2da1fd1c38b7 430-431
+  s_42e2f898ab9c9b::t_e586f4b025f8d8 433-437
+  s_42e2f898ab9c9b::t_1e4f9e4a1aeea5 439-443
+  s_42e2f898ab9c9b::t_d517986e92f9e5 447-449,476-478
+  s_42e2f898ab9c9b::t_14089e52ad023d 481-485
+  s_42e2f898ab9c9b::t_0b5cb7659094ba 487-488
+  s_42e2f898ab9c9b::t_120e4ddafa6d33 490-491
+  s_42e2f898ab9c9b::t_3141dbec65e020 493-495
+  s_42e2f898ab9c9b::t_7ce35b5c2ddd19 497-498
+  s_42e2f898ab9c9b::t_a8f66958c7ba91 500-501
+  s_42e2f898ab9c9b::t_cb19deda423f14 503-504
+  s_42e2f898ab9c9b::t_be1ad27b67d3af 506-507
+  s_42e2f898ab9c9b::t_bceba1d9711c57 510-512
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "3d04d69476b2ee967cf0eaa975823cabfa89e1f8",
+  "prompts": {},
+  "logical_commit_id": "3d04d69476b2ee967cf0eaa975823cabfa89e1f8",
+  "humans": {
+    "h_04e25195537956": {
+      "author": "meichao <meichao@bigo.sg>"
+    }
+  },
+  "sessions": {
+    "s_1b897f1dee75ed": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "56c3249b-1a89-4fe7-b759-24bf303b87aa",
+        "model": "MiniMax-M3"
+      },
+      "human_author": "meichao <meichao@bigo.sg>"
+    },
+    "s_42e2f898ab9c9b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "7b461a0d-b19f-4c47-893a-f35d0968481b",
+        "model": "MiniMax-M3"
+      },
+      "human_author": "meichao <meichao@bigo.sg>"
+    }
+  }
+}
