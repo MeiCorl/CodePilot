@@ -1,0 +1,25 @@
+.harness/PROGRESS.md
+  s_88f1fa1ea2f7f4::t_a71697629c16c9 16-17,20,25,41,60
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.3",
+  "base_commit_sha": "becc5e7a5258a45d98a92293107e7ce538848f78",
+  "prompts": {},
+  "logical_commit_id": "01150274e8243a3fcfe5ab88743ddbfc9023991d",
+  "humans": {
+    "h_04e25195537956": {
+      "author": "meichao <meichao@bigo.sg>"
+    }
+  },
+  "sessions": {
+    "s_88f1fa1ea2f7f4": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f4607-dc76-7170-8367-44ada38e3645",
+        "model": "gpt-5.5"
+      },
+      "human_author": "meichao <meichao@bigo.sg>"
+    }
+  }
+}
