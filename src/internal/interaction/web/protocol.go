@@ -23,6 +23,10 @@ const (
 	// 对应的 WriteFile / EditFile 工具调用的文件 diff（before/after）。
 	// 服务端响应 MsgTypeFileDiff 同名字段。
 	MsgTypeGetFileDiff = "get_file_diff"
+	// MsgTypeListProjectDir requests one project directory level for the WebUI file panel.
+	MsgTypeListProjectDir = "list_project_dir"
+	// MsgTypeReadProjectFile requests a safe read-only project file preview.
+	MsgTypeReadProjectFile = "read_project_file"
 	// MsgTypePermissionResponse 由前端权限确认对话框触发，携带用户的决策回传后端。
 	MsgTypePermissionResponse = "permission_response"
 	// MsgTypeSetPermissionMode 由前端「权限模式」下拉切换触发，
@@ -74,6 +78,10 @@ const (
 	// MsgTypeFileDiff 是 get_file_diff 请求的响应消息。
 	// Found=false 时 Reason 标识原因（"not_found" / "too_large"），Before/After 为空。
 	MsgTypeFileDiff = "file_diff"
+	// MsgTypeProjectDir responds to list_project_dir with a stable directory payload.
+	MsgTypeProjectDir = "project_dir"
+	// MsgTypeProjectFile responds to read_project_file with file metadata/content or reason.
+	MsgTypeProjectFile = "project_file"
 	// MsgTypePermissionRequest 由后端推送给前端，请求用户确认工具执行权限。
 	MsgTypePermissionRequest = "permission_request"
 	// MsgTypePermissionMode 由后端推送，告知前端当前权限模式及规则概要。
@@ -365,10 +373,10 @@ type DumpResultPayload struct {
 //   - Name        命令名（含前导 `/`，如 `/new`），候选下拉匹配与发送时的主键。
 //   - Description 命令的简短描述，候选下拉中展示在 name 右侧。
 //   - NeedsArg    是否需要参数；true 时前端选中后补全到输入框（用户填完按 Enter 提交），
-//                 false 时前端选中后直接按 commandTypeByName[name] 发送对应 MsgType。
+//     false 时前端选中后直接按 commandTypeByName[name] 发送对应 MsgType。
 //   - ArgHint     参数提示占位符（如 `<id>`），NeedsArg=false 时为前端忽略的占位空串。
 //   - Category    分类标识（session/context/skill/client/debug 等）；
-//                 约定 `client` 类命令由前端识别后走本地逻辑，不发送 WS 消息。
+//     约定 `client` 类命令由前端识别后走本地逻辑，不发送 WS 消息。
 //
 // [Why] 与 tool.Tool 接口的轻量元数据风格保持一致，便于 Step 10 Skill 包
 // 通过实现同一接口零成本注册为 slash 命令。结构体放 web 包而非 slash 包
@@ -411,6 +419,40 @@ type FileDiffPayload struct {
 	Language  string `json:"language,omitempty"`
 	Before    string `json:"before,omitempty"`
 	After     string `json:"after,omitempty"`
+}
+
+// ListProjectDirPayload requests a project directory by workdir-relative path.
+type ListProjectDirPayload struct {
+	Path      string `json:"path"`
+	RequestID string `json:"request_id,omitempty"`
+}
+
+// ProjectDirPayload returns one project directory level or a stable error reason.
+type ProjectDirPayload struct {
+	OK          bool                `json:"ok"`
+	Reason      string              `json:"reason,omitempty"`
+	Path        string              `json:"path"`
+	ParentPath  string              `json:"parent_path"`
+	Breadcrumbs []ProjectBreadcrumb `json:"breadcrumbs"`
+	Entries     []ProjectFileEntry  `json:"entries"`
+	Truncated   bool                `json:"truncated"`
+	RequestID   string              `json:"request_id,omitempty"`
+}
+
+// ReadProjectFilePayload requests a project file by workdir-relative path.
+type ReadProjectFilePayload struct {
+	Path      string `json:"path"`
+	RequestID string `json:"request_id,omitempty"`
+}
+
+// ProjectFilePayload returns project file metadata/content or a stable error reason.
+type ProjectFilePayload struct {
+	Found     bool             `json:"found"`
+	OK        bool             `json:"ok"`
+	Reason    string           `json:"reason,omitempty"`
+	File      ProjectFileEntry `json:"file"`
+	Content   string           `json:"content,omitempty"`
+	RequestID string           `json:"request_id,omitempty"`
 }
 
 // AgentIterationPayload Agent Loop 迭代进度事件。

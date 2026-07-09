@@ -54,6 +54,25 @@
         spModalStats:   $('sp-modal-stats'),
         // 亮色 / 暗色 主题切换按钮：紧贴就绪状态右侧，点击翻转 data-theme
         themeToggle:    $('theme-toggle'),
+        // Step 1.5 Task 4：右侧项目文件栏 DOM 引用
+        projectPanel:        $('project-file-panel'),
+        projectRefreshBtn:   $('project-refresh-btn'),
+        projectPanelCount:   $('project-panel-count'),
+        projectCurrentPath:  $('project-current-path'),
+        projectBreadcrumbs:  $('project-breadcrumbs'),
+        projectTruncated:    $('project-panel-truncated'),
+        projectLoading:      $('project-panel-loading'),
+        projectEmpty:        $('project-panel-empty'),
+        projectError:        $('project-panel-error'),
+        projectErrorText:    $('project-panel-error-text'),
+        projectFileList:     $('project-file-list'),
+        projectFileModal:    $('project-file-modal'),
+        projectFileModalTitle: $('project-file-modal-title'),
+        projectFileModalPath:  $('project-file-modal-path'),
+        projectFileModalSize:  $('project-file-modal-size'),
+        projectFileModalType:  $('project-file-modal-type'),
+        projectFileModalLanguage: $('project-file-modal-language'),
+        projectFileModalBody:  $('project-file-modal-body'),
     };
 
     // ---- 全局状态 ----
@@ -97,6 +116,15 @@
         // - /sessions 因 category="client" 由前端走本地 openSessionsTable（不进入 map）
         // - 后续 Skill 系统注册的命令若不在内置映射表中，前端按"未知命令"兜底
         commandTypeByName: {},
+        // Step 1.5 Task 4：项目文件栏目录状态。
+        projectDirPath: '',
+        projectDirPending: null,        // { seq, path }，用于过滤旧回包
+        projectDirSeq: 0,
+        projectDirEntriesCache: {},     // path -> entries
+        projectDirLoading: false,
+        projectFilePending: null,       // { seq, path, timer } - filters stale file preview responses
+        projectFileSeq: 0,
+        projectPanelBound: false,
     };
 
     // ---- / 快捷命令清单 ----
@@ -154,14 +182,19 @@
         state.wsReady = true;
         state.wsReconnectAttempts = 0;
         hideLoading();
-        // 连上后拉取：当前会话 + 历史列表
+        // Connected: refresh sessions and reload the project root for this socket.
         sendWS(MsgType.ListSessions, {});
         sendWS(MsgType.GetCurrentSession, {});
+        requestProjectDir('', { force: true });
     }
 
     function onWSClose() {
         state.wsReady = false;
-        showLoading('连接已断开，正在重连…');
+        state.projectDirPending = null;
+        setProjectDirLoading(false);
+        showProjectDirError('连接已断开，重连后可刷新项目文件。');
+        handleProjectFileConnectionClosed();
+        showLoading('连接已断开，正在重连...');
         scheduleReconnect();
     }
 
@@ -225,6 +258,11 @@
         // Step 1.4：查看改动弹窗用
         GetFileDiff:       'get_file_diff',
         FileDiff:          'file_diff',
+        // Step 1.5：项目文件栏目录浏览与文件预览协议
+        ListProjectDir:    'list_project_dir',
+        ProjectDir:        'project_dir',
+        ReadProjectFile:   'read_project_file',
+        ProjectFile:       'project_file',
         // Step 5：权限确认 HITL
         PermissionRequest: 'permission_request',
         PermissionResponse: 'permission_response',
@@ -307,6 +345,8 @@
             case MsgType.ToolCallEnd:     return onToolCallEnd(msg.payload);
             case MsgType.DevExportSP:     return onDevExportSP(msg.payload);
             case MsgType.FileDiff:          return onFileDiff(msg.payload);
+            case MsgType.ProjectDir:        return onProjectDir(msg.payload);
+            case MsgType.ProjectFile:       return onProjectFile(msg.payload);
             case MsgType.PermissionRequest: return onPermissionRequest(msg.payload);
             case MsgType.PermissionMode:    return onPermissionMode(msg.payload);
             case MsgType.MCPStatus:         return onMCPStatus(msg.payload);
@@ -402,6 +442,7 @@
             dom.workspacePath.textContent = p.workdir;
             dom.workspacePath.title = p.workdir;
         }
+        requestProjectDir('', { skipIfCurrent: true });
         // 高亮左侧对应会话项
         highlightActiveSession();
         // 任何"会话切换/重置"事件都会改变左侧列表的预览、消息数、更新时间等字段，
@@ -501,6 +542,468 @@
         if (dom.spModal) {
             dom.spModal.hidden = true;
         }
+    }
+
+    // =========================================================================
+    // Step 1.5 Task 4：项目文件栏目录导航
+    // =========================================================================
+
+    const PROJECT_DIR_REASON_TEXT = {
+        empty_workdir: '服务端未配置工作目录，无法加载项目文件。',
+        invalid_path: '目录路径无效，已拒绝加载。',
+        outside_workdir: '目录路径超出项目根目录，已拒绝加载。',
+        not_found: '目录不存在或已被删除。',
+        not_directory: '该路径不是目录。',
+        read_error: '读取目录失败，请稍后重试。',
+        entry_limit: '当前目录条目较多，已显示前一部分结果。',
+    };
+
+    function normalizeProjectPath(path) {
+        const raw = String(path || '').replace(/\\/g, '/').trim();
+        if (!raw || raw === '.') return '';
+        return raw.replace(/^\/+/, '').replace(/\/+$/, '');
+    }
+
+    function displayProjectPath(path) {
+        const p = normalizeProjectPath(path);
+        return p || '.';
+    }
+
+    function requestProjectDir(path, options = {}) {
+        const target = normalizeProjectPath(path);
+        if (!dom.projectPanel) return;
+        const force = !!options.force;
+        const skipIfCurrent = !!options.skipIfCurrent;
+        if (!force && state.projectDirPending && state.projectDirPending.path === target) {
+            return;
+        }
+        if (skipIfCurrent && !state.projectDirPending && normalizeProjectPath(state.projectDirPath) === target && state.projectDirEntriesCache[target]) {
+            return;
+        }
+        const seq = state.projectDirSeq + 1;
+        state.projectDirSeq = seq;
+        const requestId = `dir-${seq}`;
+        state.projectDirPending = { seq, path: target, requestId };
+        setProjectDirLoading(true);
+        const sent = sendWS(MsgType.ListProjectDir, { path: target, request_id: requestId });
+        if (!sent) {
+            state.projectDirPending = null;
+            setProjectDirLoading(false);
+            showProjectDirError('WebSocket 未连接，无法加载项目目录。');
+        }
+    }
+
+    function onProjectDir(p) {
+        if (!p) return;
+        const responsePath = normalizeProjectPath(p.path);
+        const responseRequestId = String(p.request_id || '');
+        const pending = state.projectDirPending;
+        if (pending) {
+            if (responsePath !== pending.path) return;
+            if (responseRequestId && pending.requestId && responseRequestId !== pending.requestId) return;
+        } else if (responsePath !== normalizeProjectPath(state.projectDirPath)) {
+            return;
+        }
+        state.projectDirPending = null;
+        setProjectDirLoading(false);
+
+        if (p.ok === false) {
+            showProjectDirError(projectDirReasonText(p.reason));
+            return;
+        }
+
+        const entries = Array.isArray(p.entries) ? p.entries : [];
+        state.projectDirPath = responsePath;
+        state.projectDirEntriesCache[responsePath] = entries;
+        renderProjectPathbar(responsePath, Array.isArray(p.breadcrumbs) ? p.breadcrumbs : []);
+        renderProjectCount(entries.length, !!p.truncated);
+        if (dom.projectTruncated) {
+            dom.projectTruncated.hidden = !p.truncated;
+            if (p.truncated) dom.projectTruncated.textContent = projectDirReasonText(p.reason || 'entry_limit');
+        }
+        renderProjectFileList(entries, normalizeProjectPath(p.parent_path));
+        if (dom.projectEmpty) dom.projectEmpty.hidden = entries.length !== 0;
+        if (dom.projectError) dom.projectError.hidden = true;
+    }
+
+    function onProjectFile(p) {
+        if (!p) return;
+        const file = p.file || {};
+        const responsePath = normalizeProjectPath(file.path || p.path);
+        const responseRequestId = String(p.request_id || '');
+        const pending = state.projectFilePending;
+        if (!pending || responsePath !== pending.path) {
+            return;
+        }
+        if (responseRequestId && pending.requestId && responseRequestId !== pending.requestId) {
+            return;
+        }
+        clearProjectFilePending();
+
+        updateProjectFileModalMeta(file, p.reason);
+        if (p.ok !== true) {
+            renderProjectFileUnavailable(p.reason, file);
+            return;
+        }
+        renderProjectFileContent(file, p.content || '');
+    }
+
+    function setProjectDirLoading(loading) {
+        state.projectDirLoading = !!loading;
+        if (dom.projectLoading) dom.projectLoading.hidden = !loading;
+        if (dom.projectRefreshBtn) dom.projectRefreshBtn.disabled = !!loading;
+        if (loading) {
+            if (dom.projectPanelCount) dom.projectPanelCount.textContent = '--';
+            if (dom.projectEmpty) dom.projectEmpty.hidden = true;
+            if (dom.projectError) dom.projectError.hidden = true;
+            if (dom.projectTruncated) dom.projectTruncated.hidden = true;
+            if (dom.projectFileList) dom.projectFileList.innerHTML = '';
+        }
+    }
+
+    function showProjectDirError(message) {
+        if (!dom.projectPanel) return;
+        if (dom.projectLoading) dom.projectLoading.hidden = true;
+        if (dom.projectEmpty) dom.projectEmpty.hidden = true;
+        if (dom.projectTruncated) dom.projectTruncated.hidden = true;
+        if (dom.projectFileList) dom.projectFileList.innerHTML = '';
+        if (dom.projectPanelCount) dom.projectPanelCount.textContent = 'ERR';
+        if (dom.projectRefreshBtn) dom.projectRefreshBtn.disabled = false;
+        if (dom.projectError) dom.projectError.hidden = false;
+        if (dom.projectErrorText) dom.projectErrorText.textContent = message || '无法加载目录，请稍后重试。';
+    }
+
+    function projectDirReasonText(reason) {
+        return PROJECT_DIR_REASON_TEXT[reason] || '无法加载目录，请稍后重试。';
+    }
+
+    function renderProjectPathbar(path, breadcrumbs) {
+        const current = displayProjectPath(path);
+        if (dom.projectCurrentPath) {
+            dom.projectCurrentPath.textContent = current;
+            dom.projectCurrentPath.title = current === '.' ? '项目根目录' : current;
+        }
+        if (!dom.projectBreadcrumbs) return;
+        dom.projectBreadcrumbs.innerHTML = '';
+        const crumbs = breadcrumbs.length > 0 ? breadcrumbs : [{ name: 'root', path: '' }];
+        crumbs.forEach((crumb, index) => {
+            const crumbPath = normalizeProjectPath(crumb.path);
+            const btn = document.createElement('button');
+            btn.className = 'project-crumb';
+            if (index === crumbs.length - 1) btn.classList.add('is-active');
+            btn.type = 'button';
+            btn.textContent = crumb.name || (crumbPath ? crumbPath.split('/').pop() : 'root');
+            btn.title = displayProjectPath(crumbPath);
+            btn.addEventListener('click', () => requestProjectDir(crumbPath));
+            dom.projectBreadcrumbs.appendChild(btn);
+        });
+    }
+
+    function renderProjectCount(count, truncated) {
+        if (!dom.projectPanelCount) return;
+        const n = Number.isFinite(count) ? count : 0;
+        dom.projectPanelCount.textContent = truncated ? `${n}+` : String(n);
+    }
+
+    function renderProjectFileList(entries, parentPath) {
+        if (!dom.projectFileList) return;
+        dom.projectFileList.innerHTML = '';
+        if (state.projectDirPath) {
+            dom.projectFileList.appendChild(buildProjectParentItem(parentPath));
+        }
+        entries.forEach(entry => {
+            dom.projectFileList.appendChild(buildProjectEntryItem(entry));
+        });
+    }
+
+    function buildProjectParentItem(parentPath) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'project-file-item is-directory';
+        btn.title = '返回上级目录';
+        btn.addEventListener('click', () => requestProjectDir(parentPath || ''));
+        btn.appendChild(buildProjectIcon('..'));
+        const main = document.createElement('span');
+        main.className = 'project-file-main';
+        const name = document.createElement('span');
+        name.className = 'project-file-name';
+        name.textContent = '..';
+        const meta = document.createElement('span');
+        meta.className = 'project-file-meta';
+        const label = document.createElement('span');
+        label.textContent = 'parent';
+        meta.appendChild(label);
+        main.appendChild(name);
+        main.appendChild(meta);
+        btn.appendChild(main);
+        return btn;
+    }
+
+    function buildProjectEntryItem(entry) {
+        const isDir = entry && entry.type === 'directory';
+        const path = normalizeProjectPath(entry?.path);
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = `project-file-item ${isDir ? 'is-directory' : 'is-file'}`;
+        if (!isDir && entry && entry.previewable === false) btn.classList.add('is-unpreviewable');
+        btn.title = path || entry?.name || '';
+        btn.setAttribute('role', 'listitem');
+        btn.addEventListener('click', () => {
+            if (isDir) {
+                requestProjectDir(path);
+                return;
+            }
+            openProjectFileModal(path);
+        });
+        btn.appendChild(buildProjectIcon(isDir ? 'D' : 'F'));
+
+        const main = document.createElement('span');
+        main.className = 'project-file-main';
+        const name = document.createElement('span');
+        name.className = 'project-file-name';
+        name.textContent = entry?.name || path || '(unnamed)';
+        const meta = document.createElement('span');
+        meta.className = 'project-file-meta';
+        appendProjectMeta(meta, isDir ? 'directory' : projectEntryMeta(entry));
+        if (!isDir && entry?.mod_time) appendProjectMeta(meta, formatTime(entry.mod_time));
+        main.appendChild(name);
+        main.appendChild(meta);
+        btn.appendChild(main);
+        return btn;
+    }
+
+    function buildProjectIcon(text) {
+        const icon = document.createElement('span');
+        icon.className = 'project-file-icon';
+        icon.setAttribute('aria-hidden', 'true');
+        icon.textContent = text;
+        return icon;
+    }
+
+    function appendProjectMeta(container, text) {
+        if (!container || !text) return;
+        if (container.childNodes.length > 0) {
+            const dot = document.createElement('span');
+            dot.className = 'project-file-meta-dot';
+            dot.setAttribute('aria-hidden', 'true');
+            container.appendChild(dot);
+        }
+        const span = document.createElement('span');
+        span.textContent = text;
+        container.appendChild(span);
+    }
+
+    function projectEntryMeta(entry) {
+        if (!entry) return 'file';
+        const parts = [];
+        if (entry.render_type) parts.push(entry.render_type);
+        if (entry.language && entry.language !== entry.render_type) parts.push(entry.language);
+        parts.push(formatProjectFileSize(entry.size));
+        if (entry.previewable === false) parts.push('preview later');
+        return parts.filter(Boolean).join(' · ');
+    }
+
+    function formatProjectFileSize(size) {
+        const n = Number(size || 0);
+        if (!Number.isFinite(n) || n <= 0) return '0 B';
+        if (n < 1024) return `${n} B`;
+        if (n < 1024 * 1024) return `${(n / 1024).toFixed(n < 10 * 1024 ? 1 : 0)} KB`;
+        return `${(n / 1024 / 1024).toFixed(n < 10 * 1024 * 1024 ? 1 : 0)} MB`;
+    }
+
+    const PROJECT_FILE_REASON_TEXT = {
+        empty_workdir: '服务端未配置工作目录，无法读取文件。',
+        invalid_payload: '文件读取请求格式无效。',
+        invalid_path: '文件路径无效，已拒绝读取。',
+        outside_workdir: '文件路径超出项目根目录，已拒绝读取。',
+        not_found: '文件不存在或已被删除。',
+        is_directory: '这是一个目录，不能作为文件预览。',
+        binary: '二进制文件暂不支持预览。',
+        too_large: '文件过大，未加载正文内容。',
+        not_previewable: '该文件暂不支持预览。',
+        read_error: '读取文件失败，请稍后重试。',
+    };
+
+    function openProjectFileModal(path) {
+        const filePath = normalizeProjectPath(path);
+        if (!dom.projectFileModal || !filePath) return;
+        clearProjectFilePending();
+
+        const seq = state.projectFileSeq + 1;
+        state.projectFileSeq = seq;
+        const requestId = `file-${seq}`;
+        const timer = setTimeout(() => {
+            const pending = state.projectFilePending;
+            if (!pending || pending.seq !== seq || pending.path !== filePath || pending.requestId !== requestId) return;
+            clearProjectFilePending();
+            renderProjectFileState('error', '读取文件超时，请稍后重试。');
+        }, 15000);
+        state.projectFilePending = { seq, path: filePath, requestId, timer };
+
+        updateProjectFileModalMeta({ path: filePath, name: projectFileNameFromPath(filePath) }, 'loading');
+        renderProjectFileState('loading', '正在读取文件...');
+        dom.projectFileModal.hidden = false;
+        if (dom.projectFileModalBody) dom.projectFileModalBody.focus({ preventScroll: true });
+
+        const sent = sendWS(MsgType.ReadProjectFile, { path: filePath, request_id: requestId });
+        if (!sent) {
+            clearProjectFilePending();
+            renderProjectFileState('error', 'WebSocket 未连接，无法读取文件。');
+        }
+    }
+
+    function closeProjectFileModal() {
+        clearProjectFilePending();
+        if (dom.projectFileModal) dom.projectFileModal.hidden = true;
+    }
+
+    function handleProjectFileConnectionClosed() {
+        if (!state.projectFilePending) return;
+        clearProjectFilePending();
+        if (dom.projectFileModal && !dom.projectFileModal.hidden) {
+            renderProjectFileState('error', '连接已断开，重连后请重新打开文件。');
+        }
+    }
+
+    function clearProjectFilePending() {
+        if (state.projectFilePending?.timer) {
+            clearTimeout(state.projectFilePending.timer);
+        }
+        state.projectFilePending = null;
+    }
+
+    function updateProjectFileModalMeta(file, reason) {
+        const filePath = normalizeProjectPath(file?.path);
+        const name = file?.name || projectFileNameFromPath(filePath) || '文件预览';
+        const renderType = file?.render_type || (reason === 'loading' ? 'loading' : '--');
+        const language = file?.language || (renderType && renderType !== 'plain' ? renderType : 'plain');
+        if (dom.projectFileModalTitle) dom.projectFileModalTitle.textContent = name;
+        if (dom.projectFileModalPath) {
+            const displayPath = filePath || '--';
+            dom.projectFileModalPath.textContent = displayPath;
+            dom.projectFileModalPath.title = displayPath;
+        }
+        if (dom.projectFileModalSize) dom.projectFileModalSize.textContent = Number.isFinite(Number(file?.size)) ? formatProjectFileSize(file.size) : '--';
+        if (dom.projectFileModalType) dom.projectFileModalType.textContent = `类型 ${renderType || '--'}`;
+        if (dom.projectFileModalLanguage) dom.projectFileModalLanguage.textContent = `格式 ${language || '--'}`;
+    }
+
+    function projectFileNameFromPath(path) {
+        const p = normalizeProjectPath(path);
+        if (!p) return '';
+        const parts = p.split('/').filter(Boolean);
+        return parts[parts.length - 1] || p;
+    }
+
+    function renderProjectFileContent(file, content) {
+        if (!dom.projectFileModalBody) return;
+        const renderType = String(file?.render_type || 'plain').toLowerCase();
+        const language = String(file?.language || '').toLowerCase();
+        if (renderType === 'binary') {
+            renderProjectFileUnavailable('binary', file);
+            return;
+        }
+        if (renderType === 'markdown') {
+            const wrapper = document.createElement('div');
+            wrapper.className = 'project-file-preview-markdown';
+            wrapper.innerHTML = renderMarkdown(content);
+            dom.projectFileModalBody.innerHTML = '';
+            dom.projectFileModalBody.appendChild(wrapper);
+            enhanceCodeBlocks(wrapper);
+            return;
+        }
+        if (renderType === 'json') {
+            renderProjectJSON(content);
+            return;
+        }
+        if (renderType === 'xml' || renderType === 'code') {
+            renderProjectHighlightedCode(content, language || renderType);
+            return;
+        }
+        renderProjectPlainText(content);
+    }
+
+    function renderProjectJSON(content) {
+        let text = content;
+        let parseError = null;
+        try {
+            text = JSON.stringify(JSON.parse(content), null, 2);
+        } catch (err) {
+            parseError = err;
+            console.warn('project file JSON parse failed, fallback to raw text', err);
+        }
+        renderProjectHighlightedCode(text, 'json');
+        if (parseError && dom.projectFileModalBody) {
+            const note = document.createElement('div');
+            note.className = 'project-file-preview-note';
+            note.textContent = 'JSON 解析失败，已按原文显示。';
+            dom.projectFileModalBody.insertBefore(note, dom.projectFileModalBody.firstChild);
+        }
+    }
+
+    function renderProjectHighlightedCode(content, language) {
+        if (!dom.projectFileModalBody) return;
+        const pre = document.createElement('pre');
+        pre.className = 'project-file-preview-code hljs';
+        if (language) pre.classList.add(`language-${language}`);
+        pre.innerHTML = highlightCode(content, language);
+        dom.projectFileModalBody.innerHTML = '';
+        dom.projectFileModalBody.appendChild(pre);
+    }
+
+    function renderProjectPlainText(content) {
+        if (!dom.projectFileModalBody) return;
+        const pre = document.createElement('pre');
+        pre.className = 'project-file-preview-plain';
+        pre.textContent = content || '';
+        dom.projectFileModalBody.innerHTML = '';
+        dom.projectFileModalBody.appendChild(pre);
+    }
+
+    function renderProjectFileUnavailable(reason, file) {
+        const text = projectFileReasonText(reason);
+        updateProjectFileModalMeta(file || {}, reason);
+        renderProjectFileState(reason === 'too_large' || reason === 'binary' || reason === 'not_previewable' ? 'unpreviewable' : 'error', text);
+    }
+
+    function renderProjectFileState(kind, message) {
+        if (!dom.projectFileModalBody) return;
+        const el = document.createElement('div');
+        const cls = kind === 'error'
+            ? 'project-file-preview-error'
+            : kind === 'unpreviewable'
+                ? 'project-file-preview-unpreviewable'
+                : kind === 'loading'
+                    ? 'project-file-preview-loading'
+                    : 'project-file-preview-placeholder';
+        el.className = cls;
+        el.textContent = message || '';
+        dom.projectFileModalBody.innerHTML = '';
+        dom.projectFileModalBody.appendChild(el);
+    }
+
+    function projectFileReasonText(reason) {
+        return PROJECT_FILE_REASON_TEXT[reason] || '无法预览该文件。';
+    }
+
+    function bindProjectFilePanel() {
+        if (state.projectPanelBound) return;
+        state.projectPanelBound = true;
+        if (dom.projectRefreshBtn) {
+            dom.projectRefreshBtn.addEventListener('click', () => requestProjectDir(state.projectDirPath || '', { force: true }));
+        }
+        if (dom.projectFileModal) {
+            dom.projectFileModal.querySelectorAll('[data-project-file-modal-close]').forEach(el => {
+                el.addEventListener('click', closeProjectFileModal);
+            });
+        }
+        document.addEventListener('keydown', (ev) => {
+            if (ev.key === 'Escape' && dom.projectFileModal && !dom.projectFileModal.hidden) {
+                closeProjectFileModal();
+            }
+        });
+        renderProjectPathbar('', []);
+        setProjectDirLoading(false);
     }
 
     // toggleDevPanel 切换开发者面板显示。
@@ -2789,6 +3292,7 @@
         bindNewSessionBtn();
         bindScrollWatcher();
         bindDevPanel();
+        bindProjectFilePanel();
         bindCompactBtn();
         renderCompactStat();
         // 初始状态

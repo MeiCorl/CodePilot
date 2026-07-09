@@ -324,6 +324,8 @@ func (h *Handler) Register(router *Router) {
 	router.Register(MsgTypeDeleteSession, h.handleDeleteSession)
 	router.Register(MsgTypeDevExportSP, h.handleDevExportSP)
 	router.Register(MsgTypeGetFileDiff, h.handleGetFileDiff)
+	router.Register(MsgTypeListProjectDir, h.handleListProjectDir)
+	router.Register(MsgTypeReadProjectFile, h.handleReadProjectFile)
 	router.Register(MsgTypePermissionResponse, h.handlePermissionResponse)
 	router.Register(MsgTypeSetPermissionMode, h.handleSetPermissionMode)
 	router.Register(MsgTypeCompact, h.handleCompact)
@@ -1094,6 +1096,58 @@ func (h *Handler) handleGetFileDiff(conn *websocket.Conn, msg Message) error {
 		Before:    diff.Before,
 		After:     diff.After,
 	})
+}
+
+func (h *Handler) handleListProjectDir(conn *websocket.Conn, msg Message) error {
+	p, err := AsPayload[ListProjectDirPayload](msg)
+	if err != nil {
+		return h.sendProjectDir(conn, ProjectDirPayload{OK: false, Reason: "invalid_payload"})
+	}
+
+	result, err := NewProjectFileBrowser(h.workdir).ListDir(p.Path)
+	payload := projectDirPayloadFromResult(result, err == nil)
+	payload.RequestID = p.RequestID
+	if payload.Reason == "" && err != nil {
+		payload.Reason = ProjectFileReasonReadError
+	}
+	return h.sendProjectDir(conn, payload)
+}
+
+func (h *Handler) handleReadProjectFile(conn *websocket.Conn, msg Message) error {
+	p, err := AsPayload[ReadProjectFilePayload](msg)
+	if err != nil {
+		return h.sendProjectFile(conn, ProjectFilePayload{Found: false, OK: false, Reason: "invalid_payload"})
+	}
+
+	result, err := NewProjectFileBrowser(h.workdir).ReadFile(p.Path)
+	payload := projectFilePayloadFromResult(result)
+	payload.RequestID = p.RequestID
+	if payload.Reason == "" && err != nil {
+		payload.Reason = ProjectFileReasonReadError
+	}
+	return h.sendProjectFile(conn, payload)
+}
+
+func projectDirPayloadFromResult(result ProjectDirResult, ok bool) ProjectDirPayload {
+	return ProjectDirPayload{
+		OK:          ok,
+		Reason:      result.Reason,
+		Path:        result.Path,
+		ParentPath:  result.ParentPath,
+		Breadcrumbs: result.Breadcrumbs,
+		Entries:     result.Entries,
+		Truncated:   result.Truncated,
+	}
+}
+
+func projectFilePayloadFromResult(result ProjectFileResult) ProjectFilePayload {
+	return ProjectFilePayload{
+		Found:   result.Found,
+		OK:      result.OK,
+		Reason:  result.Reason,
+		File:    result.File,
+		Content: result.Content,
+	}
 }
 
 // ---- Slash 命令下发相关 handler（Step 9.1 Task 4） ----
@@ -2058,6 +2112,14 @@ func (h *Handler) sendAgentIteration(conn *websocket.Conn, p AgentIterationPaylo
 // payload.Found=false 时 Reason 必填，前端据此区分文案（not_found / too_large）。
 func (h *Handler) sendFileDiff(conn *websocket.Conn, p FileDiffPayload) error {
 	return h.sendMessage(conn, MsgTypeFileDiff, p)
+}
+
+func (h *Handler) sendProjectDir(conn *websocket.Conn, p ProjectDirPayload) error {
+	return h.sendMessage(conn, MsgTypeProjectDir, p)
+}
+
+func (h *Handler) sendProjectFile(conn *websocket.Conn, p ProjectFilePayload) error {
+	return h.sendMessage(conn, MsgTypeProjectFile, p)
 }
 
 // mapToolEventStatus 把 conversation 包的内部工具事件状态枚举
