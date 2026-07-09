@@ -13,16 +13,16 @@
 | 指标     | 数值                                                    |
 | ------ | ----------------------------------------------------- |
 | 计划总步骤数 | 12（含子步骤后实际更多）                                         |
-| 已完成步骤数 | 18（Step 1 / Step 1.1 / Step 1.2 / Step 1.3 / Step 1.4 / Step 2 / Step 3 / Step 4 / Step 5 / Step 6 / Step 7 / Step 8 / Step 9 / Step 9.1 / Step 10 / Step 10.1 / Step 10.2 / Step 11） |
-| 当前最新版本 | V1.9.0                                                |
+| 已完成步骤数 | 19（Step 1 / Step 1.1 / Step 1.2 / Step 1.3 / Step 1.4 / Step 1.5 / Step 2 / Step 3 / Step 4 / Step 5 / Step 6 / Step 7 / Step 8 / Step 9 / Step 9.1 / Step 10 / Step 10.1 / Step 10.2 / Step 11） |
+| 当前最新版本 | V1.9.1                                                |
 | 进行中步骤  | —                                                    |
 | 下一步骤   | Step 12 — SubAgent（需先 `/specs` 触发需求澄清）                      |
-| 最近更新   | 2026-06-29（Step 11 Hook 系统完成:12 类事件 + 条件匹配 + command/http/prompt/agent action + Agent Loop/ToolHandler/Session/Compact 集成 + config-management/codebase-overview 补充 Hook 文档）|
+| 最近更新   | 2026-07-09（Step 1.5 WebUI 项目文件栏完成：右侧目录浏览 + 面包屑导航 + 只读文件预览 + Markdown/JSON/XML/代码高亮 + 路径越界/二进制/大文件保护）|
 
 进度条：
 
 ```
-[██████████████████████████████████████░] 11/12 主线步骤完成（Step 1-11 已完成 + Step 9.1 / Step 10.1 / Step 10.2 子步骤已落地，Step 12 待开始）
+[██████████████████████████████████████░] 11/12 主线步骤完成（Step 1-11 已完成 + Step 1.5 / Step 9.1 / Step 10.1 / Step 10.2 子步骤已落地，Step 12 待开始）
 ```
 
 ---
@@ -38,6 +38,7 @@
 | 1.2    | 对话栏富文本渲染（V1.0.2）                              | —          | highlight.js v11 18+ 语言；代码块 header + Copy；JSON 智能校验；DOMPurify XSS 防护；流式结束后一次性 enhance              | [docs](../docs/step1.2-对话栏文本渲染/)                                        |
 | 1.3    | WebUI 流式渲染（V1.0.5）                             | 2026-06-04 | 流式 Markdown 实时渲染 + 未闭合围栏自动补齐 + 80ms 防抖合并 + 首个 delta 立即出现 + 流结束后最终增强                              | [docs](../docs/step1.3-WebUI流式渲染/)                                        |
 | 1.4    | WebUI 工具展示优化（V1.0.7）                           | 2026-06-07 | WriteFile/EditFile 头部「查看改动」按钮 + 双栏 diff 弹窗 + diff-match-patch 行级 diff + 按后缀 hljs + 进程内 FileDiffStore      | [docs](../docs/step1.4-WebUI工具展示优化/)                                       |
+| 1.5    | WebUI 项目文件栏（V1.9.1）                              | 2026-07-09 | 右侧项目文件栏支持根目录/子目录浏览、上级与面包屑导航、只读文件预览、Markdown/JSON/XML/代码高亮，以及越界/二进制/大文件保护 | [docs](../docs/step1.5-WebUI项目文件栏/)                                       |
 | 2      | 工具系统集成（V1.0.3）                                 | —          | 统一 `Tool` 接口 + Registry；5 个内置工具（ReadFile/WriteFile/Bash/Glob/Grep）；Anthropic/OpenAI tool_use 适配；路径沙箱 + Bash 黑名单 | [docs](../docs/step2-工具系统集成/)                                           |
 | 3      | ReAct 与 Agent Loop（V1.0.4）                      | 2026-06-04 | ReAct 循环迭代 + 多工具并行 + 迭代上限 + 溢出保护 + 优雅中断 + 工具错误回灌 + 5 种终止原因枚举                                  | [docs](../docs/step3-ReAct与Agent%20Loop实现/)                              |
 | 4      | System Prompt 设计（V1.0.6）                        | 2026-06-06 | Builder + 4 Source（static/environment/agents_md/memory）；AGENTS.md 双层合并；Anthropic Prompt Caching；SP 可观测性 + Export | [docs](../docs/step4-System%20Prompt设计/)                                  |
@@ -56,7 +57,7 @@
 
 | 架构层       | 已落地组件                                                                       | 待落地                          |
 | --------- | --------------------------------------------------------------------------- | ---------------------------- |
-| 第 1 层：交互层 | WebUI（HTTP + WS + 富文本 + 流式渲染 + SP 可观测 + 双栏 diff + 权限对话框 + MCP/Skill 徽标）       | —                            |
+| 第 1 层：交互层 | WebUI（HTTP + WS + 富文本 + 流式渲染 + SP 可观测 + 双栏 diff + 权限对话框 + MCP/Skill 徽标 + 项目文件栏 + 只读文件预览）       | —                            |
 | 第 2 层：引擎层 | 对话管理 + Agent Loop（ReAct 迭代）+ System Prompt（Builder + 8 Source + Anthropic 缓存）   | —                            |
 | 第 3 层：工具层 | 6 内置工具 + 路径沙箱 + Bash 黑名单 + MCP 客户端 + 快捷命令系统 + **Skill 系统（Step 10）+ config-management 自感知 Skill（Step 10.1）+ codebase-overview 代码自感知 Skill（Step 10.2）+ Hook 系统（Step 11）+ config-management Hook 配置说明 + codebase-overview Hook 实现导览**              | SubAgent（Step 12） |
 | 第 4 层：记忆层 | 会话持久化 + 高级上下文管理（两层压缩 / 熔断 / 紧急压缩）+ 自动学习记忆（4 类分级 / 独立 LLM 回顾 / 敏感脱敏）                | —                            |
@@ -87,7 +88,3 @@
 3. **commit 信息**：若新步骤已 release，引用 `git log --oneline` 中的 commit hash 与 message
 4. **日期格式**：完成时间统一使用 `YYYY-MM-DD`
 5. **简化原则**：每步的 Task 数、核心交付能力详细条目、验证用例清单等**不进入本文档**，详见各步骤 `docs/step{n}/` 目录下的 `tasks.md` 与 `checklist.md`，避免本文档无限膨胀占用上下文
-
-
-
-
