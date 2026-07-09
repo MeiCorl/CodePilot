@@ -373,6 +373,9 @@ func isProjectTextContent(filePath string, sample []byte) bool {
 	if bytes.IndexByte(sample, 0) >= 0 {
 		return false
 	}
+	if isKnownTextExtension(filePath) {
+		return true
+	}
 	if !utf8.Valid(sample) {
 		return false
 	}
@@ -380,7 +383,7 @@ func isProjectTextContent(filePath string, sample []byte) bool {
 	if strings.HasPrefix(contentType, "text/") || contentType == "application/json" || contentType == "application/xml" {
 		return true
 	}
-	return isKnownTextExtension(filePath)
+	return false
 }
 
 func isKnownTextExtension(filePath string) bool {
