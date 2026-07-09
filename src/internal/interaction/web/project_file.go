@@ -314,19 +314,29 @@ func statProjectDirEntry(entryAbs string, entry os.DirEntry, rootAbs string) (os
 	if err != nil {
 		return nil, false, false
 	}
-	if entry.Type()&os.ModeSymlink == 0 {
+	isLink := entry.Type()&os.ModeSymlink != 0 || info.Mode()&os.ModeSymlink != 0
+	if !isLink {
+		statInfo, err := os.Stat(entryAbs)
+		if err == nil && statInfo.IsDir() != info.IsDir() {
+			return statLinkedProjectDirEntry(entryAbs, info, rootAbs)
+		}
 		return info, info.IsDir(), true
 	}
+	return statLinkedProjectDirEntry(entryAbs, info, rootAbs)
+}
+
+func statLinkedProjectDirEntry(entryAbs string, fallback os.FileInfo, rootAbs string) (os.FileInfo, bool, bool) {
 	real, err := filepath.EvalSymlinks(entryAbs)
 	if err != nil {
-		return info, false, false
+		return fallback, false, false
 	}
+	real = filepath.Clean(real)
 	if !security.IsPathInside(real, rootAbs) {
-		return info, false, false
+		return fallback, false, false
 	}
 	realInfo, err := os.Stat(real)
 	if err != nil {
-		return info, false, false
+		return fallback, false, false
 	}
 	return realInfo, realInfo.IsDir(), true
 }
