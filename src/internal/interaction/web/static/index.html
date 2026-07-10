@@ -215,47 +215,125 @@
             </div>
         </main>
 
-        <!-- 右侧项目文件栏：Task 4/5 接入 WebSocket 后填充目录和文件预览状态 -->
-        <aside id="project-file-panel" class="project-file-panel" role="complementary" aria-label="项目文件栏">
-            <div class="project-panel-header">
-                <div class="project-panel-heading">
-                    <span class="project-panel-title">Project Files</span>
-                    <span id="project-panel-count" class="project-panel-count" aria-live="polite">--</span>
+        <!-- 右侧项目侧栏：文件 / Git / 搜索多标签，Task 5 接入交互逻辑 -->
+        <aside id="project-file-panel" class="project-file-panel" role="complementary" aria-label="项目侧栏">
+            <div class="project-panel-tabs" role="tablist" aria-label="项目侧栏视图">
+                <button id="project-tab-files-btn" class="project-panel-tab is-active" data-project-tab="files" type="button" role="tab" aria-selected="true" aria-controls="project-tab-files">文件</button>
+                <button id="project-tab-git-btn" class="project-panel-tab" data-project-tab="git" type="button" role="tab" aria-selected="false" aria-controls="project-tab-git">Git</button>
+                <button id="project-tab-search-btn" class="project-panel-tab" data-project-tab="search" type="button" role="tab" aria-selected="false" aria-controls="project-tab-search">搜索</button>
+            </div>
+
+            <section id="project-tab-files" class="project-panel-tabpanel is-active" data-project-tab-panel="files" role="tabpanel" aria-labelledby="project-tab-files-btn">
+                <div class="project-panel-header">
+                    <div class="project-panel-heading">
+                        <span class="project-panel-title">Project Files</span>
+                        <span id="project-panel-count" class="project-panel-count" aria-live="polite">--</span>
+                    </div>
+                    <button id="project-refresh-btn" class="project-panel-refresh" type="button" title="刷新当前目录" aria-label="刷新当前目录">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74"/>
+                            <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74"/>
+                            <path d="M8 18H5v3"/>
+                            <path d="M16 6h3V3"/>
+                        </svg>
+                    </button>
                 </div>
-                <button id="project-refresh-btn" class="project-panel-refresh" type="button" title="刷新当前目录" aria-label="刷新当前目录">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                        <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74"/>
-                        <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74"/>
-                        <path d="M8 18H5v3"/>
-                        <path d="M16 6h3V3"/>
-                    </svg>
-                </button>
-            </div>
 
-            <div class="project-pathbar">
-                <div id="project-current-path" class="project-current-path" title="项目根目录">.</div>
-                <nav id="project-breadcrumbs" class="project-breadcrumbs" aria-label="项目路径面包屑">
-                    <button class="project-crumb is-active" type="button" title="项目根目录">root</button>
-                </nav>
-            </div>
+                <div class="project-pathbar">
+                    <div id="project-current-path" class="project-current-path" title="项目根目录">.</div>
+                    <nav id="project-breadcrumbs" class="project-breadcrumbs" aria-label="项目路径面包屑">
+                        <button class="project-crumb is-active" type="button" title="项目根目录">root</button>
+                    </nav>
+                </div>
 
-            <div id="project-panel-truncated" class="project-panel-banner project-panel-truncated" hidden role="status">
-                当前目录条目较多，已显示前一部分结果。
-            </div>
-            <div id="project-panel-loading" class="project-panel-state project-panel-loading" role="status" aria-live="polite">
-                <span class="project-panel-spinner" aria-hidden="true"></span>
-                <span>等待加载项目文件...</span>
-            </div>
-            <div id="project-panel-empty" class="project-panel-state project-panel-empty" hidden>
-                <span class="project-panel-state-title">目录为空</span>
-                <span class="project-panel-state-note">当前路径下没有可显示的条目。</span>
-            </div>
-            <div id="project-panel-error" class="project-panel-state project-panel-error" hidden role="alert">
-                <span class="project-panel-state-title">无法加载目录</span>
-                <span id="project-panel-error-text" class="project-panel-state-note">请稍后重试。</span>
-            </div>
+                <div id="project-panel-truncated" class="project-panel-banner project-panel-truncated" hidden role="status">
+                    当前目录条目较多，已显示前一部分结果。
+                </div>
+                <div id="project-panel-loading" class="project-panel-state project-panel-loading" role="status" aria-live="polite">
+                    <span class="project-panel-spinner" aria-hidden="true"></span>
+                    <span>等待加载项目文件...</span>
+                </div>
+                <div id="project-panel-empty" class="project-panel-state project-panel-empty" hidden>
+                    <span class="project-panel-state-title">目录为空</span>
+                    <span class="project-panel-state-note">当前路径下没有可显示的条目。</span>
+                </div>
+                <div id="project-panel-error" class="project-panel-state project-panel-error" hidden role="alert">
+                    <span class="project-panel-state-title">无法加载目录</span>
+                    <span id="project-panel-error-text" class="project-panel-state-note">请稍后重试。</span>
+                </div>
 
-            <div id="project-file-list" class="project-file-list" role="list" aria-live="polite" aria-label="项目文件列表"></div>
+                <div id="project-file-list" class="project-file-list" role="list" aria-live="polite" aria-label="项目文件列表"></div>
+            </section>
+
+            <section id="project-tab-git" class="project-panel-tabpanel" data-project-tab-panel="git" role="tabpanel" aria-labelledby="project-tab-git-btn" hidden>
+                <div class="project-panel-header project-git-header">
+                    <div class="project-panel-heading">
+                        <span class="project-panel-title">Git Changes</span>
+                        <span id="project-git-count" class="project-panel-count" aria-live="polite">--</span>
+                    </div>
+                    <button id="project-git-refresh-btn" class="project-panel-refresh" data-project-git-refresh type="button" title="刷新 Git 变更" aria-label="刷新 Git 变更">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74"/>
+                            <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74"/>
+                            <path d="M8 18H5v3"/>
+                            <path d="M16 6h3V3"/>
+                        </svg>
+                    </button>
+                </div>
+                <div id="project-git-status" class="project-git-status" aria-live="polite">
+                    <span class="project-git-status-dot" data-status="idle" aria-hidden="true"></span>
+                    <span id="project-git-status-text">等待刷新 Git 变更。</span>
+                </div>
+                <div id="project-git-loading" class="project-panel-state project-panel-loading" hidden role="status" aria-live="polite">
+                    <span class="project-panel-spinner" aria-hidden="true"></span>
+                    <span>正在读取 Git 变更...</span>
+                </div>
+                <div id="project-git-empty" class="project-panel-state project-panel-empty" hidden>
+                    <span class="project-panel-state-title">没有本地变更</span>
+                    <span class="project-panel-state-note">当前工作区是干净的。</span>
+                </div>
+                <div id="project-git-error" class="project-panel-state project-panel-error" hidden role="alert">
+                    <span class="project-panel-state-title">无法读取 Git 状态</span>
+                    <span id="project-git-error-text" class="project-panel-state-note">请稍后重试。</span>
+                </div>
+                <div id="project-git-list" class="project-git-list" data-project-git-list role="list" aria-live="polite" aria-label="Git 变更文件列表"></div>
+            </section>
+
+            <section id="project-tab-search" class="project-panel-tabpanel" data-project-tab-panel="search" role="tabpanel" aria-labelledby="project-tab-search-btn" hidden>
+                <form id="project-search-form" class="project-search-form" data-project-search-form role="search">
+                    <label class="project-search-field">
+                        <span class="project-search-label">关键词</span>
+                        <input id="project-search-query" class="project-search-input" data-project-search-query type="search" autocomplete="off" spellcheck="false" placeholder="输入要搜索的内容">
+                    </label>
+                    <label class="project-search-field">
+                        <span class="project-search-label">路径</span>
+                        <input id="project-search-path" class="project-search-input" data-project-search-path type="text" autocomplete="off" spellcheck="false" placeholder="相对路径，可留空">
+                    </label>
+                    <label class="project-search-toggle">
+                        <input id="project-search-regex" data-project-search-regex type="checkbox">
+                        <span>正则</span>
+                    </label>
+                    <label class="project-search-field">
+                        <span class="project-search-label">排除</span>
+                        <input id="project-search-exclude" class="project-search-input" data-project-search-exclude type="text" autocomplete="off" spellcheck="false" placeholder="node_modules, dist, *.log">
+                    </label>
+                    <button id="project-search-run-btn" class="project-search-run" data-project-search-run type="submit">搜索</button>
+                </form>
+                <div id="project-search-summary" class="project-search-summary" aria-live="polite">输入关键词后执行搜索。</div>
+                <div id="project-search-loading" class="project-panel-state project-panel-loading" hidden role="status" aria-live="polite">
+                    <span class="project-panel-spinner" aria-hidden="true"></span>
+                    <span>正在搜索项目内容...</span>
+                </div>
+                <div id="project-search-empty" class="project-panel-state project-panel-empty" hidden>
+                    <span class="project-panel-state-title">没有搜索结果</span>
+                    <span class="project-panel-state-note">换一个关键词、路径或排除规则再试。</span>
+                </div>
+                <div id="project-search-error" class="project-panel-state project-panel-error" hidden role="alert">
+                    <span class="project-panel-state-title">搜索失败</span>
+                    <span id="project-search-error-text" class="project-panel-state-note">请稍后重试。</span>
+                </div>
+                <div id="project-search-results" class="project-search-results" data-project-search-results role="list" aria-live="polite" aria-label="项目搜索结果"></div>
+            </section>
         </aside>
         <!-- 开发者模式 + Export SP 模态框（Step 4 可观测性） -->
         <div id="dev-panel" class="dev-panel" hidden>

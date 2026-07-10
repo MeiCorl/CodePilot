@@ -73,6 +73,29 @@
         projectFileModalType:  $('project-file-modal-type'),
         projectFileModalLanguage: $('project-file-modal-language'),
         projectFileModalBody:  $('project-file-modal-body'),
+        projectTabButtons:     Array.from(document.querySelectorAll('[data-project-tab]')),
+        projectTabPanels:      Array.from(document.querySelectorAll('[data-project-tab-panel]')),
+        projectGitRefreshBtn:  $('project-git-refresh-btn'),
+        projectGitCount:       $('project-git-count'),
+        projectGitStatusDot:   document.querySelector('.project-git-status-dot'),
+        projectGitStatusText:  $('project-git-status-text'),
+        projectGitLoading:     $('project-git-loading'),
+        projectGitEmpty:       $('project-git-empty'),
+        projectGitError:       $('project-git-error'),
+        projectGitErrorText:   $('project-git-error-text'),
+        projectGitList:        $('project-git-list'),
+        projectSearchForm:     $('project-search-form'),
+        projectSearchQuery:    $('project-search-query'),
+        projectSearchPath:     $('project-search-path'),
+        projectSearchRegex:    $('project-search-regex'),
+        projectSearchExclude:  $('project-search-exclude'),
+        projectSearchRunBtn:   $('project-search-run-btn'),
+        projectSearchSummary:  $('project-search-summary'),
+        projectSearchLoading:  $('project-search-loading'),
+        projectSearchEmpty:    $('project-search-empty'),
+        projectSearchError:    $('project-search-error'),
+        projectSearchErrorText: $('project-search-error-text'),
+        projectSearchResults:  $('project-search-results'),
     };
 
     // ---- 全局状态 ----
@@ -124,6 +147,14 @@
         projectDirLoading: false,
         projectFilePending: null,       // { seq, path, timer } - filters stale file preview responses
         projectFileSeq: 0,
+        projectActiveTab: 'files',
+        projectGitLoaded: false,
+        projectGitPending: null,
+        projectGitSeq: 0,
+        projectGitDiffPending: null,
+        projectGitDiffSeq: 0,
+        projectSearchPending: null,
+        projectSearchSeq: 0,
         projectPanelBound: false,
     };
 
@@ -186,6 +217,9 @@
         sendWS(MsgType.ListSessions, {});
         sendWS(MsgType.GetCurrentSession, {});
         requestProjectDir('', { force: true });
+        if (state.projectActiveTab === 'git') {
+            requestProjectGitChanges({ force: true });
+        }
     }
 
     function onWSClose() {
@@ -194,6 +228,7 @@
         setProjectDirLoading(false);
         showProjectDirError('连接已断开，重连后可刷新项目文件。');
         handleProjectFileConnectionClosed();
+        handleProjectSidebarConnectionClosed();
         showLoading('连接已断开，正在重连...');
         scheduleReconnect();
     }
@@ -263,6 +298,12 @@
         ProjectDir:        'project_dir',
         ReadProjectFile:   'read_project_file',
         ProjectFile:       'project_file',
+        ListProjectGitChanges: 'list_project_git_changes',
+        ProjectGitChanges: 'project_git_changes',
+        ReadProjectGitDiff: 'read_project_git_diff',
+        ProjectGitDiff:    'project_git_diff',
+        SearchProject:     'search_project',
+        ProjectSearch:     'project_search',
         // Step 5：权限确认 HITL
         PermissionRequest: 'permission_request',
         PermissionResponse: 'permission_response',
@@ -347,6 +388,9 @@
             case MsgType.FileDiff:          return onFileDiff(msg.payload);
             case MsgType.ProjectDir:        return onProjectDir(msg.payload);
             case MsgType.ProjectFile:       return onProjectFile(msg.payload);
+            case MsgType.ProjectGitChanges: return onProjectGitChanges(msg.payload);
+            case MsgType.ProjectGitDiff:    return onProjectGitDiff(msg.payload);
+            case MsgType.ProjectSearch:     return onProjectSearch(msg.payload);
             case MsgType.PermissionRequest: return onPermissionRequest(msg.payload);
             case MsgType.PermissionMode:    return onPermissionMode(msg.payload);
             case MsgType.MCPStatus:         return onMCPStatus(msg.payload);
@@ -824,6 +868,364 @@
         read_error: '读取文件失败，请稍后重试。',
     };
 
+    function setProjectTab(tab, options = {}) {
+        const next = ['files', 'git', 'search'].includes(tab) ? tab : 'files';
+        state.projectActiveTab = next;
+        dom.projectTabButtons.forEach(btn => {
+            const active = (btn.dataset.projectTab || '') === next;
+            btn.classList.toggle('is-active', active);
+            btn.setAttribute('aria-selected', active ? 'true' : 'false');
+            btn.tabIndex = active ? 0 : -1;
+        });
+        dom.projectTabPanels.forEach(panel => {
+            const active = (panel.dataset.projectTabPanel || '') === next;
+            panel.hidden = !active;
+            panel.classList.toggle('is-active', active);
+        });
+        if (options.noLoad) return;
+        if (next === 'files') {
+            if (!state.projectDirLoading && !state.projectDirEntriesCache[state.projectDirPath || '']) {
+                requestProjectDir(state.projectDirPath || '', { force: true });
+            }
+            return;
+        }
+        if (next === 'git' && (!state.projectGitLoaded || options.force)) {
+            requestProjectGitChanges({ force: options.force });
+        }
+    }
+
+    function requestProjectGitChanges(options = {}) {
+        if (!dom.projectGitList) return;
+        const seq = state.projectGitSeq + 1;
+        state.projectGitSeq = seq;
+        const requestId = `git-${seq}`;
+        state.projectGitPending = { seq, requestId };
+        setProjectGitLoading(true);
+        showProjectGitError('');
+        setProjectGitStatus('loading', 'Loading changes...');
+        if (!sendWS(MsgType.ListProjectGitChanges, { request_id: requestId })) {
+            state.projectGitPending = null;
+            setProjectGitLoading(false);
+            setProjectGitStatus('error', 'Disconnected');
+            showProjectGitError('WebSocket is disconnected. Reconnect and refresh Git.');
+        }
+    }
+
+    function onProjectGitChanges(p) {
+        if (!p) return;
+        const pending = state.projectGitPending;
+        if (pending && p.request_id && p.request_id !== pending.requestId) return;
+        state.projectGitPending = null;
+        state.projectGitLoaded = true;
+        setProjectGitLoading(false);
+        const ok = p.ok !== false;
+        if (!ok) {
+            const reason = projectGitReasonText(p.reason);
+            setProjectGitStatus('error', reason);
+            showProjectGitError(reason);
+            renderProjectGitList([]);
+            return;
+        }
+        const entries = Array.isArray(p.entries) ? p.entries : [];
+        renderProjectGitList(entries);
+        const suffix = p.truncated ? '+' : '';
+        const label = entries.length === 1 ? '1 change' : `${entries.length}${suffix} changes`;
+        setProjectGitStatus(entries.length ? 'ok' : 'empty', entries.length ? label : 'No changes');
+    }
+
+    function setProjectGitLoading(loading) {
+        if (dom.projectGitLoading) dom.projectGitLoading.hidden = !loading;
+        if (dom.projectGitRefreshBtn) dom.projectGitRefreshBtn.disabled = !!loading;
+    }
+
+    function setProjectGitStatus(kind, text) {
+        if (dom.projectGitStatusText) dom.projectGitStatusText.textContent = text || '';
+        if (dom.projectGitStatusDot) {
+            dom.projectGitStatusDot.dataset.state = kind || '';
+        }
+        if (dom.projectGitCount) dom.projectGitCount.textContent = text || '--';
+    }
+
+    function showProjectGitError(message) {
+        if (dom.projectGitError) dom.projectGitError.hidden = !message;
+        if (dom.projectGitErrorText) dom.projectGitErrorText.textContent = message || '';
+    }
+
+    function renderProjectGitList(entries) {
+        if (!dom.projectGitList) return;
+        dom.projectGitList.innerHTML = '';
+        const hasEntries = entries.length > 0;
+        if (dom.projectGitEmpty) dom.projectGitEmpty.hidden = hasEntries;
+        entries.forEach(entry => dom.projectGitList.appendChild(buildProjectGitItem(entry)));
+    }
+
+    function buildProjectGitItem(entry) {
+        const path = normalizeProjectPath(entry?.path || '');
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'project-git-item';
+        btn.disabled = !path;
+        btn.addEventListener('click', () => openProjectGitDiffModal(path));
+
+        const badge = document.createElement('span');
+        badge.className = 'project-git-status';
+        badge.textContent = projectGitStatusLabel(entry?.status);
+        btn.appendChild(badge);
+
+        const main = document.createElement('span');
+        main.className = 'project-git-main';
+        const name = document.createElement('span');
+        name.className = 'project-git-path';
+        name.textContent = path || '(unknown)';
+        name.title = path || '';
+        const meta = document.createElement('span');
+        meta.className = 'project-git-meta';
+        const metaParts = [];
+        if (entry?.original_path && entry.original_path !== path) metaParts.push(`from ${entry.original_path}`);
+        if (entry?.size) metaParts.push(formatProjectFileSize(entry.size));
+        meta.textContent = metaParts.join(' - ');
+        main.appendChild(name);
+        if (meta.textContent) main.appendChild(meta);
+        btn.appendChild(main);
+        return btn;
+    }
+
+    function projectGitStatusLabel(status) {
+        const map = {
+            modified: 'M', added: 'A', deleted: 'D', renamed: 'R', copied: 'C', untracked: '?', conflicted: '!', unknown: '?',
+        };
+        return map[String(status || '').toLowerCase()] || String(status || '?').slice(0, 1).toUpperCase();
+    }
+
+    function openProjectGitDiffModal(path) {
+        const filePath = normalizeProjectPath(path);
+        if (!filePath) return;
+        if (state.projectGitDiffPending?.timer) clearTimeout(state.projectGitDiffPending.timer);
+        const seq = state.projectGitDiffSeq + 1;
+        state.projectGitDiffSeq = seq;
+        const requestId = `git-diff-${seq}`;
+        const modal = buildDiffModalSkeleton(filePath);
+        modal.classList.add('is-project-git-diff', 'project-git-diff-modal');
+        document.body.appendChild(modal);
+        const body = modal.querySelector('.diff-modal-body');
+        const title = modal.querySelector('.diff-modal-filename');
+        const subtitle = modal.querySelector('.diff-modal-toolname');
+        if (title) {
+            title.textContent = filePath;
+            title.title = filePath;
+        }
+        if (subtitle) subtitle.textContent = 'Git diff';
+        const clearGitDiffPending = () => {
+            if (state.projectGitDiffPending?.requestId !== requestId) return;
+            if (state.projectGitDiffPending.timer) clearTimeout(state.projectGitDiffPending.timer);
+            state.projectGitDiffPending = null;
+        };
+        const escHandler = (ev) => {
+            if (ev.key === 'Escape') {
+                clearGitDiffPending();
+                closeFileDiffModal(modal, filePath);
+            }
+        };
+        document.addEventListener('keydown', escHandler);
+        modal._escHandler = escHandler;
+        modal.addEventListener('click', (ev) => {
+            if (ev.target === modal) clearGitDiffPending();
+        }, true);
+        modal.querySelectorAll('[data-diff-modal-close]').forEach(el => {
+            el.addEventListener('click', () => {
+                clearGitDiffPending();
+                closeFileDiffModal(modal, filePath);
+            });
+        });
+        renderDiffMessage(body, 'Loading Git diff...', false);
+        const timer = setTimeout(() => {
+            if (!state.projectGitDiffPending || state.projectGitDiffPending.requestId !== requestId) return;
+            state.projectGitDiffPending = null;
+            if (modal.isConnected) renderDiffMessage(body, 'Git diff request timed out.', true);
+        }, FILE_DIFF_REQUEST_TIMEOUT_MS);
+        state.projectGitDiffPending = { seq, requestId, path: filePath, modal, timer };
+        if (!sendWS(MsgType.ReadProjectGitDiff, { path: filePath, request_id: requestId })) {
+            clearTimeout(timer);
+            state.projectGitDiffPending = null;
+            renderDiffMessage(body, 'WebSocket is disconnected. Reconnect and retry.', true);
+        }
+    }
+
+    function onProjectGitDiff(p) {
+        if (!p) return;
+        const pending = state.projectGitDiffPending;
+        if (pending && p.request_id && p.request_id !== pending.requestId) return;
+        if (!pending) return;
+        if (pending.timer) clearTimeout(pending.timer);
+        state.projectGitDiffPending = null;
+        const modal = pending.modal;
+        if (!modal || !modal.isConnected) return;
+        const body = modal.querySelector('.diff-modal-body');
+        if (!p.found || p.ok === false) {
+            renderDiffMessage(body, projectGitDiffReasonText(p.reason), true);
+            return;
+        }
+        renderDiffGrid(body, p);
+    }
+
+    function projectGitReasonText(reason) {
+        const map = {
+            empty_workdir: 'Server workdir is empty.',
+            not_git_repository: 'This project is not a Git repository.',
+            git_unavailable: 'Git command is not available.',
+            git_error: 'Git status failed.',
+            invalid_payload: 'Invalid Git request.',
+        };
+        return map[reason] || 'Unable to load Git changes.';
+    }
+
+    function projectGitDiffReasonText(reason) {
+        const map = {
+            empty_workdir: 'Server workdir is empty.',
+            invalid_payload: 'Invalid Git diff request.',
+            invalid_path: 'Invalid file path.',
+            outside_workdir: 'File path is outside the project.',
+            not_git_repository: 'This project is not a Git repository.',
+            not_changed: 'This file has no Git change to preview.',
+            binary: 'Binary file diff cannot be previewed.',
+            too_large: 'File is too large to preview.',
+            read_error: 'Failed to read Git diff.',
+        };
+        return map[reason] || 'Unable to preview Git diff.';
+    }
+
+    function requestProjectSearch() {
+        if (!dom.projectSearchForm) return;
+        const query = (dom.projectSearchQuery?.value || '').trim();
+        const path = normalizeProjectPath(dom.projectSearchPath?.value || '');
+        const regex = !!dom.projectSearchRegex?.checked;
+        const exclude = parseProjectSearchExcludes(dom.projectSearchExclude?.value || '');
+        showProjectSearchError('');
+        if (!query) {
+            renderProjectSearchResults(null);
+            showProjectSearchError('Enter a search query.');
+            return;
+        }
+        const seq = state.projectSearchSeq + 1;
+        state.projectSearchSeq = seq;
+        const requestId = `search-${seq}`;
+        state.projectSearchPending = { seq, requestId };
+        setProjectSearchLoading(true);
+        const payload = { query, path, regex, exclude, request_id: requestId };
+        if (!sendWS(MsgType.SearchProject, payload)) {
+            state.projectSearchPending = null;
+            setProjectSearchLoading(false);
+            showProjectSearchError('WebSocket is disconnected. Reconnect and search again.');
+        }
+    }
+
+    function onProjectSearch(p) {
+        if (!p) return;
+        const pending = state.projectSearchPending;
+        if (pending && p.request_id && p.request_id !== pending.requestId) return;
+        state.projectSearchPending = null;
+        setProjectSearchLoading(false);
+        if (p.ok === false) {
+            renderProjectSearchResults(null);
+            showProjectSearchError(projectSearchReasonText(p.reason));
+            return;
+        }
+        renderProjectSearchResults(p);
+    }
+
+    function setProjectSearchLoading(loading) {
+        if (dom.projectSearchLoading) dom.projectSearchLoading.hidden = !loading;
+        if (dom.projectSearchRunBtn) dom.projectSearchRunBtn.disabled = !!loading;
+    }
+
+    function showProjectSearchError(message) {
+        if (dom.projectSearchError) dom.projectSearchError.hidden = !message;
+        if (dom.projectSearchErrorText) dom.projectSearchErrorText.textContent = message || '';
+    }
+
+    function renderProjectSearchResults(result) {
+        if (!dom.projectSearchResults) return;
+        dom.projectSearchResults.innerHTML = '';
+        const files = Array.isArray(result?.files) ? result.files : [];
+        const hasResults = files.length > 0;
+        if (dom.projectSearchEmpty) dom.projectSearchEmpty.hidden = hasResults || !!result;
+        if (dom.projectSearchSummary) {
+            if (!result) {
+                dom.projectSearchSummary.textContent = '--';
+            } else {
+                const total = Number(result.total_matches || 0);
+                const scanned = Number(result.scanned_files || 0);
+                const suffix = result.truncated ? `, truncated by ${result.truncated_by || 'limit'}` : '';
+                dom.projectSearchSummary.textContent = `${total} matches in ${files.length} files (${scanned} scanned${suffix})`;
+            }
+        }
+        files.forEach(file => dom.projectSearchResults.appendChild(buildProjectSearchResult(file)));
+    }
+
+    function buildProjectSearchResult(file) {
+        const filePath = normalizeProjectPath(file?.path || '');
+        const wrap = document.createElement('div');
+        wrap.className = 'project-search-result';
+        const header = document.createElement('button');
+        header.type = 'button';
+        header.className = 'project-search-result-file';
+        header.textContent = filePath || '(unknown)';
+        header.title = filePath || '';
+        header.disabled = !filePath;
+        header.addEventListener('click', () => openProjectFileModal(filePath));
+        wrap.appendChild(header);
+
+        const matches = Array.isArray(file?.matches) ? file.matches : [];
+        matches.forEach(match => {
+            const line = document.createElement('button');
+            line.type = 'button';
+            line.className = 'project-search-match';
+            line.addEventListener('click', () => openProjectFileModal(filePath));
+            const lineNo = document.createElement('span');
+            lineNo.className = 'project-search-line';
+            lineNo.textContent = String(match?.line || '');
+            const snippet = document.createElement('span');
+            snippet.className = 'project-search-snippet';
+            snippet.textContent = match?.snippet || match?.text || '';
+            line.appendChild(lineNo);
+            line.appendChild(snippet);
+            wrap.appendChild(line);
+        });
+        return wrap;
+    }
+
+    function parseProjectSearchExcludes(value) {
+        return String(value || '')
+            .split(/[\n,]+/)
+            .map(s => s.trim())
+            .filter(Boolean);
+    }
+
+    function projectSearchReasonText(reason) {
+        const map = {
+            empty_workdir: 'Server workdir is empty.',
+            invalid_payload: 'Invalid search request.',
+            empty_query: 'Enter a search query.',
+            invalid_path: 'Invalid search path.',
+            outside_workdir: 'Search path is outside the project.',
+            invalid_regex: 'Invalid regular expression.',
+            scan_error: 'Search failed while scanning files.',
+        };
+        return map[reason] || 'Project search failed.';
+    }
+
+    function handleProjectSidebarConnectionClosed() {
+        state.projectGitPending = null;
+        if (state.projectGitDiffPending?.timer) clearTimeout(state.projectGitDiffPending.timer);
+        if (state.projectGitDiffPending?.modal?.isConnected) {
+            const body = state.projectGitDiffPending.modal.querySelector('.diff-modal-body');
+            renderDiffMessage(body, 'Connection closed. Reconnect and reopen this Git diff.', true);
+        }
+        state.projectGitDiffPending = null;
+        state.projectSearchPending = null;
+        setProjectGitLoading(false);
+        setProjectSearchLoading(false);
+    }
     function openProjectFileModal(path) {
         const filePath = normalizeProjectPath(path);
         if (!dom.projectFileModal || !filePath) return;
@@ -989,6 +1391,19 @@
     function bindProjectFilePanel() {
         if (state.projectPanelBound) return;
         state.projectPanelBound = true;
+        dom.projectTabButtons.forEach(btn => {
+            btn.addEventListener('click', () => setProjectTab(btn.dataset.projectTab || 'files'));
+        });
+        if (dom.projectGitRefreshBtn) {
+            dom.projectGitRefreshBtn.addEventListener('click', () => requestProjectGitChanges({ force: true }));
+        }
+        if (dom.projectSearchForm) {
+            dom.projectSearchForm.addEventListener('submit', (ev) => {
+                ev.preventDefault();
+                requestProjectSearch();
+            });
+        }
+        setProjectTab(state.projectActiveTab || 'files', { noLoad: true });
         if (dom.projectRefreshBtn) {
             dom.projectRefreshBtn.addEventListener('click', () => requestProjectDir(state.projectDirPath || '', { force: true }));
         }
@@ -1323,37 +1738,57 @@
             rows = [{ op: 'eq', text: before }];
         }
 
-        // 拆行渲染：保持左右栏视觉上的"行对齐"
+        // Split diff ops into side-by-side visual rows. Consecutive changed ops
+        // belong to the same hunk, so deleted and added lines should share row
+        // slots instead of being stacked one after another.
         let leftLine = 0;   // Before 栏行号
         let rightLine = 0;  // After 栏行号
         const leftRows = [];   // Before 栏行
         const rightRows = [];  // After 栏行
 
-        for (const r of rows) {
-            // split('\n') 切完后末尾会多一个空字符串（"a\nb\n" → ["a","b",""]），
-            // 需要去掉最后一个以避免每段都多出一行空行
-            const lines = r.text.split('\n');
-            if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
-            if (lines.length === 0) continue;
-
-            for (const line of lines) {
-                if (r.op === 'eq') {
+        for (let i = 0; i < rows.length; i++) {
+            const r = rows[i];
+            if (r.op === 'eq') {
+                const lines = splitDiffRowLines(r.text);
+                for (const line of lines) {
                     leftLine += 1;
                     rightLine += 1;
                     leftRows.push({ lineNo: leftLine, cls: 'ctx' });
                     rightRows.push({ lineNo: rightLine, cls: 'ctx' });
-                } else if (r.op === 'del') {
+                }
+                continue;
+            }
+
+            const delLines = [];
+            const addLines = [];
+            while (i < rows.length && rows[i].op !== 'eq') {
+                const changedLines = splitDiffRowLines(rows[i].text);
+                if (rows[i].op === 'del') {
+                    delLines.push(...changedLines);
+                } else if (rows[i].op === 'add') {
+                    addLines.push(...changedLines);
+                }
+                i++;
+            }
+            i -= 1;
+
+            const rowCount = Math.max(delLines.length, addLines.length);
+            for (let k = 0; k < rowCount; k++) {
+                if (k < delLines.length) {
                     leftLine += 1;
                     leftRows.push({ lineNo: leftLine, cls: 'del' });
-                    rightRows.push({ lineNo: 0, cls: 'empty' });
-                } else { // 'add'
-                    rightLine += 1;
+                } else {
                     leftRows.push({ lineNo: 0, cls: 'empty' });
+                }
+
+                if (k < addLines.length) {
+                    rightLine += 1;
                     rightRows.push({ lineNo: rightLine, cls: 'add' });
+                } else {
+                    rightRows.push({ lineNo: 0, cls: 'empty' });
                 }
             }
         }
-
         // 把原文行号 → 高亮 HTML 的对应行做映射
         // 关键：beforeHL 的每一项对应 beforeRawLines 同一索引（已 pop 末尾空）
         // 即：第 N 个非 empty 行 → beforeHL[N-1]（0-based 索引）
@@ -1397,46 +1832,20 @@
     function applyInlineWordDiff(leftRows, rightRows, leftHL, rightHL, dmp) {
         if (!dmp) return;
         const n = leftRows.length;
-        let i = 0;
-        while (i < n) {
-            // 跳过 ctx / empty 行
-            if (leftRows[i].cls !== 'del') { i++; continue; }
-            // 找连续的 del 块结束位置
-            const delStart = i;
-            let delEnd = i;
-            while (delEnd < n && leftRows[delEnd].cls === 'del') delEnd++;
-            // 找紧随其后的连续 add 块
-            let addStart = delEnd;
-            let addEnd = addStart;
-            while (addEnd < n && rightRows[addEnd].cls === 'add') addEnd++;
-            // delEnd 之前都在左栏 del 段；addStart..addEnd-1 是右栏 add 段
-            const delCount = delEnd - delStart;
-            const addCount = addEnd - addStart;
-            const pairCount = Math.min(delCount, addCount);
-            // 配对的行做 inline diff
-            for (let k = 0; k < pairCount; k++) {
-                const lIdx = delStart + k;
-                const rIdx = addStart + k;
-                // 行内词级 diff 用原文（去 hljs 染色）做：先 escape 再 diff 再包 span
-                const beforeText = stripHTML(leftHL[lIdx] || '');
-                const afterText = stripHTML(rightHL[rIdx] || '');
-                // 内容相同的纯 del/add 行不浪费 inline 计算
-                if (beforeText === afterText) continue;
-                const d = new dmp();
-                const charDiffs = d.diff_main(beforeText, afterText, false);
-                // diff_cleanupSemantic 会按"标点/空白"切分，让 diff 块贴近单词边界
-                d.diff_cleanupSemantic(charDiffs);
-                leftHL[lIdx] = renderInlineDiff(charDiffs, /*side=*/'del');
-                rightHL[rIdx] = renderInlineDiff(charDiffs, /*side=*/'add');
-                // 给对应 row 加 has-inline-diff 类，CSS 可选地用色条强调
-                leftRows[lIdx].hasInline = true;
-                rightRows[rIdx].hasInline = true;
-            }
-            // 跳到 add 块末尾继续
-            i = Math.max(delEnd, addEnd);
+        for (let i = 0; i < n; i++) {
+            if (leftRows[i].cls !== 'del' || rightRows[i].cls !== 'add') continue;
+            const beforeText = stripHTML(leftHL[i] || '');
+            const afterText = stripHTML(rightHL[i] || '');
+            if (beforeText === afterText) continue;
+            const d = new dmp();
+            const charDiffs = d.diff_main(beforeText, afterText, false);
+            d.diff_cleanupSemantic(charDiffs);
+            leftHL[i] = renderInlineDiff(charDiffs, /*side=*/'del');
+            rightHL[i] = renderInlineDiff(charDiffs, /*side=*/'add');
+            leftRows[i].hasInline = true;
+            rightRows[i].hasInline = true;
         }
     }
-
     // stripHTML 去除 HTML 标签，仅保留文本内容。用于把 hljs 高亮后的 HTML 转回原文做 inline diff。
     // 实现：单个正则匹配 <...> 非贪婪替换为空；HTML 实体原样保留（与 inline diff 字符串内容一致即可）。
     // 注意：hljs 高亮的 HTML 不含 <script> 等危险标签（vendor 是 trusted），这里只是去标签不做安全转义。
@@ -1481,6 +1890,11 @@
         return lines;
     }
 
+    function splitDiffRowLines(text) {
+        const lines = String(text || '').split('\n');
+        if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+        return lines;
+    }
     // splitHighlightLines 对高亮后的 HTML 字符串按 \n 切分。
     // 简化策略：hljs 对代码块几乎都是逐行 token 化，跨行 span 极少；
     // 即便出现跨行 tag，视觉上只会"掉色"一行，不影响 diff 行级准确性。

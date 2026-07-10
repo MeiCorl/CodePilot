@@ -27,6 +27,12 @@ const (
 	MsgTypeListProjectDir = "list_project_dir"
 	// MsgTypeReadProjectFile requests a safe read-only project file preview.
 	MsgTypeReadProjectFile = "read_project_file"
+	// MsgTypeListProjectGitChanges requests changed files for the Git tab.
+	MsgTypeListProjectGitChanges = "list_project_git_changes"
+	// MsgTypeReadProjectGitDiff requests before/after content for one changed file.
+	MsgTypeReadProjectGitDiff = "read_project_git_diff"
+	// MsgTypeSearchProject requests bounded content search inside the project.
+	MsgTypeSearchProject = "search_project"
 	// MsgTypePermissionResponse 由前端权限确认对话框触发，携带用户的决策回传后端。
 	MsgTypePermissionResponse = "permission_response"
 	// MsgTypeSetPermissionMode 由前端「权限模式」下拉切换触发，
@@ -82,6 +88,12 @@ const (
 	MsgTypeProjectDir = "project_dir"
 	// MsgTypeProjectFile responds to read_project_file with file metadata/content or reason.
 	MsgTypeProjectFile = "project_file"
+	// MsgTypeProjectGitChanges responds to list_project_git_changes.
+	MsgTypeProjectGitChanges = "project_git_changes"
+	// MsgTypeProjectGitDiff responds to read_project_git_diff.
+	MsgTypeProjectGitDiff = "project_git_diff"
+	// MsgTypeProjectSearch responds to search_project.
+	MsgTypeProjectSearch = "project_search"
 	// MsgTypePermissionRequest 由后端推送给前端，请求用户确认工具执行权限。
 	MsgTypePermissionRequest = "permission_request"
 	// MsgTypePermissionMode 由后端推送，告知前端当前权限模式及规则概要。
@@ -453,6 +465,65 @@ type ProjectFilePayload struct {
 	File      ProjectFileEntry `json:"file"`
 	Content   string           `json:"content,omitempty"`
 	RequestID string           `json:"request_id,omitempty"`
+}
+
+// ListProjectGitChangesPayload requests the current Git changed-file list.
+type ListProjectGitChangesPayload struct {
+	RequestID string `json:"request_id,omitempty"`
+}
+
+// ProjectGitChangesPayload returns changed files or a stable error reason.
+type ProjectGitChangesPayload struct {
+	OK        bool               `json:"ok"`
+	Reason    string             `json:"reason,omitempty"`
+	Entries   []ProjectGitChange `json:"entries"`
+	Truncated bool               `json:"truncated"`
+	RequestID string             `json:"request_id,omitempty"`
+}
+
+// ReadProjectGitDiffPayload requests one changed file diff by workdir-relative path.
+type ReadProjectGitDiffPayload struct {
+	Path      string `json:"path"`
+	RequestID string `json:"request_id,omitempty"`
+}
+
+// ProjectGitDiffPayload returns before/after content for one Git change.
+type ProjectGitDiffPayload struct {
+	Found        bool             `json:"found"`
+	OK           bool             `json:"ok"`
+	Reason       string           `json:"reason,omitempty"`
+	Change       ProjectGitChange `json:"change"`
+	Path         string           `json:"path"`
+	OriginalPath string           `json:"original_path,omitempty"`
+	Status       string           `json:"status,omitempty"`
+	Before       string           `json:"before,omitempty"`
+	After        string           `json:"after,omitempty"`
+	Language     string           `json:"language,omitempty"`
+	RenderType   string           `json:"render_type,omitempty"`
+	RequestID    string           `json:"request_id,omitempty"`
+}
+
+// ProjectSearchRequestPayload requests bounded content search inside the project.
+type ProjectSearchRequestPayload struct {
+	ProjectSearchRequest
+	RequestID string `json:"request_id,omitempty"`
+}
+
+// ProjectSearchPayload returns project content search results or a stable reason.
+type ProjectSearchPayload struct {
+	OK           bool                      `json:"ok"`
+	Reason       string                    `json:"reason,omitempty"`
+	Query        string                    `json:"query"`
+	Path         string                    `json:"path"`
+	Regex        bool                      `json:"regex"`
+	Files        []ProjectSearchFileResult `json:"files"`
+	TotalMatches int                       `json:"total_matches"`
+	ScannedFiles int                       `json:"scanned_files"`
+	SkippedFiles int                       `json:"skipped_files"`
+	Truncated    bool                      `json:"truncated"`
+	TruncatedBy  string                    `json:"truncated_by,omitempty"`
+	Limits       ProjectSearchLimits       `json:"limits"`
+	RequestID    string                    `json:"request_id,omitempty"`
 }
 
 // AgentIterationPayload Agent Loop 迭代进度事件。

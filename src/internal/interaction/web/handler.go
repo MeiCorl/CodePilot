@@ -326,6 +326,9 @@ func (h *Handler) Register(router *Router) {
 	router.Register(MsgTypeGetFileDiff, h.handleGetFileDiff)
 	router.Register(MsgTypeListProjectDir, h.handleListProjectDir)
 	router.Register(MsgTypeReadProjectFile, h.handleReadProjectFile)
+	router.Register(MsgTypeListProjectGitChanges, h.handleListProjectGitChanges)
+	router.Register(MsgTypeReadProjectGitDiff, h.handleReadProjectGitDiff)
+	router.Register(MsgTypeSearchProject, h.handleSearchProject)
 	router.Register(MsgTypePermissionResponse, h.handlePermissionResponse)
 	router.Register(MsgTypeSetPermissionMode, h.handleSetPermissionMode)
 	router.Register(MsgTypeCompact, h.handleCompact)
@@ -1126,6 +1129,101 @@ func (h *Handler) handleReadProjectFile(conn *websocket.Conn, msg Message) error
 		payload.Reason = ProjectFileReasonReadError
 	}
 	return h.sendProjectFile(conn, payload)
+}
+
+func (h *Handler) handleListProjectGitChanges(conn *websocket.Conn, msg Message) error {
+	p, err := AsPayload[ListProjectGitChangesPayload](msg)
+	if err != nil {
+		return h.sendProjectGitChanges(conn, ProjectGitChangesPayload{OK: false, Reason: "invalid_payload"})
+	}
+
+	result, err := NewProjectGitBrowser(h.workdir).Status()
+	payload := projectGitChangesPayloadFromResult(result)
+	payload.RequestID = p.RequestID
+	if payload.Reason == "" && err != nil {
+		payload.Reason = ProjectFileReasonReadError
+	}
+	return h.sendProjectGitChanges(conn, payload)
+}
+
+func (h *Handler) handleReadProjectGitDiff(conn *websocket.Conn, msg Message) error {
+	p, err := AsPayload[ReadProjectGitDiffPayload](msg)
+	if err != nil {
+		return h.sendProjectGitDiff(conn, ProjectGitDiffPayload{Found: false, OK: false, Reason: "invalid_payload"})
+	}
+	if strings.TrimSpace(p.Path) == "" {
+		return h.sendProjectGitDiff(conn, ProjectGitDiffPayload{Found: false, OK: false, Reason: "invalid_payload", RequestID: p.RequestID})
+	}
+
+	result, err := NewProjectGitBrowser(h.workdir).ReadDiff(p.Path)
+	payload := projectGitDiffPayloadFromResult(result)
+	payload.RequestID = p.RequestID
+	if payload.Reason == "" && err != nil {
+		payload.Reason = ProjectFileReasonReadError
+	}
+	return h.sendProjectGitDiff(conn, payload)
+}
+
+func (h *Handler) handleSearchProject(conn *websocket.Conn, msg Message) error {
+	p, err := AsPayload[ProjectSearchRequestPayload](msg)
+	if err != nil {
+		return h.sendProjectSearch(conn, ProjectSearchPayload{OK: false, Reason: "invalid_payload"})
+	}
+
+	result, err := NewProjectSearcher(h.workdir).Search(ProjectSearchRequest{
+		Query:   p.Query,
+		Path:    p.Path,
+		Regex:   p.Regex,
+		Exclude: p.Exclude,
+	})
+	payload := projectSearchPayloadFromResult(result)
+	payload.RequestID = p.RequestID
+	if payload.Reason == "" && err != nil {
+		payload.Reason = ProjectFileReasonReadError
+	}
+	return h.sendProjectSearch(conn, payload)
+}
+
+func projectGitChangesPayloadFromResult(result ProjectGitStatusResult) ProjectGitChangesPayload {
+	return ProjectGitChangesPayload{
+		OK:        result.OK,
+		Reason:    result.Reason,
+		Entries:   result.Entries,
+		Truncated: result.Truncated,
+	}
+}
+
+func projectGitDiffPayloadFromResult(result ProjectGitDiffResult) ProjectGitDiffPayload {
+	return ProjectGitDiffPayload{
+		Found:        result.Found,
+		OK:           result.OK,
+		Reason:       result.Reason,
+		Change:       result.Change,
+		Path:         result.Path,
+		OriginalPath: result.OriginalPath,
+		Status:       result.Status,
+		Before:       result.Before,
+		After:        result.After,
+		Language:     result.Language,
+		RenderType:   result.RenderType,
+	}
+}
+
+func projectSearchPayloadFromResult(result ProjectSearchResult) ProjectSearchPayload {
+	return ProjectSearchPayload{
+		OK:           result.OK,
+		Reason:       result.Reason,
+		Query:        result.Query,
+		Path:         result.Path,
+		Regex:        result.Regex,
+		Files:        result.Files,
+		TotalMatches: result.TotalMatches,
+		ScannedFiles: result.ScannedFiles,
+		SkippedFiles: result.SkippedFiles,
+		Truncated:    result.Truncated,
+		TruncatedBy:  result.TruncatedBy,
+		Limits:       result.Limits,
+	}
 }
 
 func projectDirPayloadFromResult(result ProjectDirResult, ok bool) ProjectDirPayload {
@@ -2120,6 +2218,18 @@ func (h *Handler) sendProjectDir(conn *websocket.Conn, p ProjectDirPayload) erro
 
 func (h *Handler) sendProjectFile(conn *websocket.Conn, p ProjectFilePayload) error {
 	return h.sendMessage(conn, MsgTypeProjectFile, p)
+}
+
+func (h *Handler) sendProjectGitChanges(conn *websocket.Conn, p ProjectGitChangesPayload) error {
+	return h.sendMessage(conn, MsgTypeProjectGitChanges, p)
+}
+
+func (h *Handler) sendProjectGitDiff(conn *websocket.Conn, p ProjectGitDiffPayload) error {
+	return h.sendMessage(conn, MsgTypeProjectGitDiff, p)
+}
+
+func (h *Handler) sendProjectSearch(conn *websocket.Conn, p ProjectSearchPayload) error {
+	return h.sendMessage(conn, MsgTypeProjectSearch, p)
 }
 
 // mapToolEventStatus 把 conversation 包的内部工具事件状态枚举

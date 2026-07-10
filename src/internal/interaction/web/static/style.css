@@ -1935,6 +1935,56 @@ body {
     overflow: hidden;
 }
 
+.project-panel-tabs {
+    display: flex;
+    align-items: stretch;
+    gap: 0;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-elevated);
+    flex-shrink: 0;
+}
+
+.project-panel-tab {
+    flex: 1;
+    min-width: 0;
+    padding: 10px var(--sp-3);
+    border: 0;
+    border-bottom: 2px solid transparent;
+    background: transparent;
+    color: var(--fg-muted);
+    cursor: pointer;
+    font-family: var(--font-body);
+    font-size: var(--fs-sm);
+    font-weight: 500;
+    line-height: 1.2;
+    white-space: nowrap;
+    transition: color var(--dur-fast) var(--ease-out),
+                background var(--dur-fast) var(--ease-out),
+                border-color var(--dur-fast) var(--ease-out);
+}
+.project-panel-tab:hover {
+    color: var(--fg);
+    background: var(--bg-hover);
+}
+.project-panel-tab.is-active {
+    color: var(--accent-bright);
+    border-bottom-color: var(--accent);
+    background: var(--accent-dim);
+}
+.project-panel-tab:focus-visible {
+    outline: 1px solid var(--accent);
+    outline-offset: -2px;
+}
+
+.project-panel-tabpanel {
+    flex: 1;
+    min-height: 0;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+.project-panel-tabpanel[hidden] { display: none; }
 .project-panel-header {
     display: flex;
     align-items: center;
@@ -2251,6 +2301,244 @@ body {
     flex-shrink: 0;
 }
 
+/* ============================================================================
+ * Project Sidebar Tabs - Git 与搜索面板
+ * ========================================================================== */
+
+.project-git-status,
+.project-search-summary {
+    display: flex;
+    align-items: center;
+    gap: var(--sp-2);
+    flex-shrink: 0;
+    padding: var(--sp-3) var(--sp-4);
+    border-bottom: 1px solid var(--border);
+    color: var(--fg-dim);
+    font-family: var(--font-mono);
+    font-size: var(--fs-xs);
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+}
+
+.project-git-status-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--fg-faint);
+    flex-shrink: 0;
+}
+.project-git-status-dot[data-status="loading"] { background: var(--thinking); }
+.project-git-status-dot[data-status="clean"],
+.project-git-status-dot[data-status="ready"] { background: var(--success); }
+.project-git-status-dot[data-status="error"] { background: var(--error); }
+
+.project-git-list,
+.project-search-results {
+    flex: 1;
+    min-height: 0;
+    min-width: 0;
+    overflow-y: auto;
+    padding: var(--sp-2);
+}
+
+.project-git-item,
+.project-search-result {
+    width: 100%;
+    min-width: 0;
+    display: grid;
+    gap: var(--sp-2);
+    padding: var(--sp-3);
+    border: 1px solid transparent;
+    border-radius: var(--r-md);
+    background: transparent;
+    color: var(--fg);
+    text-align: left;
+}
+.project-git-item {
+    grid-template-columns: 42px minmax(0, 1fr);
+    align-items: center;
+    cursor: pointer;
+}
+.project-search-result {
+    grid-template-columns: minmax(0, 1fr);
+}
+.project-git-item:hover,
+.project-search-result:hover {
+    background: var(--bg-hover);
+    border-color: var(--border);
+}
+.project-git-item:focus-visible,
+.project-search-result:focus-visible,
+.project-search-input:focus-visible,
+.project-search-toggle:focus-within,
+.project-search-run:focus-visible {
+    outline: 1px solid var(--accent);
+    outline-offset: 1px;
+}
+
+.project-git-status-badge {
+    width: 34px;
+    min-width: 34px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 3px 6px;
+    border: 1px solid var(--border);
+    border-radius: var(--r-sm);
+    background: var(--bg-input);
+    color: var(--fg-muted);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1.2;
+    text-transform: uppercase;
+}
+.project-git-status-badge[data-status="modified"] { color: var(--warning); background: var(--warning-dim); border-color: rgba(229, 192, 123, 0.30); }
+.project-git-status-badge[data-status="added"],
+.project-git-status-badge[data-status="untracked"] { color: var(--success); background: var(--success-dim); border-color: rgba(152, 195, 121, 0.30); }
+.project-git-status-badge[data-status="deleted"] { color: var(--error); background: var(--error-dim); border-color: rgba(224, 108, 117, 0.30); }
+.project-git-status-badge[data-status="renamed"] { color: var(--thinking); background: var(--thinking-dim); border-color: rgba(97, 175, 239, 0.30); }
+
+.project-git-main,
+.project-search-main {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+.project-git-path,
+.project-search-path {
+    min-width: 0;
+    color: var(--fg);
+    font-family: var(--font-mono);
+    font-size: var(--fs-sm);
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+.project-git-meta,
+.project-search-meta,
+.project-search-snippet {
+    min-width: 0;
+    color: var(--fg-dim);
+    font-family: var(--font-mono);
+    font-size: var(--fs-xs);
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+.project-search-snippet {
+    color: var(--fg-muted);
+    white-space: pre-wrap;
+}
+.project-search-match {
+    color: var(--accent-bright);
+    background: var(--accent-dim);
+    border-radius: 2px;
+    padding: 0 2px;
+}
+
+.project-search-form {
+    flex-shrink: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 0.75fr);
+    gap: var(--sp-3);
+    padding: var(--sp-3) var(--sp-4);
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-elevated);
+}
+
+.project-search-field {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+}
+.project-search-label {
+    color: var(--fg-dim);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1.2;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+}
+.project-search-input {
+    width: 100%;
+    min-width: 0;
+    height: 32px;
+    padding: 0 var(--sp-2);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--r-sm);
+    background: var(--bg-input);
+    color: var(--fg);
+    font-family: var(--font-mono);
+    font-size: var(--fs-xs);
+    line-height: 32px;
+}
+.project-search-input::placeholder { color: var(--fg-faint); }
+
+.project-search-toggle,
+.project-search-run {
+    min-height: 32px;
+    align-self: end;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--sp-2);
+    border-radius: var(--r-sm);
+    font-size: var(--fs-xs);
+    font-weight: 600;
+    line-height: 1.2;
+}
+.project-search-toggle {
+    border: 1px solid var(--border-strong);
+    background: var(--bg-input);
+    color: var(--fg-muted);
+    cursor: pointer;
+    user-select: none;
+}
+.project-search-toggle input {
+    width: 13px;
+    height: 13px;
+    accent-color: var(--accent);
+}
+.project-search-run {
+    border: 1px solid rgba(200, 169, 106, 0.30);
+    background: var(--accent-dim);
+    color: var(--accent-bright);
+    cursor: pointer;
+    font-family: var(--font-body);
+    transition: color var(--dur-fast) var(--ease-out),
+                background var(--dur-fast) var(--ease-out),
+                border-color var(--dur-fast) var(--ease-out);
+}
+.project-search-run:hover {
+    border-color: var(--accent);
+    background: rgba(200, 169, 106, 0.18);
+    color: var(--fg);
+}
+.project-search-run:disabled {
+    cursor: not-allowed;
+    opacity: 0.58;
+}
+
+.diff-modal.is-project-git-diff .diff-modal-inner,
+.project-git-diff-modal .diff-modal-inner {
+    width: min(1280px, calc(100vw - 32px));
+    max-height: min(84vh, 900px);
+}
+.diff-modal.is-project-git-diff .diff-side,
+.project-git-diff-modal .diff-side {
+    overflow-x: auto;
+}
+.diff-modal.is-project-git-diff .diff-line-content,
+.project-git-diff-modal .diff-line-content {
+    min-width: max-content;
+    white-space: pre;
+    overflow: visible;
+    overflow-wrap: normal;
+    word-break: normal;
+}
 /* ============================================================================
  * Project File Preview Modal
  * ========================================================================== */
@@ -3728,5 +4016,71 @@ body {
     }
     .project-file-preview-markdown {
         padding: var(--sp-4);
+    }
+}
+
+/* Step 1.6: project sidebar tabs stay contained when the project panel moves below chat. */
+@media (max-width: 860px) {
+    .project-panel-tab { padding: 8px var(--sp-3); }
+    .project-git-status,
+    .project-search-summary {
+        padding: var(--sp-2) var(--sp-3);
+    }
+    .project-search-form {
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+        max-height: 112px;
+        overflow-y: auto;
+        padding: var(--sp-2) var(--sp-3);
+    }
+    .project-search-toggle,
+    .project-search-run {
+        align-self: stretch;
+        min-width: 72px;
+    }
+    .project-git-list,
+    .project-search-results {
+        padding: var(--sp-1) var(--sp-2);
+    }
+    .diff-modal.is-project-git-diff .diff-grid,
+    .project-git-diff-modal .diff-grid {
+        grid-template-columns: minmax(0, 1fr);
+    }
+    .diff-modal.is-project-git-diff .diff-side + .diff-side,
+    .project-git-diff-modal .diff-side + .diff-side {
+        border-left: 0;
+        border-top: 1px solid var(--border);
+    }
+}
+
+@media (max-width: 620px) {
+    .project-panel-tab {
+        padding: 8px var(--sp-2);
+        font-size: var(--fs-xs);
+    }
+    .project-search-form {
+        grid-template-columns: minmax(0, 1fr) auto;
+        max-height: 104px;
+    }
+    .project-search-field:first-child,
+    .project-search-field:nth-of-type(4) {
+        grid-column: 1 / -1;
+    }
+    .project-search-input {
+        height: 30px;
+        line-height: 30px;
+    }
+    .project-git-item {
+        grid-template-columns: 36px minmax(0, 1fr);
+    }
+    .project-git-status-badge {
+        width: 30px;
+        min-width: 30px;
+        padding-left: 4px;
+        padding-right: 4px;
+    }
+    .diff-modal.is-project-git-diff .diff-modal-inner,
+    .project-git-diff-modal .diff-modal-inner {
+        width: calc(100vw - 24px);
+        max-height: 86vh;
     }
 }
